@@ -21,6 +21,9 @@
   --color-footer-text: rgb(100 100 100);
   --color-blockquote: rgb(80 80 80);
   --color-figcaption: rgb(60 60 60);
+  --color-table-header-bg: rgb(44 62 80);
+  --color-table-header: rgb(255 255 255);
+  --color-table-row-hover: rgb(248 249 250);
 
   --color-essay-title: rgb(17 17 17);
   --color-essay-year: rgb(100 100 136);
@@ -47,6 +50,9 @@
     --color-footer-text: rgb(150 150 150);
     --color-blockquote: rgb(180 180 180);
     --color-figcaption: rgb(180 180 180);
+    --color-table-header: rgb(200 240 240);
+    --color-table-header-bg: rgb(30 30 30);
+    --color-table-row-hover: rgb(40 40 40);
 
     --color-essay-title: rgb(220 220 220);
     --color-essay-year: rgb(150 150 200);
@@ -111,8 +117,39 @@ a {
   }
 }
 
-p {
+p, details {
   margin-bottom: 1em;
+}
+
+summary {
+  cursor: pointer;
+}
+
+table {
+    border-collapse: collapse;
+    border: var(--color-border) 1px solid;
+}
+
+th {
+    background-color: var(--color-table-header-bg);
+    color: var(--color-table-header);
+    padding: 12px;
+    text-align: left;
+    font-weight: 600;
+}
+
+td {
+    padding: 12px;
+    border-bottom: 1px solid var(--color-border);
+    vertical-align: top;
+}
+
+tr:last-child td {
+    border-bottom: none;
+}
+
+tr:hover {
+    background-color: var(--color-table-row-hover);
 }
 
 /* Base layout elements */
