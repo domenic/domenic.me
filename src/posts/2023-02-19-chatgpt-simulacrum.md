@@ -3,7 +3,7 @@ layout: layouts/post
 title: "ChatGPT Is Not a Blurry JPEG of the Web"
 date: 2023-02-19T11:00:00Z
 tags: [other]
-blurb: Are LLMs just compressed representations of their training data, or something more? The "simulators" hypothesis proposes that they're much more like a human imagination, instantiating simulacra of various entities.
+blurb: Are LLMs just compressed representations of their training data, or something more? The "simulators" hypothesis proposes that they're much more like a human imagination.
 ---
 
 The gifted sci-fi writer Ted Chiang recently wrote a <cite>New Yorker</cite> article, ["ChatGPT Is a Blurry JPEG of the Web"](https://www.newyorker.com/tech/annals-of-technology/chatgpt-is-a-blurry-jpeg-of-the-web), with the thesis that large language models like ChatGPT can be analogized to lossy compression algorithms for their input data.
