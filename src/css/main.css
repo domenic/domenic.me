@@ -117,7 +117,7 @@ a {
   }
 }
 
-p, details {
+p, details, table {
   margin-bottom: 1em;
 }
 
