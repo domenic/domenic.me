@@ -452,6 +452,11 @@ main#post {
     padding-left: 0;
   }
 
+  hr {
+    width: 5rem;
+    margin: 1.5rem auto;
+  }
+
   figure {
     display: block;
     max-width: 100%;
