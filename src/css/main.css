@@ -402,7 +402,7 @@ main#post {
     margin-bottom: 1.5rem;
   }
 
-  h1, h2, h3, h4, h5, h6, p, blockquote, pre, ul, ol, dl, figure, .highlight {
+  h1, h2, h3, h4, h5, h6, p, blockquote, pre, ul, ol, dl, figure, image-carousel, .highlight {
     margin-bottom: 15px;
   }
 
@@ -489,10 +489,26 @@ main#post {
 
     figcaption {
       margin-top: 0.75rem;
+      padding: 0 0.75em;
 
       font-size: var(--fs-figcaption);
       color: var(--color-figcaption);
       text-align: center;
+    }
+  }
+
+  image-carousel:not(:defined) {
+    display: flex;
+    overflow-x: auto;
+    gap: 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 1rem;
+
+    > figure {
+      border: none;
+      padding: 0;
+      flex: 0 0 auto;
     }
   }
 }

@@ -7,6 +7,38 @@ import adjustHeadingLevel from './adjust-heading-level.mjs';
 import metadata from './src/_data/metadata.json' with { type: 'json' };
 
 export default async (eleventyConfig) => {
+  eleventyConfig.addTransform('image-carousel-rss', function (content) {
+    if (!content.includes('<image-carousel')) {
+      return content;
+    }
+
+    const carouselRegex = /<image-carousel\b([^>]*)>[\s\S]*?<\/image-carousel>/g;
+
+    // Validate: every carousel must have an id
+    for (const [, attrs] of content.matchAll(carouselRegex)) {
+      if (!/\bid=/.test(attrs)) {
+        throw new Error(`<image-carousel> in ${this.inputPath} is missing a required id attribute`);
+      }
+    }
+
+    if (!this.baseHref) {
+      return content;
+    }
+
+    // RSS context: replace carousels with fallback text
+    content = content.replace(carouselRegex, (match, attrs) => {
+      const id = attrs.match(/\bid="([^"]+)"/)?.[1];
+      const rssText = attrs.match(/\brsstext="([^"]+)"/)?.[1] ?? 'an image carousel';
+      const absoluteURL = new URL(`${this.url}#${id}`, this.baseHref).href;
+      return `<p><em>See <a href="${absoluteURL}">the web version</a> for ${rssText}.</em></p>`;
+    });
+
+    // Strip the carousel script tag
+    content = content.replace(/<script\b[^>]*\bsrc="[^"]*image-carousel[^"]*"[^>]*><\/script>\s*/g, '');
+
+    return content;
+  });
+
   eleventyConfig.addPlugin(feedPlugin, {
     type: 'atom',
     outputPath: 'feed.xml',
