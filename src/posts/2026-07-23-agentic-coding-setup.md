@@ -18,11 +18,11 @@ After starting with raw Claude Code, I realized I wanted the following:
 
 * I need the work to continue even if I close my laptop to transition locations.
 
-* Agentic coding is essentially impossible on Windows, as the agents are heavily trained on Bash and other Unix tools. Although some pretend to have PowerShell support, they invariably trip over themselves on quoting issues, UTF-8 support gaps, etc. They need to be running on Linux.
+* The agents need to be running on Linux. Agentic coding is essentially impossible on Windows, as the agents are heavily trained on Bash and other Unix tools. Although some pretend to have PowerShell support, they invariably trip over themselves on quoting issues, UTF-8 support gaps, etc.
 
 * I want to be able to run multiple parallel workstreams on the same project, without the agents stepping on each other's toes.
 
-* To unlock multiple parallel workstreams, or any step-away-from-the-computer work, approval interruptions need to be minimized, ideally all the way to `--dangerously-skip-permissions` / `--yolo` modes. This means a disposable VM.
+* I want approval interruptions minimized, ideally all the way to `--dangerously-skip-permissions` / `--yolo` modes, so that I can run parallel workstreams and step away from the computer. (Spoiler: this means a disposable VM.)
 
 * I want to be able to review the agents' current work in Visual Studio Code, not just in their harness UI or as part of a GitHub pull request checkpoint.
 
@@ -44,7 +44,7 @@ First, we need a disposable Linux VM. You could use a cloud-hosted one, but I ke
 
 At first, the VM is a bit annoying to access. We want to be able to SSH into it, both to streamline initial setup and as part of our grand plan. This is where [Tailscale](https://tailscale.com/) comes in.
 
-Tailscale is a wonderful piece of software which I had not known about until this adventure. It ties together all of your machines—in my case, my desktop, my laptop, and my Linux VM—into a private network, where they can access each other by hostname over SSH, HTTP(S), etc. So even if I'm out at a coffee shop on some random Wi-Fi, I can run `ssh agents-base` and I'll be inside my VM, working with my agents. Or I can access `https://agents-base.tail234567.ts.net:8000/` to check out the web server my agent has spun up for me. And since SSH is the foundational technology for various other parts of our stack, such as the agentic harnesses themselves and VS Code, Tailscale's "magic SSH across the internet" makes everything else just work.
+Tailscale is a wonderful piece of software which I had not known about until this adventure. It ties together all of your machines—in my case, my desktop, my laptop, and my Linux VM—into a private network, where they can access each other by hostname over SSH, HTTP(S), etc. So even if I'm out at a coffee shop on some random Wi-Fi, I can run `ssh agents-base` and I'll be inside my VM, working with my agents. Or I can access `https://agents-base.tail234567.ts.net:8443/` to check out the web server my agent has spun up for me. And since SSH is the foundational technology for various other parts of our stack, such as the agentic harnesses themselves and VS Code, Tailscale's "magic SSH across the internet" makes everything else just work.
 
 (Also, it's free! They have a neat article [explaining why it stays free](https://tailscale.com/blog/free-plan).)
 
@@ -94,7 +94,7 @@ I also strongly recommend putting your user in the `sudoers` file. This allows t
 
 Additionally, I suggest installing the [`gh` CLI](https://cli.github.com/), and logging in with your credentials, so that your agents can do things like manipulate private repositories, open pull requests, nurse your GitHub Actions CI runs, and use the GitHub API to grep through other repositories without rate limits.
 
-Is this safe? No, not really. With these configurations, the agent could start deleting your GitHub repositories, uploading your gitignored secrets to the internet, accidentally deleting the VM's entire home directory, TODO list some more semi-realistic scary possibilities. Heck, a sufficiently motivated agent could [escape the VM and start hacking into servers on the web](https://openai.com/index/hugging-face-model-evaluation-security-incident/).
+Is this safe? No, not really. With these configurations, the agent could start deleting your GitHub repositories, uploading your gitignored secrets to the internet, replying to GitHub issues in your name, or accidentally deleting the VM's entire home directory. Heck, a sufficiently motivated agent could [escape the VM and start hacking into servers on the web](https://openai.com/index/hugging-face-model-evaluation-security-incident/).
 
 But in practice, it turns out fine. The agents seem to be aligned and non-malicious, [for now](https://ai-2040.com/). The worst that's going to happen is an accident that messes up the VM and loses all work that hasn't been uploaded to GitHub, or an overzealous agent misinterpreting a prompt and impacting production. (For example: I said "Let's send a PR for this and get it merged to main" to ChatGPT 5.6 Sol, and after tabbing back into the app I saw it had done what I asked and merged the PR to `main` already, instead of doing what I meant and waiting for review.)
 
@@ -118,7 +118,7 @@ One wrinkle here is worktree location. The ChatGPT app's default, of putting all
 
 * If you're using ChatGPT in the same project, it will periodically get confused by the `.claude/` folder's divergent copy of the code, e.g., when files from the Claude worktree show up in `rg` and `find` results.
 
-Fixing this to allow a ChatGPT-like configuration seems to be a [known feature request for Claude](https://github.com/anthropics/claude-code/issues/27282). And Fable tells me there are hacks available involving configuring [the `WorktreeCreate` hook](https://code.claude.com/docs/en/hooks#worktreecreate). But for me, it's just another reason to prefer ChatGPT for most projects, until the Claude Code/Claude app teams get their act together.
+Fixing this to allow a ChatGPT-like configuration seems to be a [known feature request for Claude](https://github.com/anthropics/claude-code/issues/27282). And Fable tells me there are hacks available involving configuring [the `WorktreeCreate` hook](https://code.claude.com/docs/en/hooks#worktreecreate). But for me, it's just another reason to prefer ChatGPT for most projects, until the Claude Code/Claude app teams sort out their worktree story.
 
 (Note that the Claude desktop app has a "Worktree location" setting, but it is irrelevant for our purposes, since it only applies to local development on the client machine, and is ignored when working on our VM.)
 
@@ -140,8 +140,13 @@ In a typical project, you'll have a command like `npm run dev` or `python -m htt
 
 ```bash
 #!/usr/bin/env bash
+
+# Make every server the proxy manages also get a tailnet URL, on a dedicated port.
 export PORTLESS_TAILSCALE=1
+
+# Move the local proxy off of port 433 to avoid needing sudo.
 export PORTLESS_PORT="${PORTLESS_PORT:-1355}"
+
 exec portless "$@"
 ```
 
@@ -151,10 +156,10 @@ and updated my `AGENTS.md` ([see below](#syncing-with-chezmoi)) with the section
 ```markdown
 ## Preview servers
 
-When standing up preview servers for the user to work from, use the `tportless` wrapper command instead of `npm run dev` or similar. This will expose the preview server on the local tailnet. Report the Tailscale URL back to the user, instead of the localhost URL.
+When standing up preview servers for the user to work from, don't run `npm run dev` or similar directly. Instead, use the `tportless` wrapper: bare `tportless` runs the project's dev script through the proxy, and `tportless <app-name> <command…>` works for any other server command. This exposes the preview server on the tailnet. Report the Tailscale URL from the tportless output back to the user, instead of the localhost URL.
 ```
 
-The result is delightful: the agent finishes some work, spins up a server, usually does some smoke tests using Playwright, and then hands me a URL like `https://agents-base.tail234567.ts.net:8000/` where I can check out its work. Other agents in parallel worktrees will spin up servers accessible at other ports, with no collisions. These URLs are not accessible outside of the tailnet, so there's no danger of them getting exploited, or of my nascent projects being leaked before they're ready.
+The result is delightful: the agent finishes some work, spins up a server, usually does some smoke tests using Playwright, and then hands me a URL like `https://agents-base.tail234567.ts.net:8443/` where I can check out its work. Other agents in parallel worktrees will spin up servers allocated to other ports, with no collisions. These URLs are not accessible outside of the tailnet, so there's no danger of them getting exploited, or of my nascent projects being leaked before they're ready.
 
 ### Syncing with chezmoi
 
@@ -210,8 +215,10 @@ Well, as mentioned [above](#security-posture-and-blast-radius), this would all b
 
 On the user experience side, I generally don't like how the "session" model in each coding harness is so strongly tied to the folder path on the VM. If you rename or move a project folder, the ChatGPT and Claude apps get confused, and generally lose all your session history in that folder. You can fix this by asking the agent to find the hidden references and update them, but it's a pain, and needs to be done on both client and host machines.
 
-Similarly, I'd like some way to back up my session histories somewhere durable (like a private GitHub repo). At the very least, I suspect they'll be good for some nostalgia in a few years. But sometimes the session transcripts are the only record of certain design decisions or TODO what else.
+Similarly, I'd like some way to back up my session histories somewhere durable (like a private GitHub repo). At the very least, I suspect they'll be good for some nostalgia in a few years. But sometimes the session transcripts are the only record of certain design decisions, or of abandoned approaches that explain why the code looks the way it does.
 
 All of the above are fixable with a little bit of work on my end, e.g., by writing small utilities and wrappers. But I suspect they won't be truly seamless until they're built into the harness apps. So, I hope the ChatGPT app team works on them. And that the Claude app team first gets their shit together generally, and then works on these features.
 
-TODO outro, maybe celebratory, playing on the "living in the future" / what a time to be alive theme.
+So that's my setup. A disposable VM, a magic VPN, two frontier harnesses, and a few extra tools. If you're reading this more than six months from now, I assume it's all quaintly obsolete. But that's what time capsules are for.
+
+What a time to be alive!
