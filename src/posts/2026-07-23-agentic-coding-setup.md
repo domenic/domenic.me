@@ -1,18 +1,18 @@
 ---
 layout: layouts/post
-title: "My Current Agentic Coding Setup"
+title: "My Agentic Coding Setup, July 2026"
 date: 2026-07-23T00:00:00Z
 tags: [other]
-blurb: A snapshot of how I'm coding, as of July 2026.
+blurb: With the right tools, coding agents can run autonomously, in parallel, and be reachable from anywhere. Here's how I've stitched them together.
 ---
 
 Since [breaking free](/retirement/) of [my corporate shackles](/metr-ai-productivity/#my-prior-ai-coding-experience), I've gotten to experiment with a variety of approaches to AI-assisted development. After months of tinkering, I'm quite happy with my current setup, and want to capture and share it.
 
-Things are changing very fast, and I have no illusions that this will be a timeless nugget of wisdom. But talking to some friends and scrolling through X posts, it does seem that I might have some techniques in play that are not widespread. And this will be a fond time capsule to look back on as we proceed further into the singularity.
+Things are changing very fast, and I have no illusions that this will be a timeless nugget of wisdom. But talking to some friends and scrolling through X posts, it does seem that I might have some techniques in play that are not widespread. At least, this will be a fond time capsule to look back on as we proceed further into the singularity. And the end state is quite nice: I've ended up with the ability to have frontier models fix production bugs from my phone, on a train.
 
 ## My requirements
 
-After starting with raw Claude Code, I realized I wanted the following:
+After a couple of months with raw Claude Code, I realized I wanted the following:
 
 * I need to be able to work from either my desktop or laptop, with seamless handoff of project progress, including preserving agent sessions, working tree state, and gitignored files (like `.env` files or build artifacts).
 
@@ -30,7 +30,7 @@ After starting with raw Claude Code, I realized I wanted the following:
 
 * I want to ensure various user-global settings (e.g., `AGENTS.md`, skills, harness configurations) are available no matter where I work, and backed up and version-controlled.
 
-None of these requirements are that hard, and several of them synergize. It's just a matter of finding and stitching together all the right tools, with a minimum of fuss.
+None of these requirements are that hard, and several of them synergize. It's just a matter of finding and stitching together all the right tools, with a minimum of fuss. I'll outline my setup below, although not as a step-by-step guide. Since you have agents now, you can ask them to do the fiddly parts.
 
 ## The key ingredients
 
@@ -64,7 +64,7 @@ Next, we need to get the agent harnesses installed and configured on both the VM
 
 The client is where it gets more interesting. Back when I was still addicted to Claude Code, I spent some time using it directly over SSH, and then introducing [tmux](https://github.com/tmux/tmux/wiki) to keep the sessions running in the background even after my SSH session disconnected (e.g., because I closed my laptop lid). But I found this quite clunky. tmux required a good amount of fiddling before I got acceptable behavior for things like scrolling and window resizing, and even then it would often glitch in strange ways, e.g., trashing my client terminal after disconnection, or behaving poorly when both my laptop and desktop were trying to tmux into the same Claude Code session.
 
-Fortunately, there is a better solution: the desktop [Claude](https://claude.com/download) and [ChatGPT apps](https://chatgpt.com/download/).
+Fortunately, there is a better solution: the desktop [Claude](https://claude.com/download) and [ChatGPT apps](https://chatgpt.com/download/). They both have modes where they act as thin clients, while the agent, its sessions, and your code all live on a remote machine such as our VM.
 
 The real winner here is the ChatGPT app. Its SSH support is extremely smooth. It has a native understanding that you might be working either locally or remotely, e.g., in how it partitions its Settings screen. It handles disconnections gracefully. The only suboptimal part is that the list of projects and sessions doesn't sync perfectly between multiple clients accessing the same remote VM, but I can usually get them to sync with some jiggling, e.g., starting a new remote session in the right folder will cause the rest to appear in the sidebar.
 
@@ -94,7 +94,7 @@ I also strongly recommend putting your user in the `sudoers` file. This allows t
 
 Additionally, I suggest installing the [`gh` CLI](https://cli.github.com/), and logging in with your credentials, so that your agents can do things like manipulate private repositories, open pull requests, nurse your GitHub Actions CI runs, and use the GitHub API to grep through other repositories without rate limits.
 
-Is this safe? No, not really. With these configurations, the agent could start deleting your GitHub repositories, uploading your gitignored secrets to the internet, replying to GitHub issues in your name, or accidentally deleting the VM's entire home directory. Heck, a sufficiently motivated agent could [escape the VM and start hacking into servers on the web](https://openai.com/index/hugging-face-model-evaluation-security-incident/).
+Is this safe? No, not really. With these configurations, the agent could start deleting your GitHub repositories, uploading your gitignored secrets to the internet, replying to GitHub issues in your name, or accidentally wiping the VM's entire home directory. Heck, a sufficiently motivated agent could [escape the VM and start hacking into servers on the web](https://openai.com/index/hugging-face-model-evaluation-security-incident/).
 
 But in practice, it turns out fine. The agents seem to be aligned and non-malicious, [for now](https://ai-2040.com/). The worst that's going to happen is an accident that messes up the VM and loses all work that hasn't been uploaded to GitHub, or an overzealous agent misinterpreting a prompt and impacting production. (For example: I said "Let's send a PR for this and get it merged to main" to ChatGPT 5.6 Sol, and after tabbing back into the app I saw it had done what I asked and merged the PR to `main` already, instead of doing what I meant and waiting for review.)
 
@@ -114,7 +114,7 @@ One wrinkle here is worktree location. The ChatGPT app's default, of putting all
 
 * [`node_modules` discovery](https://nodejs.org/api/modules.html#loading-from-node_modules-folders) traverses up the directory tree, so if you've uninstalled a dependency inside `my-project/.claude/worktrees/cleanup/node_modules/`, Node.js will still be able to load the old version from `my-project/node_modules/`.
 
-* If you use a command like `deno task --recursive <task-name>` in a top-level workspace, it will traverse into all subfolders looking for `deno.json` files with that task declared, and it will find the worktree's `deno.json` copies and execute those tasks as part of it.
+* If you use any command that recurses into child directories, like `deno task --recursive <task-name>`, the command will wander into the Claude worktree too.
 
 * If you're using ChatGPT in the same project, it will periodically get confused by the `.claude/` folder's divergent copy of the code, e.g., when files from the Claude worktree show up in `rg` and `find` results.
 
@@ -144,7 +144,7 @@ In a typical project, you'll have a command like `npm run dev` or `python -m htt
 # Make every server the proxy manages also get a tailnet URL, on a dedicated port.
 export PORTLESS_TAILSCALE=1
 
-# Move the local proxy off of port 433 to avoid needing sudo.
+# Move the local proxy off of port 443 to avoid needing sudo.
 export PORTLESS_PORT="${PORTLESS_PORT:-1355}"
 
 exec portless "$@"
@@ -152,14 +152,13 @@ exec portless "$@"
 
 and updated my `AGENTS.md` ([see below](#syncing-with-chezmoi)) with the section
 
-<!-- TODO this code block needs to wrap, not sure exactly how to do that...-->
 ```markdown
 ## Preview servers
 
 When standing up preview servers for the user to work from, don't run `npm run dev` or similar directly. Instead, use the `tportless` wrapper: bare `tportless` runs the project's dev script through the proxy, and `tportless <app-name> <command…>` works for any other server command. This exposes the preview server on the tailnet. Report the Tailscale URL from the tportless output back to the user, instead of the localhost URL.
 ```
 
-The result is delightful: the agent finishes some work, spins up a server, usually does some smoke tests using Playwright, and then hands me a URL like `https://agents-base.tail234567.ts.net:8443/` where I can check out its work. Other agents in parallel worktrees will spin up servers allocated to other ports, with no collisions. These URLs are not accessible outside of the tailnet, so there's no danger of them getting exploited, or of my nascent projects being leaked before they're ready.
+The result is delightful: the agent finishes some work, spins up a server, usually does some smoke tests using Playwright, and then hands me a URL like `https://agents-base.tail234567.ts.net:8443/` where I can check out its work. Other agents in parallel worktrees will spin up servers on their own dedicated ports, with no collisions. These URLs are not accessible outside of the tailnet, so there's no danger of them getting exploited, or of my nascent projects being leaked before they're ready.
 
 ### Syncing with chezmoi
 
