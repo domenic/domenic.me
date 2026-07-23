@@ -445,11 +445,17 @@ main#post {
   pre {
     padding: 8px 12px;
     overflow-x: auto;
-  }
-  pre > code {
-    border: 0;
-    padding-right: 0;
-    padding-left: 0;
+
+    > code {
+      border: 0;
+      padding-right: 0;
+      padding-left: 0;
+
+      &.language-markdown {
+        white-space: pre-wrap;
+        overflow-wrap: break-word;
+      }
+    }
   }
 
   hr {
