@@ -39,6 +39,21 @@ export default async (eleventyConfig) => {
     return content;
   });
 
+  eleventyConfig.addTransform('srcset-only-img-rss', function (content) {
+    if (!this.baseHref) {
+      return content;
+    }
+
+    // Feed readers often sanitize away `srcset`, so in the RSS context, rewrite `srcset`-only
+    // images to use a plain `src` derived from their first image candidate.
+    return content.replace(/<img\b[^>]*>/g, (tag) => {
+      if (/\bsrc="/.test(tag)) {
+        return tag;
+      }
+      return tag.replace(/\bsrcset="([^" ]+)[^"]*"/, 'src="$1"');
+    });
+  });
+
   eleventyConfig.addPlugin(feedPlugin, {
     type: 'atom',
     outputPath: 'feed.xml',
