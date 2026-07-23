@@ -12,29 +12,34 @@ Things are changing very fast, and I have no illusions that this will be a timel
 
 ## My requirements
 
-After a couple of months with raw Claude Code, I realized I wanted the following:
-
-* I need to be able to work from either my desktop or laptop, with seamless handoff of project progress, including preserving agent sessions, working tree state, and gitignored files (like `.env` files or build artifacts).
-
-* I need the work to continue even if I close my laptop to transition locations.
+After a couple of months with raw Claude Code, it became clear what I was missing:
 
 * The agents need to be running on Linux. Agentic coding is essentially impossible on Windows, as the agents are heavily trained on Bash and other Unix tools. Although some pretend to have PowerShell support, they invariably trip over themselves on quoting issues, UTF-8 support gaps, etc.
 
-* I want to be able to run multiple parallel workstreams on the same project, without the agents stepping on each other's toes.
+* I want to be able to work from either my desktop or laptop, with seamless handoff of project progress, including preserving agent sessions, working tree state, and gitignored files (like `.env` files or build artifacts).
 
-* I want approval interruptions minimized, ideally all the way to `--dangerously-skip-permissions` / `--yolo` modes, so that I can run parallel workstreams and step away from the computer. (Spoiler: this means a disposable VM.)
+* I want the work to continue even if I close my laptop to transition locations.
+
+* I want various user-global settings (e.g., `AGENTS.md`, skills, harness configurations) to be available no matter where I work, and backed up and version-controlled.
 
 * I want to be able to review the agents' current work in Visual Studio Code, not just in their harness UI or as part of a GitHub pull request checkpoint.
 
 * I want the agents to be able to stand up development servers reflecting their current work for me to poke at. These servers, in some cases, need to be [secure contexts](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Secure_Contexts), i.e., `https:` or `http://localhost`. Ideally, only I should be able to access them.
 
-* I want to ensure various user-global settings (e.g., `AGENTS.md`, skills, harness configurations) are available no matter where I work, and backed up and version-controlled.
+* I want to be able to run multiple parallel workstreams on the same project, without the agents stepping on each other's toes.
+
+* I want approval interruptions minimized, ideally all the way to `--dangerously-skip-permissions` / `--yolo` modes, so that I can run parallel workstreams and step away from the computer. (Spoiler: this means a disposable VM.)
 
 None of these requirements are that hard, and several of them synergize. It's just a matter of finding and stitching together all the right tools, with a minimum of fuss. I'll outline my setup below, although not as a step-by-step guide. Since you have agents now, you can ask them to do the fiddly parts.
 
 ## The key ingredients
 
 _**Summary**: The biggest unlocks are using [Tailscale](https://tailscale.com/) and a dedicated Linux VM running on my always-on home desktop. If you combine this with various features of the [ChatGPT desktop app](https://openai.com/codex/) (formerly known as Codex), you've basically got it. Some extra goodies come from using [Portless](https://portless.sh/) and [chezmoi](https://www.chezmoi.io/)._
+
+<figure>
+  <img src="/images/agentic-coding-setup-topology.svg" width="976" height="640" alt="Diagram: my desktop, laptop, and phone connect through a Tailscale tailnet to the agents-base VM, where Claude Code and Codex CLI run agents in parallel Git worktrees, each with its own dev server exposed through the portless proxy; the VM pushes to GitHub.">
+  <figcaption>The whole setup, as diagrammed by Claude Fable 5.</figcaption>
+</figure>
 
 ### The VM and Tailscale
 
@@ -48,7 +53,7 @@ Tailscale is a wonderful piece of software which I had not known about until thi
 
 (Also, it's free! They have a neat article [explaining why it stays free](https://tailscale.com/blog/free-plan).)
 
-So immediately after setting up the VM, install Tailscale on it and on all your other machines. Then you can SSH in and set up your dev environment by installing all the usual tools. Or, install Claude Code / Codex CLI and ask them to install anything they anticipate needing.
+So immediately after setting up the VM, install Tailscale on it and on all your other machines. Then you can SSH in and set up your dev environment by installing the usual tools. Or, install Claude Code / Codex CLI and ask them to install anything they anticipate needing.
 
 My Tailscale configuration is close to stock, but I have made the following customizations:
 
@@ -60,7 +65,7 @@ My Tailscale configuration is close to stock, but I have made the following cust
 
 ### The agent harnesses and clients
 
-Next, we need to get the agent harnesses installed and configured on both the VM and the client machines. On the server, this means [Claude Code](https://code.claude.com/docs/en/quickstart) and [Codex CLI](https://learn.chatgpt.com/docs/codex/cli). (Let's face it, nothing else is at the frontier.)
+Next, we need to get the agent harnesses installed and configured on both the VM and the client machines. On the VM, this means [Claude Code](https://code.claude.com/docs/en/quickstart) and [Codex CLI](https://learn.chatgpt.com/docs/codex/cli). (Let's face it, nothing else is at the frontier.)
 
 The client is where it gets more interesting. Back when I was still addicted to Claude Code, I spent some time using it directly over SSH, and then introducing [tmux](https://github.com/tmux/tmux/wiki) to keep the sessions running in the background even after my SSH session disconnected (e.g., because I closed my laptop lid). But I found this quite clunky. tmux required a good amount of fiddling before I got acceptable behavior for things like scrolling and window resizing, and even then it would often glitch in strange ways, e.g., trashing my client terminal after disconnection, or behaving poorly when both my laptop and desktop were trying to tmux into the same Claude Code session.
 
@@ -68,7 +73,7 @@ Fortunately, there is a better solution: the desktop [Claude](https://claude.com
 
 The real winner here is the ChatGPT app. Its SSH support is extremely smooth. It has a native understanding that you might be working either locally or remotely, e.g., in how it partitions its Settings screen. It handles disconnections gracefully. The only suboptimal part is that the list of projects and sessions doesn't sync perfectly between multiple clients accessing the same remote VM, but I can usually get them to sync with some jiggling, e.g., starting a new remote session in the right folder will cause the rest to appear in the sidebar.
 
-The Claude app is much less pleasant, unfortunately. I can never figure out whether it's trying to work over SSH, or over their internet-based [Remote Control](https://code.claude.com/docs/en/remote-control) protocol, or some combination. Sessions do not synchronize at all, so if you want session handoff, you need to revert to the tmux approach. Similarly, even remote sessions, if initiated from the desktop app, die in a storm of failures if you close the desktop client. There's no native grouping by folder, so you have to manually create "projects" in the sidebar and move your sessions into them. Overall, it feels like the Claude client teams are focused on Claude Code (the CLI), and are treating the desktop app as something for non-coders. But, when I posted this to X, [an Anthropic engineer said that's not the case](https://x.com/amorriscode/status/2064982008716263832), so hopefully it will improve over time.
+The Claude app is much less pleasant, unfortunately. I can never figure out whether it's trying to work over SSH, or over their internet-based [Remote Control](https://code.claude.com/docs/en/remote-control) protocol, or some combination. Sessions do not synchronize at all, so if you want session handoff, you need to revert to the tmux approach. Similarly, even remote sessions, if initiated from the desktop app, die in a storm of failures if you close the desktop client. There's no native grouping by filesystem folder, so you have to manually create "projects" in the sidebar and move your sessions into them. Overall, it feels like the Claude client teams are focused on Claude Code (the CLI), and are treating the desktop app as something for non-coders. But, when I posted this to X, [an Anthropic engineer said that's not the case](https://x.com/amorriscode/status/2064982008716263832), so hopefully it will improve over time.
 
 ### Security posture and blast radius
 
@@ -110,9 +115,19 @@ A lot of people express confusion about [Git worktrees](https://humanwhocodes.co
 
 Better yet, both the ChatGPT and Claude desktop apps have built-in support. When starting a new session in a given project, you literally just tick a box, and now that session is in its own worktree!
 
+<figure>
+  <img srcset="/images/agentic-coding-chatgpt-worktree.webp 2x" width="564" height="339" alt="A screenshot of the ChatGPT app's Start in menu, with New remote worktree selected over the Remote and Cloud options. Below, a new session in the domenic.me project has a prompt drafted in the composer.">
+  <figcaption>The ChatGPT app's location selector includes a worktree as an option.</figcaption>
+</figure>
+
+<figure>
+  <img srcset="/images/agentic-coding-claude-worktree.webp 1.5x" width="474" height="141" alt="A screenshot of the Claude app's message composer, showing chips for the agents-base host, the cards project, and the main branch, plus a checked worktree checkbox.">
+  <figcaption>The Claude app's version: tick the worktree box.</figcaption>
+</figure>
+
 One wrinkle here is worktree location. The ChatGPT app's default, of putting all the worktrees in `~/.codex/worktrees/`, works wonderfully. However, the Claude app's default, of putting them _inside the project_ at `.claude/worktrees/`, interacts quite poorly with other software:
 
-* [`node_modules` discovery](https://nodejs.org/api/modules.html#loading-from-node_modules-folders) traverses up the directory tree, so if you've uninstalled a dependency inside `my-project/.claude/worktrees/cleanup/node_modules/`, Node.js will still be able to load the old version from `my-project/node_modules/`.
+* [`node_modules` discovery](https://nodejs.org/api/modules.html#loading-from-node_modules-folders) traverses up the directory tree, so if you've uninstalled a dependency inside `my-project/.claude/worktrees/cleanup/node_modules/`, Node.js-in-the-worktree will still be able to load the old version from `my-project/node_modules/`.
 
 * If you use any command that recurses into child directories, like `deno task --recursive <task-name>`, the command will wander into the Claude worktree too.
 
@@ -128,7 +143,12 @@ To review the code the agents write, I still like being able to pull up their wo
 
 The great thing about VS Code is that it has a [robust SSH-based remote development system](https://code.visualstudio.com/docs/remote/ssh) almost built in. Once you have Tailscale SSH installed on both the target VM and your client machine, you just need to add the [Remote - SSH extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) to your client VS Code. You then get a new "Remote-SSH: Connect to Host…" option in your <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> menu that lets you open remote folders basically as if they were local. Even spawning a terminal with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd> will create that terminal on the remote host, which is quite convenient for a quick command or two.
 
-Even better, if you're using the ChatGPT app and working in a remote session, a little "Open in" button with a VS Code icon will appear in the top right corner of each chat, which directly opens a VS Code instance that's connected to the VM and opened to the project folder. This is especially convenient because, per the above, the agent is usually working inside a cryptically named ChatGPT-managed worktree folder. (No such luck for Claude, but, you can poke around in the app until it tells you the name of your current worktree folder, and then copy that into the VS Code <kbd>Ctrl</kbd>+<kbd>K</kbd>,<kbd>O</kbd> "Open Folder" menu.)
+Even better, if you're using the ChatGPT app and working in a remote session, a little button with a VS Code icon will appear in the top right corner of each chat, which directly opens a VS Code instance that's connected to the VM and opened to the project folder. This is especially convenient because, per the above, the agent is usually working inside a cryptically named ChatGPT-managed worktree folder. (No such luck for Claude, but, you can poke around in the app until it tells you the name of your current worktree folder, and then copy that into the VS Code <kbd>Ctrl</kbd>+<kbd>K</kbd>,<kbd>O</kbd> "Open Folder" menu.)
+
+<figure>
+  <img srcset="/images/agentic-coding-chatgpt-open-vscode.webp 1.5x" width="644" height="551" alt="A screenshot of a ChatGPT app session, with a VS Code icon button in the top right corner. The agent reports having pushed a commit and verified that the publishing workflow succeeded.">
+  <figcaption>The VS Code button, top right, opens the session's worktree over SSH.</figcaption>
+</figure>
 
 ### Dev servers
 
@@ -190,6 +210,11 @@ So this sort of workflow has become a reality for me:
 
 1. After a few minutes of GitHub Actions or the Netlify deploy pipeline, the fix has made it to the live site, usually before I make it to my home train station.
 
+<figure>
+  <img srcset="/images/agentic-coding-from-phone.webp 3x" width="360" height="788" alt="A screenshot of the ChatGPT mobile app, in a session on the agents-base machine. The agent reports validating a mobile layout fix, and after being told to package it all up into a PR, opens a pull request on GitHub.">
+  <figcaption>Fixing a mobile bug, from mobile.</figcaption>
+</figure>
+
 The future! We are living in it!
 
 ## Recap and remaining gaps
@@ -214,10 +239,10 @@ Well, as mentioned [above](#security-posture-and-blast-radius), this would all b
 
 On the user experience side, I generally don't like how the "session" model in each coding harness is so strongly tied to the folder path on the VM. If you rename or move a project folder, the ChatGPT and Claude apps get confused, and generally lose all your session history in that folder. You can fix this by asking the agent to find the hidden references and update them, but it's a pain, and needs to be done on both client and host machines.
 
-Similarly, I'd like some way to back up my session histories somewhere durable (like a private GitHub repo). At the very least, I suspect they'll be good for some nostalgia in a few years. But sometimes the session transcripts are the only record of certain design decisions, or of abandoned approaches that explain why the code looks the way it does.
+Similarly, I'd like some way to back up my session histories somewhere durable (like a private GitHub repository). At the very least, I suspect they'll be good for some nostalgia in a few years. But sometimes the session transcripts are the only record of certain design decisions, or of abandoned approaches that explain why the code looks the way it does.
 
 All of the above are fixable with a little bit of work on my end, e.g., by writing small utilities and wrappers. But I suspect they won't be truly seamless until they're built into the harness apps. So, I hope the ChatGPT app team works on them. And that the Claude app team first gets their shit together generally, and then works on these features.
 
-So that's my setup. A disposable VM, a magic VPN, two frontier harnesses, and a few extra tools. If you're reading this more than six months from now, I assume it's all quaintly obsolete. But that's what time capsules are for.
+That's my setup. A disposable VM, a magic VPN, two frontier harnesses, and a few extra tools. If you're reading this more than six months from now, I assume it's all quaintly obsolete. But that's what time capsules are for.
 
 What a time to be alive!

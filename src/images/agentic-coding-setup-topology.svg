@@ -1,0 +1,211 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 0 976 640" role="img" aria-labelledby="topo-title">
+  <title id="topo-title">Topology of my agentic coding setup: my machines connect through a Tailscale tailnet to a disposable VM running agent harnesses in parallel Git worktrees, each with its own dev server; the VM pushes to GitHub.</title>
+  <style>
+    :root {
+      --ink: rgb(20 20 20);
+      --ink-2: rgb(100 100 100);
+      --line: rgb(160 160 160);
+      --halo: rgb(255 255 255);
+      --vm-fill: rgb(0 0 0 / 0.025);
+      --vm-stroke: rgb(190 190 190);
+      --chip-stroke: rgb(175 175 175);
+      --c-dev: #2a78d6;
+      --c-dev-f: rgb(42 120 214 / 0.08);
+      --c-net: #1baf7a;
+      --c-net-f: rgb(27 175 122 / 0.10);
+      --c-agent: #eb6834;
+      --c-agent-f: rgb(235 104 52 / 0.08);
+      --shadow-op: 0.10;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: rgb(235 235 235);
+        --ink-2: rgb(155 155 155);
+        --line: rgb(125 125 125);
+        --halo: rgb(20 20 20);
+        --vm-fill: rgb(255 255 255 / 0.04);
+        --vm-stroke: rgb(95 95 95);
+        --chip-stroke: rgb(110 110 110);
+        --c-dev: #3987e5;
+        --c-dev-f: rgb(57 135 229 / 0.16);
+        --c-net: #199e70;
+        --c-net-f: rgb(25 158 112 / 0.16);
+        --c-agent: #d95926;
+        --c-agent-f: rgb(217 89 38 / 0.15);
+        --shadow-op: 0;
+      }
+    }
+    text {
+      font-family: 'Helvetica Neue', system-ui, sans-serif;
+      fill: var(--ink);
+    }
+    .mono { font-family: ui-monospace, 'Cascadia Mono', Consolas, Menlo, monospace; }
+    .sub { fill: var(--ink-2); }
+    .caps { fill: var(--ink-2); font-size: 10px; letter-spacing: 1.5px; }
+    .edge-label { paint-order: stroke fill; stroke: var(--halo); stroke-width: 3px; stroke-linejoin: round; }
+    .conn { stroke: var(--line); stroke-width: 1.5; fill: none; }
+    .dashed { stroke-dasharray: 5 4; }
+  </style>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/>
+    </marker>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2.5" flood-color="black" flood-opacity="var(--shadow-op)"/>
+    </filter>
+  </defs>
+
+  <!-- ============ my machines ============ -->
+  <text x="20" y="46" class="caps">MY MACHINES</text>
+
+  <!-- desktop -->
+  <g filter="url(#soft)">
+    <rect x="20" y="60" width="180" height="110" rx="8" fill="var(--c-dev-f)" stroke="var(--c-dev)" stroke-width="1.5"/>
+  </g>
+  <g stroke="var(--c-dev)" stroke-width="1.5" fill="none">
+    <rect x="36" y="82" width="26" height="17" rx="2"/>
+    <path d="M45,99 v5 h8 v-5 M41,106 h16"/>
+  </g>
+  <text x="72" y="92" class="mono" font-size="12.5" font-weight="bold">Domenic-Desktop</text>
+  <text x="72" y="108" font-size="11" class="sub">Windows · always on</text>
+  <rect x="32" y="132" width="156" height="26" rx="5" fill="none" stroke="var(--ink-2)" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="110" y="149" font-size="10.5" class="sub" text-anchor="middle">Hyper-V — hosts the VM</text>
+
+  <!-- laptop -->
+  <g filter="url(#soft)">
+    <rect x="20" y="210" width="180" height="90" rx="8" fill="var(--c-dev-f)" stroke="var(--c-dev)" stroke-width="1.5"/>
+  </g>
+  <g stroke="var(--c-dev)" stroke-width="1.5" fill="none">
+    <rect x="38" y="240" width="24" height="15" rx="2"/>
+    <path d="M34,258 h32 l-4,5 h-24 z"/>
+  </g>
+  <text x="72" y="250" class="mono" font-size="12.5" font-weight="bold">SurfacePro11</text>
+  <text x="72" y="266" font-size="11" class="sub">Windows laptop</text>
+
+  <!-- phone -->
+  <g filter="url(#soft)">
+    <rect x="20" y="340" width="180" height="90" rx="8" fill="var(--c-dev-f)" stroke="var(--c-dev)" stroke-width="1.5"/>
+  </g>
+  <g stroke="var(--c-dev)" stroke-width="1.5" fill="none">
+    <rect x="40" y="368" width="14" height="24" rx="3"/>
+    <path d="M45,388 h4"/>
+  </g>
+  <text x="72" y="380" font-size="12.5" font-weight="bold">My phone</text>
+  <text x="72" y="396" font-size="11" class="sub">on the train</text>
+
+  <!-- device → tailnet connectors -->
+  <line x1="200" y1="115" x2="244" y2="115" class="conn"/>
+  <line x1="200" y1="255" x2="244" y2="255" class="conn"/>
+  <line x1="200" y1="385" x2="244" y2="385" class="conn"/>
+
+  <!-- ============ tailnet band ============ -->
+  <rect x="248" y="40" width="100" height="420" rx="50" fill="var(--c-net-f)" stroke="var(--c-net)" stroke-width="1.5"/>
+  <text x="298" y="78" font-size="10" class="sub" text-anchor="middle">from anywhere</text>
+  <text x="298" y="242" font-size="14" font-weight="bold" text-anchor="middle">Tailscale</text>
+  <text x="298" y="260" font-size="12" class="sub" text-anchor="middle">tailnet</text>
+  <!-- lock -->
+  <g stroke="var(--c-net)" stroke-width="1.5" fill="none">
+    <rect x="291" y="412" width="14" height="10" rx="2"/>
+    <path d="M294,412 v-4 a4,4 0 0 1 8,0 v4"/>
+  </g>
+  <text x="298" y="440" font-size="10" class="sub" text-anchor="middle">only my devices</text>
+
+  <!-- tailnet → VM edges -->
+  <line x1="348" y1="101" x2="426" y2="101" class="conn" marker-end="url(#arr)"/>
+  <text x="387" y="93" font-size="11" font-weight="bold" text-anchor="middle" class="edge-label">SSH</text>
+  <text x="387" y="119" font-size="10.5" text-anchor="middle" class="sub edge-label">sessions &amp; control</text>
+
+  <line x1="348" y1="429" x2="426" y2="429" class="conn" marker-end="url(#arr)"/>
+  <text x="387" y="421" font-size="11" font-weight="bold" text-anchor="middle" class="edge-label">HTTPS <tspan class="mono" font-weight="normal">:8443+</tspan></text>
+  <text x="387" y="447" font-size="10.5" text-anchor="middle" class="sub edge-label">preview servers</text>
+
+  <!-- ============ the VM ============ -->
+  <g filter="url(#soft)">
+    <rect x="430" y="40" width="510" height="440" rx="10" fill="var(--vm-fill)" stroke="var(--vm-stroke)" stroke-width="1.5"/>
+  </g>
+  <text x="450" y="70" class="mono" font-size="16" font-weight="bold">agents-base</text>
+  <text x="560" y="70" font-size="12" class="sub">· Ubuntu Server VM · disposable</text>
+
+  <!-- harnesses -->
+  <rect x="450" y="84" width="112" height="34" rx="7" fill="none" stroke="var(--c-agent)" stroke-width="1.5"/>
+  <text x="506" y="105" font-size="12" text-anchor="middle">Claude Code</text>
+  <rect x="574" y="84" width="100" height="34" rx="7" fill="none" stroke="var(--c-agent)" stroke-width="1.5"/>
+  <text x="624" y="105" font-size="12" text-anchor="middle">Codex CLI</text>
+  <rect x="686" y="84" width="176" height="34" rx="7" fill="none" stroke="var(--ink-2)" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="774" y="105" class="mono sub" font-size="11" text-anchor="middle">--yolo · zero approvals</text>
+
+  <!-- project container -->
+  <rect x="450" y="140" width="470" height="250" rx="8" fill="none" stroke="var(--chip-stroke)" stroke-width="1" stroke-dasharray="6 4"/>
+  <text x="462" y="162" font-size="11" class="sub">my-project — one repo, parallel worktrees</text>
+
+  <!-- main bar -->
+  <rect x="462" y="174" width="446" height="30" rx="6" fill="none" stroke="var(--chip-stroke)" stroke-width="1"/>
+  <text x="474" y="193" class="mono" font-size="12">main</text>
+  <text x="520" y="193" font-size="11" class="sub">— where my reviews land</text>
+
+  <!-- worktree lane A -->
+  <rect x="462" y="216" width="446" height="64" rx="7" fill="var(--c-agent-f)" stroke="var(--c-agent)" stroke-width="1.5"/>
+  <text x="474" y="252" class="mono" font-size="13">fix-login-bug</text>
+  <!-- robot -->
+  <g stroke="var(--c-agent)" stroke-width="1.5" fill="none">
+    <rect x="618" y="240" width="18" height="14" rx="3"/>
+    <path d="M627,240 v-5"/>
+    <circle cx="627" cy="233" r="1.5"/>
+  </g>
+  <circle cx="623" cy="247" r="1.4" fill="var(--c-agent)" stroke="none"/>
+  <circle cx="631" cy="247" r="1.4" fill="var(--c-agent)" stroke="none"/>
+  <text x="644" y="252" font-size="11" class="sub">agent</text>
+  <line x1="690" y1="248" x2="766" y2="248" class="conn" marker-end="url(#arr)"/>
+  <rect x="775" y="232" width="118" height="32" rx="7" fill="var(--c-net-f)" stroke="var(--c-net)" stroke-width="1.5"/>
+  <text x="834" y="252" font-size="11" text-anchor="middle">dev server <tspan class="mono" font-size="12">:8443</tspan></text>
+
+  <!-- worktree lane B -->
+  <rect x="462" y="300" width="446" height="64" rx="7" fill="var(--c-agent-f)" stroke="var(--c-agent)" stroke-width="1.5"/>
+  <text x="474" y="336" class="mono" font-size="13">snazzy-redesign</text>
+  <g stroke="var(--c-agent)" stroke-width="1.5" fill="none">
+    <rect x="618" y="324" width="18" height="14" rx="3"/>
+    <path d="M627,324 v-5"/>
+    <circle cx="627" cy="317" r="1.5"/>
+  </g>
+  <circle cx="623" cy="331" r="1.4" fill="var(--c-agent)" stroke="none"/>
+  <circle cx="631" cy="331" r="1.4" fill="var(--c-agent)" stroke="none"/>
+  <text x="644" y="336" font-size="11" class="sub">agent</text>
+  <line x1="690" y1="332" x2="766" y2="332" class="conn" marker-end="url(#arr)"/>
+  <rect x="775" y="316" width="118" height="32" rx="7" fill="var(--c-net-f)" stroke="var(--c-net)" stroke-width="1.5"/>
+  <text x="834" y="336" font-size="11" text-anchor="middle">dev server <tspan class="mono" font-size="12">:8444</tspan></text>
+
+  <!-- portless -->
+  <rect x="450" y="412" width="130" height="34" rx="7" fill="var(--c-net-f)" stroke="var(--c-net)" stroke-width="1.5"/>
+  <text x="515" y="433" font-size="12" text-anchor="middle">portless proxy</text>
+  <text x="596" y="433" font-size="11" class="sub">gives each dev server its own tailnet URL + port</text>
+
+  <!-- VM → GitHub -->
+  <line x1="795" y1="480" x2="795" y2="556" class="conn" marker-end="url(#arr)"/>
+  <text x="806" y="523" font-size="10.5" class="sub edge-label">push early &amp; often</text>
+
+  <!-- GitHub -->
+  <g filter="url(#soft)">
+    <rect x="650" y="560" width="290" height="56" rx="8" fill="none" stroke="var(--vm-stroke)" stroke-width="1.5"/>
+  </g>
+  <g transform="translate(667,575) scale(1.625)">
+    <path fill="var(--ink)" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+  </g>
+  <text x="702" y="586" font-size="13" font-weight="bold">GitHub</text>
+  <text x="702" y="602" font-size="10.5" class="sub">repos · PRs · Actions CI — the save point</text>
+
+  <!-- hosts edge -->
+  <path d="M188,146 H214 V20 H685 V36" class="conn dashed" marker-end="url(#arr)" stroke-width="1.2"/>
+  <text x="450" y="14" font-size="10.5" class="sub edge-label">hosts (Hyper-V)</text>
+
+  <!-- chezmoi -->
+  <g filter="url(#soft)">
+    <rect x="20" y="560" width="270" height="56" rx="8" fill="none" stroke="var(--vm-stroke)" stroke-width="1.5"/>
+  </g>
+  <text x="36" y="584" class="mono" font-size="13" font-weight="bold">chezmoi</text>
+  <text x="36" y="602" font-size="10.5" class="sub">AGENTS.md · skills · configs</text>
+  <path d="M20,588 H0 V115 H18" class="conn dashed" marker-end="url(#arr)" stroke-width="1.2"/>
+  <path d="M0,255 H18" class="conn dashed" marker-end="url(#arr)" stroke-width="1.2"/>
+  <path d="M500,588 V486" class="conn dashed" marker-end="url(#arr)" stroke-width="1.2"/>
+  <line x1="290" y1="588" x2="644" y2="588" class="conn dashed" marker-start="url(#arr)" marker-end="url(#arr)" stroke-width="1.2"/>
+  <text x="467" y="580" font-size="10.5" class="sub edge-label">via a private dotfiles repo</text>
+</svg>
