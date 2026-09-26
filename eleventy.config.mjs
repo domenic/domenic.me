@@ -69,6 +69,7 @@ export default async (eleventyConfig) => {
   eleventyConfig.addPassthroughCopy('src/css');
   eleventyConfig.addPassthroughCopy('src/js');
   eleventyConfig.addPassthroughCopy('src/images');
+  eleventyConfig.addPassthroughCopy('src/we-didnt-start-the-scaling/assets');
   eleventyConfig.addPassthroughCopy({ 'node_modules/prismjs/themes/prism.css': 'css/prism.css' });
   eleventyConfig.addPassthroughCopy({ 'node_modules/prismjs/themes/prism-dark.css': 'css/prism-dark.css' });
 

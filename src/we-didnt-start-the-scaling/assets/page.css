@@ -1,0 +1,4140 @@
+/* We Didn't Start the Scaling: the annotated zine. */
+
+:root {
+  --paper: rgb(242 234 216);
+  --paper-2: rgb(233 223 200);
+  --ink: rgb(28 26 31);
+  --ink-soft: rgb(28 26 31 / 72%);
+  --pink: rgb(255 79 163);
+  --blue: rgb(44 111 207);
+  --yellow: rgb(255 216 58);
+  --red: rgb(232 65 47);
+  --mint: rgb(168 230 207);
+  --sky: rgb(159 211 242);
+  --kraft: rgb(201 167 124);
+  --strip: rgb(255 253 246);
+  --highlight: rgb(255 228 92);
+  --shadow: rgb(28 26 31 / 30%);
+  --dot: rgb(28 26 31 / 9%);
+  --note-a: rgb(255 236 140);
+  --note-b: rgb(255 196 224);
+  --note-c: rgb(196 238 222);
+  --link: rgb(34 88 186);
+  --tape: rgb(236 222 180 / 80%);
+
+  --display: "Anton", "Impact", sans-serif;
+  --heavy: "Archivo Black", "Arial Black", sans-serif;
+  --type: "Courier Prime", "Courier New", monospace;
+  --stamp: "Rubik Mono One", "Arial Black", sans-serif;
+  --hand: "Permanent Marker", cursive;
+
+  --side-w: clamp(340px, 31vw, 520px);
+  --cover-pad: clamp(1.5rem, 5vw, 3.5rem);
+  --bottom-dock-h: 0px;
+
+  @media (prefers-color-scheme: dark) {
+    --paper: rgb(30 27 36);
+    --paper-2: rgb(40 36 47);
+    --ink: rgb(241 234 219);
+    --ink-soft: rgb(241 234 219 / 72%);
+    --strip: rgb(52 47 60);
+    --highlight: rgb(255 216 58);
+    --shadow: rgb(0 0 0 / 55%);
+    --dot: rgb(255 255 255 / 6%);
+    --note-a: rgb(92 80 34);
+    --note-b: rgb(94 42 70);
+    --note-c: rgb(36 78 66);
+    --link: rgb(150 200 255);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-padding-block: 20vh calc(var(--bottom-dock-h) + 10vh); }
+
+body {
+  margin: 0;
+  padding-bottom: var(--bottom-dock-h);
+  color: var(--ink);
+  background-color: var(--paper);
+  background-image: radial-gradient(var(--dot) 1.3px, transparent 1.7px);
+  background-size: 13px 13px;
+  font: 18px/1.5 var(--type);
+  overflow-x: clip;
+}
+
+/* photocopy grain over everything */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  opacity: .18;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  @media (prefers-color-scheme: dark) { mix-blend-mode: screen; opacity: .08; }
+}
+
+a { color: var(--link); text-decoration-thickness: 2px; text-underline-offset: 2px; }
+
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.icon { display: block; width: 1em; height: 1em; fill: currentColor; }
+
+/* Copy that belongs to one theme (the masthead's title, the track's length in the dek) shows only under that theme. */
+[data-for] { display: none; }
+:where(:root[data-theme="pop-punk"]) [data-for="pop-punk"],
+:where(:root[data-theme="k-pop"]) [data-for="k-pop"],
+:where(:root[data-theme="piano-rock"]) [data-for="piano-rock"],
+:where(:root[data-theme="indie-folk"]) [data-for="indie-folk"],
+:where(:root[data-theme="anisong"]) [data-for="anisong"],
+:where(:root[data-theme="eurodance"]) [data-for="eurodance"] { display: revert; }
+
+/* a theme's decorative layer (sparkles, stars, petals), behind the content; off in the zine */
+.fx { display: none; position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+
+/* switching versions cross-fades the whole page into the new theme (see `setTheme()` in page.mjs) */
+::view-transition { pointer-events: none; }
+::view-transition-group(root) { animation-duration: .55s; }
+
+/* ---------- masthead ---------- */
+.masthead {
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  align-items: center;
+  padding: .45rem 1rem;
+  background: var(--ink);
+  color: var(--paper);
+  font: 13px/1.3 "Special Elite", var(--type);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+
+  a { color: inherit; text-decoration: none; }
+  .home:hover { text-decoration: underline; }
+  @media (max-width: 640px) { .issue { display: none; } }
+}
+
+main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
+
+/* ---------- ransom lettering ---------- */
+.ransom { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; row-gap: .12em; }
+.ransom .word { display: inline-flex; gap: .06em; white-space: nowrap; }
+.ransom .glyph {
+  display: inline-block;
+  min-width: .62em;
+  padding: .02em .13em .06em;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  text-align: center;
+  line-height: 1.05;
+  transform: translateY(var(--dy)) rotate(var(--rot)) scale(var(--s));
+  box-shadow: .06em .08em 0 var(--shadow);
+  clip-path: polygon(2% 4%, 30% 0, 62% 3%, 100% 1%, 97% 38%, 100% 70%, 96% 100%, 60% 97%, 24% 100%, 0 96%, 3% 60%, 0 28%);
+}
+.ransom .gap { display: inline-block; width: .38em; }
+
+/* ---------- cover ---------- */
+.cover {
+  padding: var(--cover-pad) 0 2rem;
+  text-align: center;
+
+  h1 {
+    margin: 0 auto .6rem;
+    /* small enough that "WE DIDN'T START" stays on one line down to phone widths */
+    font-size: clamp(1.7rem, 7vw, 5.4rem);
+    font-weight: normal;
+    display: grid;
+    gap: .12em;
+    .line-2 { font-size: 1.18em; }
+  }
+}
+.dek {
+  max-width: 44rem;
+  margin: 1.2rem auto 1.8rem;
+  font-size: 1.05rem;
+}
+.tape {
+  display: inline-block;
+  padding: .1rem .7rem;
+  background: var(--tape);
+  color: rgb(28 26 31);
+  rotate: -1.2deg;
+  font-family: var(--hand);
+  font-size: 1.15em;
+  box-shadow: 0 1px 0 var(--shadow);
+}
+
+/* ---------- player ---------- */
+.player-slot { position: relative; }
+.player-slot.empty { min-height: var(--slot-h, 0); }
+
+.player {
+  container-type: inline-size;
+  margin: 0 auto;
+  max-width: 960px;
+  background: var(--strip);
+  padding: 12px 12px 8px;
+  box-shadow: 8px 10px 0 var(--shadow);
+  position: relative;
+  text-align: left;
+  /* no rotation here: a rotated canvas gets resampled, which blurs the live-drawn video */
+
+  /* masking tape on the corners */
+  &::before, &::after {
+    content: "";
+    position: absolute;
+    width: 120px;
+    height: 32px;
+    background: var(--tape);
+    top: -14px;
+    z-index: 2;
+  }
+  &::before { left: -30px; rotate: -24deg; }
+  &::after { right: -30px; rotate: 22deg; }
+  /* until the player has room beside it, keep the tape on the page (anything past its edge would widen the page on phones and tablets) */
+  @media (max-width: 1023px) {
+    &::before, &::after { width: 90px; }
+    &::before { left: -10px; }
+    &::after { right: -10px; }
+  }
+}
+
+.stage {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: rgb(28 26 31);
+  overflow: hidden;
+
+  .screen { position: absolute; inset: 0; }
+  canvas, .poster {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .poster { object-fit: cover; }
+  canvas { opacity: 0; transition: opacity .3s; }
+}
+.player[data-drawn] .stage canvas { opacity: 1; }
+/* before the first play, the selected version's title card stays up */
+.player[data-state="idle"] .stage canvas { opacity: 0; }
+.player[data-style="indie-folk"] .poster { image-rendering: pixelated; }
+/* while a track's own video is still downloading */
+.player[data-loading]:not([data-state="idle"]) .screen::after {
+  content: "Loading this track’s video…";
+  position: absolute;
+  left: .8rem;
+  bottom: .8rem;
+  padding: .25rem .6rem;
+  background: rgb(28 26 31 / 80%);
+  color: rgb(255 253 246);
+  font: .8rem/1.3 var(--type);
+}
+/* when the track's audio doesn't load, a message and a Retry button take the Play button's place */
+.load-error {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: .5em;
+  padding: .25rem;
+  background: rgb(28 26 31 / 75%);
+  color: rgb(255 253 246);
+  font: clamp(12px, 2.4cqi, 18px)/1.3 var(--type);
+  text-align: center;
+  &[hidden] { display: none; }
+  p { margin: 0; }
+  .retry {
+    padding: .2em .9em;
+    border: 2px solid rgb(28 26 31);
+    background: rgb(255 216 58);
+    color: rgb(28 26 31);
+    font: inherit;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 3px 4px 0 rgb(0 0 0 / 45%);
+    &:focus-visible { outline: 3px solid white; outline-offset: 2px; }
+  }
+}
+.player[data-audio="failed"] .big-play { display: none; }
+
+/* In fullscreen the screen fills the display, and the video and its poster sit in the middle at 16:9, letterboxed on black. The
+   themes' frames stay behind on the page with the stage. */
+.player[data-fullscreen] .screen {
+  background: black;
+  canvas, .poster {
+    inset: 0;
+    margin: auto;
+    width: min(100%, 100vh * 16 / 9);
+    height: min(100%, 100vw * 9 / 16);
+  }
+  &[data-idle] { cursor: none; }
+}
+.screen-exit {
+  display: none;
+  position: absolute;
+  z-index: 3;
+  top: 16px;
+  right: 16px;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 55%);
+  color: white;
+  font-size: 22px;
+  cursor: pointer;
+  transition: opacity .3s;
+  .icon path { fill: none; stroke: currentColor; stroke-width: 1.3; }
+  &:hover { background: rgb(0 0 0 / 80%); }
+  &:focus-visible { outline: 3px solid white; outline-offset: 2px; }
+  .player[data-fullscreen] & { display: grid; }
+  .screen[data-idle] &:not(:focus-visible) { opacity: 0; }
+}
+
+/* The big Play button grows on hover by animating its size, not a transform: an animated scale made Chrome raster the rotated
+   button in GPU tiles, and at 2x density the seams between tiles showed as a brief cross through it. */
+@property --grow { syntax: "<number>"; inherits: true; initial-value: 1; }
+.big-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  width: calc(clamp(88px, 16cqi, 150px) * var(--grow));
+  aspect-ratio: 1;
+  border: 5px solid rgb(28 26 31);
+  border-radius: 50%;
+  background: var(--yellow);
+  color: rgb(28 26 31);
+  font-family: var(--display);
+  cursor: pointer;
+  box-shadow: 6px 8px 0 rgb(0 0 0 / 45%);
+  transition: --grow .15s;
+  rotate: -6deg;
+
+  &:hover, &:focus-visible { --grow: 1.07; }
+  .big-play-icon { font-size: calc(clamp(30px, 5.5cqi, 56px) * var(--grow)); }
+  .big-play-label { font-size: calc(clamp(14px, 2.2cqi, 22px) * var(--grow)); letter-spacing: .08em; text-transform: uppercase; line-height: 1; }
+}
+.player:not([data-state="idle"]) .big-play { display: none; }
+
+.deck {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .45rem .8rem;
+  padding: .55rem .2rem .2rem;
+  font: 14px/1.2 "Space Mono", var(--type);
+
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: 2px 3px 0 var(--shadow);
+  }
+  .deck-play {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 36px;
+    padding: 0;
+    font-size: 20px;
+    .icon-pause { display: none; }
+  }
+  .time { font-variant-numeric: tabular-nums; min-width: 8.5ch; }
+  .version select {
+    font: inherit;
+    border: 2px solid var(--ink);
+    background: var(--yellow);
+    color: rgb(28 26 31);
+    padding: .25rem .3rem;
+    box-shadow: 2px 3px 0 var(--shadow);
+    max-width: 16rem;
+  }
+  /* the two ways to move around the page: follow the song, or go back to the top */
+  .modes { display: flex; align-items: center; gap: .4rem; }
+  .undock { display: none; width: 36px; height: 32px; padding: 0; }
+  /* the label reads "Following" while pressed, in the room "Follow the lyrics" takes, so pressing it never reflows the deck */
+  .follow {
+    display: grid;
+    place-items: center;
+    width: 9rem;
+    height: 32px;
+    padding: 0 .4rem;
+    font-size: 12px;
+    white-space: nowrap;
+    .follow-label { display: grid; justify-items: center; }
+    .follow-off, .follow-on { grid-area: 1 / 1; }
+    .follow-on { visibility: hidden; }
+    &[aria-pressed="true"] {
+      background: var(--ink);
+      color: var(--paper);
+      .follow-off { visibility: hidden; }
+      .follow-on { visibility: visible; }
+    }
+  }
+  .fullscreen {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 36px;
+    padding: 0;
+    margin-left: auto;
+    font-size: 18px;
+    .icon path { fill: none; stroke: currentColor; stroke-width: 1.4; }
+    .icon-fs-exit { display: none; }
+    &[aria-pressed="true"] {
+      background: var(--ink);
+      color: var(--paper);
+      .icon-fs-enter { display: none; }
+      .icon-fs-exit { display: block; }
+    }
+    &[hidden] { display: none; }
+  }
+}
+.player[data-state="playing"] .deck-play {
+  .icon-play { display: none; }
+  .icon-pause { display: block; }
+}
+
+/* checkboxes: one hand-drawn box style */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  cursor: pointer;
+  white-space: nowrap;
+  input {
+    appearance: none;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    color: var(--ink);
+    font: 12px/1 var(--heavy);
+    cursor: pointer;
+    &:checked::before { content: "✓"; }
+    &:focus-visible { outline: 3px solid var(--blue); outline-offset: 1px; }
+  }
+}
+
+.scrub {
+  position: relative;
+  flex: 1 1 14rem;
+  min-width: 10rem;
+  /* in a wide player, long enough that following starts the next row */
+  @container (width >= 700px) { flex-basis: 24rem; }
+  height: 30px;
+
+  input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    margin: 0;
+    background: transparent;
+    appearance: none;
+    cursor: pointer;
+    z-index: 1;
+
+    &::-webkit-slider-runnable-track { height: 10px; background: linear-gradient(to right, var(--red) var(--pct, 0%), var(--paper-2) 0); border: 2px solid var(--ink); }
+    &::-moz-range-track { height: 6px; background: var(--paper-2); border: 2px solid var(--ink); }
+    &::-moz-range-progress { height: 6px; background: var(--red); }
+    &::-webkit-slider-thumb { appearance: none; width: 16px; height: 22px; margin-top: -8px; background: var(--ink); border: 2px solid var(--paper); }
+    &::-moz-range-thumb { width: 12px; height: 18px; background: var(--ink); border: 2px solid var(--paper); border-radius: 0; }
+  }
+  .ticks {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    span {
+      position: absolute;
+      top: 25px;
+      translate: -50% 0;
+      font-size: 9px;
+      color: var(--ink-soft);
+      &::before { content: ""; position: absolute; left: 50%; top: -14px; height: 8px; border-left: 2px solid var(--ink); }
+    }
+  }
+}
+
+/* docked in the side panel (wide screens) */
+.player.docked-side {
+  max-width: none;
+  width: 100%;
+  padding: 8px 8px 4px;
+  &::before { left: -8px; width: 80px; }
+  &::after { right: -8px; width: 80px; }
+  .deck {
+    font-size: 12px;
+    /* row 1: play, time and fullscreen; row 2: scrub; row 3: follow, back to top and the track menu */
+    .fullscreen { order: 1; }
+    .undock { display: grid; place-items: center; }
+    .scrub { flex-basis: 100%; order: 2; }
+    .modes { order: 3; }
+    .version { order: 4; flex: 1 1 8rem; min-width: 0; select { padding: .15rem .25rem; } }
+  }
+}
+
+/* docked as a bottom bar (narrow screens) */
+.bottom-dock {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 40;
+  padding: 0 8px 8px;
+  pointer-events: none;
+  &:empty { display: none; }
+}
+.bottom-dock { container: dock / inline-size; }
+/* The bar is one grid, with the deck's controls as its items. On phones, the video sits beside play, time and fullscreen over
+   following and back to top, and the track menu goes under the video, beside the seek bar; on wider screens the controls make
+   one row over the seek bar. The rows beside the video close up on each other, so that when the video is the taller they sit
+   together in its middle. */
+.player.docked-bottom {
+  pointer-events: auto;
+  max-width: 800px;
+  display: grid;
+  grid-template-columns: min(40%, 220px) auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "stage play  time  fullscreen"
+    "stage modes modes modes"
+    "track scrub scrub scrub";
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px;
+  box-shadow: 0 -2px 0 var(--shadow), 4px 6px 0 var(--shadow);
+  &::before, &::after { display: none; }
+  .stage { grid-area: stage; }
+  .deck { display: contents; font-size: 12px; }
+  .deck-play { grid-area: play; width: 38px; height: 32px; align-self: end; }
+  .time { grid-area: time; min-width: 0; align-self: end; line-height: 32px; }
+  .fullscreen { grid-area: fullscreen; margin-left: 0; align-self: end; }
+  .modes { grid-area: modes; align-self: start; }
+  .undock { display: grid; place-items: center; }
+  .version { grid-area: track; min-width: 0; }
+  .scrub { grid-area: scrub; min-width: 0; height: 22px; .ticks { display: none; } }
+  @container dock (width >= 760px) {
+    grid-template-columns: min(40%, 220px) auto auto auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "stage play  time  modes track fullscreen"
+      "stage scrub scrub scrub scrub scrub";
+    :is(.modes, .version) { align-self: end; }
+    .scrub { align-self: start; }
+  }
+  /* too big for the bar's little video; the bar's own play button is right beside it */
+  .big-play { display: none; }
+}
+
+/* ---------- lyrics ---------- */
+.lyrics { margin-top: 3.5rem; }
+.lyrics-head {
+  text-align: center;
+  margin-bottom: 1.5rem;
+  h2 { font: 2rem/1.1 var(--display); text-transform: uppercase; letter-spacing: .03em; margin: 0 0 .3rem; }
+  p { margin: .2rem auto .6rem; max-width: 42rem; }
+  .all-notes {
+    display: inline-grid;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--link);
+    font: inherit;
+    font-size: .9rem;
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 2px;
+    cursor: pointer;
+    > * { grid-area: 1 / 1; }
+    .all-notes-collapse { visibility: hidden; }
+    &[data-all-open] {
+      .all-notes-unfold { visibility: hidden; }
+      .all-notes-collapse { visibility: visible; }
+    }
+  }
+  .inline-play { display: inline-grid; place-items: center; width: 1.5em; height: 1.5em; vertical-align: -.35em; border: 2px solid var(--ink); border-radius: 50%; font-size: .8em; }
+}
+
+.lyrics-grid {
+  display: grid;
+  gap: 2.5rem;
+  @media (min-width: 1080px) { grid-template-columns: minmax(0, 1fr) var(--side-w); }
+}
+.side {
+  display: none;
+  @media (min-width: 1080px) { display: block; }
+}
+.side-inner {
+  position: sticky;
+  top: 6vh;
+  display: grid;
+  gap: 1.4rem;
+}
+.dock-target:empty { display: none; }
+
+.now-card {
+  padding: 1rem 1.1rem;
+  background: var(--note-a);
+  color: var(--ink);
+  box-shadow: 5px 7px 0 var(--shadow);
+  rotate: .5deg;
+  font-size: .92rem;
+  line-height: 1.45;
+  position: relative;
+  &::before { content: ""; position: absolute; left: 40%; top: -12px; width: 90px; height: 24px; background: var(--tape); rotate: -4deg; }
+  p { margin: 0 0 .5rem; }
+  .side-play {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    font: .9rem var(--heavy);
+    padding: .3rem .8rem;
+    border: 2px solid var(--ink);
+    background: var(--yellow);
+    color: rgb(28 26 31);
+    cursor: pointer;
+    box-shadow: 2px 3px 0 var(--shadow);
+  }
+  .now-kicker { margin: 0 0 .3rem; }
+  .now-stamp:not(:empty) {
+    display: inline-block;
+    padding: .02rem .4rem;
+    border: 2px solid var(--red);
+    color: var(--red);
+    font: .7rem/1.5 var(--stamp);
+    rotate: -2deg;
+  }
+  .now-line { font: 1.15rem/1.25 var(--heavy); margin: 0 0 .5rem; }
+  .now-note p { margin: 0 0 .45rem; }
+  .sources { margin: 0; padding: 0; list-style: none; font-size: .8rem; li::before { content: "→ "; } }
+}
+
+.verse { margin: 3rem 0; &:first-child { margin-top: 0; } }
+.verse-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: .4rem 1.2rem;
+  margin-bottom: 1rem;
+  h3 { margin: 0; font-size: 2.1rem; font-weight: normal; }
+  .era { margin: 0; font-family: var(--heavy); font-size: 1rem; }
+  .era-span {
+    display: inline-block;
+    margin-left: .4rem;
+    padding: .05rem .5rem;
+    border: 3px double var(--red);
+    color: var(--red);
+    font: .8rem/1.4 var(--stamp);
+    text-transform: uppercase;
+    rotate: -3deg;
+  }
+}
+
+.lines { list-style: none; margin: 0; padding: 0; }
+
+.line {
+  display: grid;
+  grid-template-columns: 8.2rem 2.2rem minmax(0, max-content);
+  align-items: center;
+  column-gap: .6rem;
+  margin: .32rem 0;
+
+  @media (max-width: 640px) {
+    grid-template-columns: 2.1rem minmax(0, max-content);
+    .stamp { grid-column: 1 / -1; justify-self: start; margin: 0 0 -.15rem 2.7rem; }
+  }
+}
+
+.stamp {
+  justify-self: end;
+  padding: .05rem .4rem;
+  border: 2px solid var(--red);
+  color: var(--red);
+  font: .68rem/1.5 var(--stamp);
+  white-space: nowrap;
+  rotate: -3deg;
+  opacity: .85;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.4'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 -2.2 1.9'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.lyric {
+  position: relative;
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: .6rem;
+  max-width: 100%;
+  padding: .35rem .8rem .4rem;
+  border: 0;
+  background: var(--strip);
+  color: var(--ink);
+  font: clamp(1.05rem, 2.4vw, 1.4rem)/1.25 var(--heavy);
+  text-align: left;
+  box-shadow: 4px 5px 0 var(--shadow);
+  rotate: var(--tilt, -.25deg);
+  transition: background-color .15s, rotate .15s, scale .15s;
+  clip-path: polygon(0 3%, 12% 0, 45% 4%, 80% 0, 100% 3%, 99% 50%, 100% 97%, 70% 100%, 35% 96%, 0 100%, 1% 50%);
+}
+button.lyric {
+  cursor: pointer;
+  padding-right: .45rem;
+  &:hover, &:focus-visible { rotate: 0deg; outline: none; background: color-mix(in srgb, var(--strip), var(--yellow) 25%); }
+  &:focus-visible { box-shadow: 4px 5px 0 var(--shadow), inset 0 0 0 3px var(--blue); }
+}
+/* the unfold tab: a folded sticky-note corner with + / − */
+.lyric .tab {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.45rem;
+  height: 1.45rem;
+  background: var(--note-a);
+  color: rgb(28 26 31);
+  font: 1rem/1 var(--heavy);
+  clip-path: polygon(0 0, 70% 0, 100% 30%, 100% 100%, 0 100%);
+  box-shadow: inset -3px 3px 0 rgb(0 0 0 / 12%);
+  &::before { content: "+"; }
+}
+.line:nth-child(3n + 2) .lyric .tab { background: var(--note-b); }
+.line:nth-child(3n + 3) .lyric .tab { background: var(--note-c); }
+.line.open .lyric .tab::before { content: "−"; }
+
+.line:nth-child(3n + 2) .lyric { --tilt: .3deg; }
+.line:nth-child(3n + 3) .lyric { --tilt: -.1deg; }
+.line.seed .lyric { background: color-mix(in srgb, var(--strip), var(--pink) 18%); }
+.line.open .lyric { background: color-mix(in srgb, var(--strip), var(--sky) 45%); rotate: 0deg; }
+
+/* now playing */
+.line.now .lyric {
+  background: var(--highlight);
+  color: rgb(28 26 31);
+  scale: 1.035;
+  rotate: -.6deg;
+  box-shadow: 6px 7px 0 var(--shadow), 0 0 0 3px rgb(28 26 31);
+}
+.line.now .stamp { opacity: 1; scale: 1.1; }
+
+.from-here {
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: .95rem;
+  cursor: pointer;
+  opacity: .4;
+  transition: opacity .15s, background .15s;
+  &:hover, &:focus-visible { opacity: 1; background: var(--yellow); color: rgb(28 26 31); }
+}
+.line:hover .from-here, .line.now .from-here { opacity: 1; }
+
+.note {
+  grid-column: 3 / -1;
+  margin: .5rem 0 .8rem 1rem;
+  max-width: 40rem;
+  padding: .8rem 1rem .7rem;
+  background: var(--note-a);
+  color: var(--ink);
+  font-size: .95rem;
+  line-height: 1.45;
+  box-shadow: 5px 7px 0 var(--shadow);
+  rotate: .6deg;
+  position: relative;
+  animation: note-in .18s ease-out;
+
+  &::before {
+    content: "";
+    position: absolute;
+    left: 42%;
+    top: -12px;
+    width: 90px;
+    height: 24px;
+    background: var(--tape);
+    rotate: -4deg;
+  }
+  p { margin: 0 0 .45rem; }
+  .sources {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: .8rem;
+    li::before { content: "→ "; }
+  }
+  @media (max-width: 640px) { grid-column: 1 / -1; margin-left: 0; }
+}
+.line:nth-child(3n + 2) .note { background: var(--note-b); rotate: -.5deg; }
+.line:nth-child(3n + 3) .note { background: var(--note-c); rotate: .2deg; }
+@keyframes note-in { from { opacity: 0; translate: 0 -6px; } }
+
+.seed-credit {
+  margin: 1rem 0 0 11rem;
+  font: 1rem var(--hand);
+  rotate: -1deg;
+  @media (max-width: 640px) { margin-left: 0; }
+}
+
+/* choruses: big pink banner, almost to the page's edges, so its tilted corners stay on the page */
+.chorus {
+  margin: 2.5rem -14px;
+  padding: 1.6rem clamp(16px, 3vw, 2.5rem);
+  background: var(--pink);
+  box-shadow: 0 8px 0 var(--shadow);
+  rotate: -.4deg;
+
+  .line { grid-template-columns: 2.2rem minmax(0, max-content); }
+  .lyric {
+    background: transparent;
+    box-shadow: none;
+    clip-path: none;
+    color: rgb(28 26 31);
+    font: clamp(1.4rem, 3.6vw, 2.4rem)/1.05 var(--display);
+    text-transform: uppercase;
+    letter-spacing: .01em;
+    padding: .1rem .2rem;
+    rotate: 0deg;
+  }
+  button.lyric:hover, button.lyric:focus-visible { background: rgb(255 255 255 / 25%); }
+  .lyric .tab { font-size: 1.1rem; width: 1.6rem; height: 1.6rem; }
+  .line.open .lyric { background: rgb(255 255 255 / 30%); }
+  .line.now .lyric { background: var(--yellow); box-shadow: 0 0 0 3px rgb(28 26 31); scale: 1.02; }
+  .from-here { background: rgb(255 255 255 / 60%); border-color: rgb(28 26 31); color: rgb(28 26 31); }
+  .note { grid-column: 2 / -1; margin-left: 0; }
+
+  &.final { background: var(--yellow); rotate: .4deg; }
+  /* edge to edge on phones, where a tilted corner would stick out past the page */
+  @media (max-width: 640px) { &, &.final { rotate: 0deg; } }
+  &.final .line.now .lyric { background: var(--pink); }
+  &.final .twist .lyric { color: rgb(200 30 20); }
+}
+.chorus + .chorus { margin-top: -1rem; }
+
+/* the sung tag after the last chorus, trailing off */
+.outro {
+  margin: -1rem 0 2.5rem;
+
+  .line { grid-template-columns: 2.2rem minmax(0, max-content); }
+  .lyric {
+    background: transparent;
+    box-shadow: none;
+    clip-path: none;
+    font: clamp(1.3rem, 3vw, 1.9rem)/1.2 var(--hand);
+    padding: .1rem .4rem;
+    rotate: -1.5deg;
+    mask-image: linear-gradient(to right, black 55%, transparent);
+  }
+  .line.now .lyric { background: var(--yellow); mask-image: none; }
+}
+
+/* a line the current version doesn't sing (e.g. a take that ends on the last chorus line) */
+.line.unsung {
+  .from-here { visibility: hidden; }
+  .lyric-text { opacity: .45; }
+}
+
+/* ---------- the album: its tracks as tapes ---------- */
+.album {
+  margin: 5rem 0 3rem;
+  h2 { font: 2rem/1.1 var(--display); text-transform: uppercase; margin: 0 0 .3rem; }
+  > p { margin: 0; }
+}
+.tapes {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0 0;
+  display: grid;
+  /* the six tracks go three by two, two by three or in one column, so no row is left short */
+  grid-template-columns: minmax(0, 1fr);
+  @media (min-width: 600px) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  @media (min-width: 1000px) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* every card as tall as the tallest, with its controls along the bottom, however long its blurb */
+  grid-auto-rows: 1fr;
+  gap: 1.6rem;
+}
+.tape-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 1rem .9rem;
+  background: var(--strip);
+  box-shadow: 6px 8px 0 var(--shadow);
+  border-top: 14px solid var(--ink);
+  rotate: -.6deg;
+  &:nth-child(2n) { rotate: .5deg; }
+  &.playing { outline: 4px solid var(--red); }
+
+  .tape-label, .tape-model {
+    position: absolute;
+    top: -12px;
+    padding: 0 .5rem;
+    color: rgb(28 26 31);
+    font: .72rem/1.4 var(--stamp);
+    text-transform: uppercase;
+  }
+  .tape-label { left: 12px; background: var(--yellow); }
+  /* which model sang it */
+  .tape-model {
+    right: 12px;
+    background: var(--sky);
+    &[data-model^="Suno"] { background: var(--pink); }
+  }
+  h3 { margin: .3rem 0 .2rem; font: 1.35rem/1.1 var(--heavy); }
+  p { margin: 0 0 .8rem; font-size: .92rem; }
+  .tape-video { margin-top: -.4rem; font: .8rem/1.35 var(--type); color: var(--ink-soft); }
+  > p { flex-grow: 1; }
+  .tape-actions { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; font-size: .85rem; }
+  .tape-dur { font-variant-numeric: tabular-nums; }
+  .play-version {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    font: .9rem var(--heavy);
+    padding: .3rem .8rem;
+    border: 2px solid var(--ink);
+    background: var(--yellow);
+    color: rgb(28 26 31);
+    cursor: pointer;
+    box-shadow: 2px 3px 0 var(--shadow);
+  }
+}
+
+
+/* ---------- the jukebox: the other genres as cassettes, audio only, and quieter than the album ----------
+   Each theme restyles the cassettes through the --cs-* colours and fonts. */
+.jukebox {
+  margin: 5rem 0 3rem;
+  h2 { font: 2rem/1.1 var(--display); text-transform: uppercase; margin: 0 0 .3rem; }
+  > p { margin: 0; }
+}
+.cassettes {
+  --cs-shell: rgb(212 199 174);       /* the plastic */
+  --cs-screw: rgb(120 106 84);
+  --cs-label: rgb(255 253 246);       /* the paper label */
+  --cs-stripe: linear-gradient(90deg, var(--pink) 0 50%, var(--sky) 0);
+  --cs-ink: rgb(28 26 31);
+  --cs-soft: rgb(28 26 31 / 74%);
+  --cs-hub: var(--yellow);            /* the play button is a reel's hub */
+  --cs-hub-ink: rgb(28 26 31);
+  --cs-tape: rgb(146 92 56);          /* the tape that's played, as the progress bar */
+  --cs-window: rgb(20 18 24);
+  --cs-title: var(--hand);
+  --cs-text: var(--type);
+  --cs-radius: 10px;
+  list-style: none;
+  padding: 0;
+  margin: 1.3rem 0 0;
+  display: grid;
+  /* the genres go four to a row where there's room (four and four, or four and three), two to a row on middling screens
+     when there's an even number of them, and otherwise in one column, so none is left on its own */
+  grid-template-columns: minmax(0, 46rem);
+  @media (700px <= width < 1200px) { &:has(> :last-child:nth-child(even)) { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (min-width: 1200px) { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  grid-auto-rows: 1fr;
+  gap: 1rem 1.4rem;
+
+  @media (prefers-color-scheme: dark) { --cs-shell: rgb(58 53 66); --cs-screw: rgb(120 114 130); }
+}
+.cassette {
+  --screw: radial-gradient(circle, var(--cs-screw) 2px, transparent 2.6px);
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: .7rem;
+  padding: .6rem .8rem;
+  border-radius: var(--cs-radius);
+  background:
+    var(--screw) 4px 4px / 10px 10px no-repeat,
+    var(--screw) right 4px top 4px / 10px 10px no-repeat,
+    var(--screw) left 4px bottom 4px / 10px 10px no-repeat,
+    var(--screw) right 4px bottom 4px / 10px 10px no-repeat,
+    var(--cs-shell);
+  font-family: var(--cs-text);
+  @media (max-width: 640px) { gap: .5rem; padding: .5rem .55rem; }
+}
+.cassette-play {
+  position: relative;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 2.75rem;
+  aspect-ratio: 1;
+  @media (max-width: 640px) { width: 2.3rem; font-size: .85rem; }
+  padding: 0;
+  border: 3px solid var(--cs-window);
+  border-radius: 50%;
+  background: var(--cs-hub);
+  color: var(--cs-hub-ink);
+  font-size: 1rem;
+  cursor: pointer;
+  .icon { position: relative; }
+  .icon-pause { display: none; }
+  /* the reel's teeth, which turn while it plays */
+  .hub {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: repeating-conic-gradient(var(--cs-hub-ink) 0 10deg, transparent 10deg 60deg);
+    mask: radial-gradient(circle, transparent 58%, black 60% 76%, transparent 78%);
+    opacity: .55;
+  }
+  &:focus-visible { outline: 3px solid var(--cs-hub); outline-offset: 2px; }
+}
+.cassette.playing .cassette-play {
+  .icon-play { display: none; }
+  .icon-pause { display: block; }
+  .hub { animation: reel-turn 2.4s linear infinite; }
+}
+@keyframes reel-turn { to { rotate: 1turn; } }
+.cassette-label {
+  display: flex;
+  flex-direction: column;
+  padding: .45rem .7rem .15rem;
+  border-radius: 3px;
+  background: var(--cs-stripe) top / 100% 4px no-repeat, var(--cs-label);
+  color: var(--cs-ink);
+  .cassette-head { display: flex; flex-direction: column; }
+  h3 { margin: .1rem 0 0; font: 1.05rem/1.25 var(--cs-title); }
+  p { margin: 0; }
+  .cassette-meta { font-size: .72rem; color: var(--cs-soft); }
+  /* the tape counter, "0:00 / 3:42", keeps its width as it counts */
+  .cassette-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cassette-blurb { flex: 1; margin-top: .1rem; font-size: .8rem; line-height: 1.4; }
+}
+.cassette-dl { color: inherit; }
+/* the tape, which runs from reel to reel as it plays */
+.cassette-seek {
+  display: block;
+  width: 100%;
+  height: 12px;
+  margin: .2rem 0 0;
+  background: transparent;
+  appearance: none;
+  cursor: pointer;
+  &:disabled { cursor: default; opacity: .35; }
+  &::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--cs-tape) var(--pct, 0%), var(--cs-window) 0); }
+  &::-moz-range-track { height: 4px; border-radius: 2px; background: var(--cs-window); }
+  &::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--cs-tape); }
+  &::-webkit-slider-thumb { appearance: none; width: 12px; height: 12px; margin-top: -4px; border-radius: 50%; background: var(--cs-hub); box-shadow: 0 0 0 2px var(--cs-window); }
+  &::-moz-range-thumb { width: 10px; height: 10px; border: 0; border-radius: 50%; background: var(--cs-hub); }
+  &:disabled::-webkit-slider-thumb { visibility: hidden; }
+  &:disabled::-moz-range-thumb { visibility: hidden; }
+}
+
+/* ---------- liner notes ---------- */
+.liner {
+  margin: 4rem 0 3rem;
+  h2 { font: 2rem/1.1 var(--display); text-transform: uppercase; margin: 0 0 1rem; }
+}
+.liner-body {
+  padding: 1.4rem 1.6rem;
+  background: var(--kraft);
+  color: rgb(28 26 31);
+  box-shadow: 7px 9px 0 var(--shadow);
+  rotate: .3deg;
+  a { color: rgb(20 52 130); }
+  p { margin: 0 0 1rem; }
+}
+.credits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem 1.4rem;
+  font: .95rem var(--heavy);
+  margin-bottom: 0 !important;
+}
+
+.colophon {
+  text-align: center;
+  padding: 2rem 1rem 3rem;
+  font-size: .85rem;
+  color: var(--ink-soft);
+}
+
+/* ==========================================================================
+   Themes. Each version's video has its own look, and the page dresses to match
+   whichever version is selected: page.mjs mirrors the version's style onto
+   `<html data-theme>`. The pop-punk zine above is the default; each block below is the
+   same page redesigned by that video's art director.
+   ========================================================================== */
+
+/* Every theme but the zine sets its title in clean, layered display lettering: the glyph's own text is the back layer (a
+   halo or an extrusion), `::before` the outline, and `::after` the fill. */
+:root:not([data-theme="pop-punk"]) .ransom .glyph {
+  position: relative;
+  min-width: 0;
+  background: none;
+  clip-path: none;
+  box-shadow: none;
+  &::before, &::after {
+    content: attr(data-ch);
+    position: absolute;
+    inset: 0;
+    padding: inherit;
+    text-align: center;
+    pointer-events: none;
+  }
+}
+
+
+/* ---------- piano rock: CHANNEL 89 ACTION NEWS, off a worn VHS tape ----------
+   Dark only, whatever the reader's colour scheme: it's a 1989 newscast playing on a CRT. */
+:root[data-theme="piano-rock"] {
+  color-scheme: dark;
+  --paper: rgb(11 21 69);
+  --paper-2: rgb(23 50 138);
+  --ink: rgb(247 246 241);
+  --ink-soft: rgb(212 230 255 / 80%);
+  --strip: rgb(16 40 122);
+  --shadow: rgb(0 0 0 / 55%);
+  --link: rgb(143 195 255);
+  --red: rgb(216 38 47);
+  --gold: rgb(244 182 42);
+  --cyan: rgb(42 212 240);
+  --magenta: rgb(226 55 155);
+  --phosphor: rgb(108 255 142);
+  --wire: rgb(241 234 210);
+  --chyron: linear-gradient(rgb(46 98 224), rgb(23 50 138));
+  --chrome: linear-gradient(rgb(255 255 255) 8%, rgb(214 228 255) 32%, rgb(140 165 222) 48%, rgb(38 46 104) 50%, rgb(96 128 206) 60%, rgb(230 238 255) 100%);
+  --chrome-gold: linear-gradient(rgb(255 248 220) 8%, rgb(246 212 122) 40%, rgb(150 94 24) 49%, rgb(96 50 10) 51%, rgb(212 150 50) 62%, rgb(255 236 170) 100%);
+  /* a laser-grid floor in perspective, horizon at the top */
+  --laser-grid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 300' preserveAspectRatio='none'%3E%3Cpath d='M112.3 0L-1180.0 300M128.5 0L-1110.0 300M144.6 0L-1040.0 300M160.8 0L-970.0 300M176.9 0L-900.0 300M193.1 0L-830.0 300M209.2 0L-760.0 300M225.4 0L-690.0 300M241.5 0L-620.0 300M257.7 0L-550.0 300M273.8 0L-480.0 300M290.0 0L-410.0 300M306.2 0L-340.0 300M322.3 0L-270.0 300M338.5 0L-200.0 300M354.6 0L-130.0 300M370.8 0L-60.0 300M386.9 0L10.0 300M403.1 0L80.0 300M419.2 0L150.0 300M435.4 0L220.0 300M451.5 0L290.0 300M467.7 0L360.0 300M483.8 0L430.0 300M500.0 0L500.0 300M516.2 0L570.0 300M532.3 0L640.0 300M548.5 0L710.0 300M564.6 0L780.0 300M580.8 0L850.0 300M596.9 0L920.0 300M613.1 0L990.0 300M629.2 0L1060.0 300M645.4 0L1130.0 300M661.5 0L1200.0 300M677.7 0L1270.0 300M693.8 0L1340.0 300M710.0 0L1410.0 300M726.2 0L1480.0 300M742.3 0L1550.0 300M758.5 0L1620.0 300M774.6 0L1690.0 300M790.8 0L1760.0 300M806.9 0L1830.0 300M823.1 0L1900.0 300M839.2 0L1970.0 300M855.4 0L2040.0 300M871.5 0L2110.0 300M887.7 0L2180.0 300M0 41.4H1000M0 117.1H1000M0 177.0H1000M0 215.7H1000M0 240.0H1000M0 255.6H1000M0 266.1H1000M0 273.3H1000M0 278.5H1000M0 282.4H1000M0 285.3H1000M0 287.5H1000M0 289.3H1000' fill='none' stroke='rgb(42 212 240)' stroke-width='2' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E");
+  /* CRT scanlines: a dark row of whole device pixels in every three (page.mjs sets --dpx), anchored to the screen so that
+     they fall on its pixel rows and stay sharp at any density: strong on the page's background, and fainter on the blue
+     panels so that white text on them stays crisp. (Striped panels mustn't have a transform, not even `rotate: 0deg`, or
+     Chromium draws their lines between the rows.) The cream wire copy and labels, and the black captions, get none. */
+  --scanlines: repeating-linear-gradient(rgb(0 0 0 / 30%) 0 var(--dpx, 1px), transparent 0 calc(3 * var(--dpx, 1px))) fixed;
+  --scan-panel: repeating-linear-gradient(rgb(0 0 0 / 16%) 0 var(--dpx, 1px), transparent 0 calc(3 * var(--dpx, 1px))) fixed;
+  --edge: 2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000, 2px 2px 0 #000, -2px 2px 0 #000, 2px -2px 0 #000, -2px -2px 0 #000;
+  --display: "Archivo Black", "Arial Black", sans-serif;
+  --heavy: "Archivo Black", "Arial Black", sans-serif;
+  --type: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --osd: "Space Mono", "Courier New", monospace;
+  scrollbar-color: rgb(70 90 160) rgb(6 10 32);
+
+  body {
+    background: var(--scanlines), radial-gradient(ellipse 90% 40rem at 50% 0, rgb(37 84 204 / 55%), transparent), linear-gradient(rgb(11 21 69), rgb(6 10 32) 30rem);
+    font-family: var(--type);
+    font-size: 17px;
+  }
+  /* the CRT's vignette, behind the page */
+  body::after {
+    z-index: -1;
+    opacity: 1;
+    mix-blend-mode: normal;
+    background-image: radial-gradient(ellipse at 50% 45%, transparent 60%, rgb(0 0 0 / 50%));
+  }
+
+  .masthead {
+    background: #000;
+    color: var(--ink);
+    border-bottom: 3px solid var(--gold);
+    font: 12px/1.3 var(--display);
+    letter-spacing: .1em;
+    .live {
+      margin-right: .6em;
+      padding: .1em .5em;
+      background: var(--red);
+      &::before { content: "● "; }
+    }
+  }
+
+  /* the station's special-report title card: sunburst, chrome, and a laser-grid floor */
+  .cover {
+    position: relative;
+    isolation: isolate;
+    &::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: 0 calc(50% - 50vw) auto;
+      height: 42rem;
+      background:
+        repeating-conic-gradient(from 0deg at 50% 16rem, rgb(226 55 155 / 18%) 0 5deg, transparent 5deg 13deg),
+        radial-gradient(ellipse 50rem 20rem at 50% 16rem, rgb(120 36 150 / 75%), transparent);
+      mask-image: linear-gradient(black 50%, transparent);
+    }
+    h1 { font-size: clamp(1.7rem, 7.4vw, 5.2rem); gap: .08em; }
+  }
+  .player-slot::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: -3rem calc(50% - 50vw) auto;
+    height: 24rem;
+    background: var(--laser-grid) 0 0 / 100% 100%, linear-gradient(rgb(60 12 90), rgb(6 10 32) 70%);
+    border-top: 3px solid var(--magenta);
+    box-shadow: 0 -10px 40px rgb(226 55 155 / 70%);
+    mask-image: linear-gradient(black 40%, transparent);
+  }
+
+  .ransom .word { gap: 0; }
+  .ransom .gap { width: .3em; }
+  .ransom .glyph {
+    padding: 0 .015em;
+    font-family: var(--display);
+    color: rgb(20 10 46);
+    transform: skewX(-12deg);
+    /* the back layer is the extrusion */
+    text-shadow: .02em .02em 0 rgb(20 10 46), .04em .04em 0 rgb(20 10 46), .06em .06em 0 rgb(20 10 46), .08em .09em .12em rgb(0 0 0 / 60%);
+    &::before { content: none; }
+    &::after { background: var(--chrome) 0 0 / 100% 1.05em; background-clip: text; color: transparent; text-shadow: none; }
+  }
+  .cover .line-2 .glyph::after { background-image: var(--chrome-gold); }
+  /* a star glint on the S */
+  .cover .line-2 .word:last-child .glyph:first-child::before {
+    content: "";
+    inset: auto;
+    left: 20%;
+    top: 30%;
+    width: .9em;
+    height: .9em;
+    z-index: 1;
+    background: radial-gradient(white, rgb(255 255 255 / 0) 60%);
+    clip-path: polygon(50% 0, 56% 44%, 100% 50%, 56% 56%, 50% 100%, 44% 56%, 0 50%, 44% 44%);
+    filter: drop-shadow(0 0 4px white);
+    animation: piano-rock-glint 4s ease-in-out infinite;
+  }
+
+  /* the dek: a chyron, then closed captions */
+  .dek { margin-top: 1.4rem; font: 14px/2.05 var(--osd); text-transform: uppercase; }
+  .tape {
+    display: table;
+    margin: 0 auto .7rem;
+    padding: .3em 1em .25em;
+    background: var(--scan-panel), var(--chyron);
+    border-top: 3px solid var(--gold);
+    color: var(--ink);
+    font: 1.05rem/1.2 var(--display);
+    rotate: none;
+    box-shadow: 0 4px 0 #000;
+  }
+  .dek-text {
+    padding: .2em .5em;
+    background: #000;
+    color: var(--ink);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+
+  /* the player is a TV set, with VCR buttons and an LED readout under the screen */
+  .player {
+    background: linear-gradient(rgb(46 47 56), rgb(22 23 28));
+    border-radius: 22px;
+    box-shadow: 0 0 0 2px rgb(58 60 72), 0 20px 50px rgb(0 0 0 / 65%), inset 0 1px 0 rgb(255 255 255 / 14%);
+    &::before, &::after { content: none; }
+  }
+  .stage {
+    border-radius: 18px / 24px;
+    background: #000;
+    &::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      border-radius: inherit;
+      pointer-events: none;
+      box-shadow: inset 0 0 30px rgb(0 0 0 / 80%), inset 0 0 0 2px rgb(0 0 0 / 70%);
+      background: radial-gradient(ellipse 60% 40% at 30% 12%, rgb(255 255 255 / 9%), transparent 70%);
+    }
+  }
+  .big-play {
+    z-index: 2;
+    border: 5px solid var(--gold);
+    background: radial-gradient(circle at 36% 30%, rgb(111 167 255), rgb(37 84 204) 45%, rgb(11 21 69));
+    color: var(--ink);
+    font-family: var(--display);
+    rotate: 0deg;
+    box-shadow: 0 0 0 3px rgb(11 21 69), 0 12px 30px rgb(0 0 0 / 60%);
+  }
+  .deck {
+    font-family: var(--osd);
+    color: var(--ink);
+    button {
+      border: 1px solid #000;
+      border-radius: 4px;
+      background: linear-gradient(rgb(246 247 250), rgb(178 182 194));
+      color: rgb(21 18 28);
+      box-shadow: 0 2px 0 #000, inset 0 1px 0 white;
+    }
+    .time {
+      border-radius: 1px;
+      background: rgb(4 8 6);
+      box-shadow: 0 0 0 .25rem rgb(4 8 6);
+      color: var(--phosphor);
+      text-shadow: 0 0 6px rgb(108 255 142 / 60%);
+    }
+    .version select {
+      border: 1px solid rgb(90 94 110);
+      border-radius: 3px;
+      background: rgb(4 8 6);
+      color: var(--phosphor);
+      box-shadow: none;
+    }
+  }
+  .check input {
+    border-color: rgb(178 182 194);
+    border-radius: 2px;
+    background: rgb(4 8 6);
+    color: var(--phosphor);
+  }
+  .scrub input {
+    &::-webkit-slider-runnable-track { background: linear-gradient(to right, var(--red) var(--pct, 0%), rgb(8 9 12) 0); border: 1px solid rgb(90 94 110); border-radius: 2px; }
+    &::-moz-range-track { background: rgb(8 9 12); border: 1px solid rgb(90 94 110); }
+    &::-moz-range-progress { background: var(--red); }
+    &::-webkit-slider-thumb { background: linear-gradient(rgb(246 247 250), rgb(178 182 194)); border: 1px solid #000; border-radius: 2px; }
+    &::-moz-range-thumb { background: rgb(210 212 220); border: 1px solid #000; }
+  }
+  .scrub .ticks span { color: var(--ink-soft); &::before { border-color: rgb(178 182 194); } }
+
+  /* section heads are the segment tabs of a Paintbox graphic */
+  .lyrics-head h2, .album h2, .jukebox h2, .liner h2 {
+    display: inline-block;
+    padding: .25em .9em .2em;
+    background: var(--scan-panel), var(--chyron);
+    border-bottom: 4px solid var(--gold);
+    font: 1.6rem/1.1 var(--display);
+    font-style: italic;
+    letter-spacing: .04em;
+    /* slanted by a clip rather than a skew, which would blur its scanlines */
+    clip-path: polygon(.3em 0, 100% 0, calc(100% - .3em) calc(100% + 4px), 0 calc(100% + 4px));
+    box-shadow: 0 4px 0 #000;
+  }
+  .lyrics-head .inline-play { border-color: var(--ink-soft); }
+
+  /* the now-playing card is a studio monitor */
+  .now-card {
+    padding: 1.2rem 1.2rem 1rem;
+    border: 10px solid rgb(27 28 34);
+    border-radius: 16px;
+    background: var(--scan-panel), radial-gradient(ellipse at 40% 20%, rgb(30 60 150), rgb(7 16 46) 70%);
+    color: var(--ink);
+    box-shadow: 0 0 0 2px rgb(58 60 72), 0 14px 34px rgb(0 0 0 / 60%);
+    rotate: none;
+    &::before {
+      content: "On air";
+      left: auto;
+      right: 1rem;
+      top: -.9rem;
+      width: auto;
+      height: auto;
+      padding: .1em .6em;
+      background: var(--red);
+      color: white;
+      font: .7rem/1.4 var(--display);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      rotate: 0deg;
+    }
+    .side-play { border: 1px solid #000; border-radius: 4px; background: linear-gradient(rgb(246 247 250), rgb(178 182 194)); box-shadow: 0 2px 0 #000; font-family: var(--display); }
+    .now-stamp:not(:empty) { padding: 0; border: 0; color: var(--ink); font: .85rem/1.3 var(--osd); text-shadow: var(--edge); rotate: 0deg; &::before { content: "PLAY ▶  "; white-space: pre; } }
+    .now-line { font: 1.05rem/1.3 var(--display); text-transform: uppercase; }
+    .now-note { font-family: var(--type); }
+  }
+
+  /* verse heads are a lower third: the roundel, the title bar, the sub bar */
+  .verse-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    h3 {
+      position: relative;
+      padding: .12em .7em .08em 2.1em;
+      background: var(--scan-panel), var(--chyron);
+      border-top: 3px solid var(--gold);
+      font-size: 1.7rem;
+      box-shadow: 0 3px 0 #000;
+      &::before {
+        content: "89";
+        position: absolute;
+        left: -.55em;
+        top: 50%;
+        translate: 0 -50%;
+        display: grid;
+        place-items: center;
+        width: 2.1em;
+        aspect-ratio: 1;
+        border: 3px solid var(--gold);
+        border-radius: 50%;
+        background: radial-gradient(circle at 36% 30%, rgb(111 167 255), rgb(37 84 204) 50%, rgb(11 21 69));
+        color: var(--gold);
+        font: .62em/1 var(--display);
+        transform: skewX(-12deg);
+        text-shadow: 0 2px 0 rgb(11 21 69);
+      }
+    }
+    .ransom .glyph { color: var(--ink); text-shadow: 0 .05em 0 rgb(0 0 0 / 60%); &::after { content: none; } }
+    .era { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; margin-left: 1.5rem; font-family: var(--display); }
+    .era-dates { padding: .1em .7em; background: var(--gold); color: rgb(11 21 69); font-size: .85rem; text-transform: uppercase; box-shadow: 0 3px 0 #000; }
+    .era-span {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      color: var(--ink);
+      font: .85rem/1.3 var(--osd);
+      text-shadow: var(--edge);
+      rotate: 0deg;
+      &::before { content: "FF ▶▶ "; }
+    }
+  }
+
+  /* dates are the VCR's on-screen display */
+  .stamp {
+    position: relative;
+    padding: 0;
+    border: 0;
+    color: var(--ink);
+    font: .78rem/1.2 var(--osd);
+    letter-spacing: .04em;
+    text-shadow: var(--edge);
+    rotate: 0deg;
+    opacity: .8;
+    mask-image: none;
+    transform: scaleY(1.2);
+  }
+  .line.now .stamp {
+    opacity: 1;
+    scale: 1;
+    &::before { content: "PLAY ▶"; position: absolute; right: 0; bottom: 100%; margin-bottom: .1rem; font-size: .62rem; white-space: nowrap; }
+    @media (max-width: 640px) { &::before { right: auto; left: 100%; bottom: 0; margin: 0 0 0 .8em; font-size: inherit; } }
+  }
+  /* the VCR's mode follows the tape */
+  &:not([data-playback="playing"]) {
+    .line.now .stamp::before { content: "PAUSE ❚❚"; }
+    .now-card .now-stamp:not(:empty)::before { content: "PAUSE ❚❚  "; }
+  }
+
+  /* lines are chyrons; the one being sung is its closed caption */
+  .lyric {
+    padding: .4rem 1.4rem .35rem 1.3rem;
+    background: var(--scan-panel), var(--chyron);
+    border-bottom: 3px solid var(--gold);
+    color: var(--ink);
+    font: clamp(.95rem, 2.1vw, 1.2rem)/1.25 var(--display);
+    text-transform: uppercase;
+    letter-spacing: .015em;
+    clip-path: none;
+    rotate: none;
+    box-shadow: 0 3px 0 #000;
+  }
+  button.lyric {
+    &:hover, &:focus-visible { background: var(--scan-panel), linear-gradient(rgb(70 125 245), rgb(37 84 204)); rotate: none; }
+    &:focus-visible { box-shadow: 0 3px 0 #000, inset 0 0 0 3px var(--cyan); }
+  }
+  .lyric .tab, .line:nth-child(3n + 2) .lyric .tab, .line:nth-child(3n + 3) .lyric .tab {
+    width: 1.25rem;
+    height: 1.25rem;
+    background: var(--gold);
+    color: rgb(11 21 69);
+    font-size: .9rem;
+    clip-path: none;
+    box-shadow: none;
+  }
+  .line.seed .lyric { background: var(--scan-panel), linear-gradient(rgb(130 60 200), rgb(76 30 130)); }
+  .line.open .lyric { background: var(--scan-panel), linear-gradient(rgb(216 38 47), rgb(140 18 26)); border-bottom-color: var(--ink); }
+  .lyric::before, .lyric::after { position: absolute; top: 50%; translate: 0 -50%; font-family: var(--osd); }
+  .line.now .lyric {
+    background: #000;
+    color: var(--ink);
+    border-bottom-color: #000;
+    scale: 1.02;
+    rotate: 0deg;
+    box-shadow: 0 0 0 3px #000, 0 0 0 5px rgb(247 246 241 / 25%);
+    &::before { content: "♪"; left: .35rem; }
+    &::after { content: "♪"; right: .35rem; }
+  }
+  .from-here { border-color: var(--ink-soft); background: rgb(6 10 32); color: var(--ink); }
+  .from-here:hover, .from-here:focus-visible { background: var(--gold); color: rgb(11 21 69); }
+
+  /* annotations come in on the newsroom wire */
+  .note, .line:nth-child(3n + 2) .note, .line:nth-child(3n + 3) .note {
+    padding: 2.1rem 2.4rem 1rem;
+    background:
+      radial-gradient(circle, rgb(6 10 32) 4px, transparent 4.5px) left 5px top 6px / 14px 20px repeat-y,
+      radial-gradient(circle, rgb(6 10 32) 4px, transparent 4.5px) right 5px top 6px / 14px 20px repeat-y,
+      linear-gradient(90deg, transparent 23px, rgb(0 0 0 / 18%) 23px 24px, transparent 24px calc(100% - 24px), rgb(0 0 0 / 18%) calc(100% - 24px) calc(100% - 23px), transparent 0),
+      var(--wire);
+    color: rgb(21 18 28);
+    font: .92rem/1.5 "Courier Prime", var(--osd);
+    rotate: 0deg;
+    box-shadow: 0 6px 0 rgb(0 0 0 / 50%);
+    &::before {
+      content: "Channel 89 newsroom · wire copy";
+      left: 2.4rem;
+      right: 2.4rem;
+      top: .7rem;
+      width: auto;
+      height: auto;
+      background: none;
+      color: rgb(160 28 36);
+      font: .66rem/1.2 var(--osd);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      rotate: 0deg;
+    }
+    a { color: rgb(28 58 160); }
+    .sources li::before { content: "▸ "; }
+  }
+  .seed-credit { font-family: var(--type); rotate: 0deg; }
+
+  /* choruses are the station's image-campaign jingle: a special-report bumper */
+  .chorus {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    --horizon: calc(100% - 4.5rem);
+    padding-bottom: 5.5rem;
+    background:
+      var(--scan-panel),
+      repeating-conic-gradient(from 0deg at 50% var(--horizon), rgb(226 55 155 / 14%) 0 5deg, transparent 5deg 13deg),
+      linear-gradient(rgb(18 8 50), rgb(70 16 96) var(--horizon), rgb(6 10 32) 0);
+    border-block: 3px solid var(--gold);
+    box-shadow: 0 8px 0 #000;
+    rotate: none;
+    &::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: var(--horizon) 0 0;
+      background: var(--laser-grid) 0 0 / 100% 100%;
+      border-top: 3px solid var(--magenta);
+      box-shadow: 0 -8px 30px rgb(226 55 155 / 80%);
+      opacity: .7;
+    }
+    .lyric {
+      padding: .1rem 1.5rem .1rem 1.4rem;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      font: italic clamp(1.25rem, 3vw, 1.95rem)/1.1 var(--display);
+      letter-spacing: .01em;
+    }
+    .lyric-text {
+      background: var(--chrome) 0 .02em / 100% 1.1em;
+      background-clip: text;
+      color: transparent;
+      filter: drop-shadow(.05em .06em 0 rgb(20 10 46));
+    }
+    button.lyric:hover, button.lyric:focus-visible { background: rgb(255 255 255 / 10%); }
+    .line.open .lyric { background: rgb(216 38 47 / 45%); }
+    .line.now .lyric {
+      background: #000;
+      box-shadow: 0 0 0 3px #000;
+      scale: 1.02;
+      .lyric-text { background: none; color: rgb(255 225 77); filter: none; }
+    }
+    .from-here { background: rgb(6 10 32 / 70%); border-color: var(--ink-soft); color: var(--ink); }
+    &.final .lyric-text { background-image: var(--chrome-gold); }
+    &.final .line.now .lyric { background: #000; }
+    &.final .twist .lyric-text { background-image: linear-gradient(rgb(255 220 220) 8%, rgb(255 120 120) 45%, rgb(110 10 20) 50%, rgb(216 38 47) 62%, rgb(255 190 190) 100%); color: transparent; }
+    &.final .twist.now .lyric-text { background: none; color: rgb(255 225 77); }
+  }
+  .outro .lyric {
+    background: transparent;
+    font: clamp(1rem, 2.4vw, 1.3rem)/1.3 var(--osd);
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    rotate: 0deg;
+    mask-image: none;
+    border: 0;
+    box-shadow: none;
+  }
+  .outro .line.now .lyric { background: #000; color: var(--ink); }
+
+  /* the tape wall is a shelf of VHS cassettes with handwritten labels */
+  .tapes { gap: 2rem 1.6rem; }
+  .tape-card {
+    padding: 1.5rem .9rem .9rem;
+    border-top: 0;
+    border-radius: 6px;
+    background: linear-gradient(rgb(40 40 46), rgb(16 16 20));
+    box-shadow: 0 10px 0 rgb(0 0 0 / 45%), inset 0 1px 0 rgb(255 255 255 / 10%), inset 0 -6px 0 rgb(0 0 0 / 40%);
+    rotate: 0deg;
+    &:nth-child(2n) { rotate: 0deg; }
+    .tape-label, .tape-model { top: -.7rem; padding: .1em .55em; border-radius: 2px; font: .66rem/1.4 var(--display); letter-spacing: .08em; }
+    .tape-label { background: var(--gold); color: rgb(11 21 69); }
+    .tape-model, .tape-model[data-model^="Suno"] { background: linear-gradient(rgb(246 247 250), rgb(178 182 194)); color: rgb(21 18 28); }
+    h3 {
+      margin: 0;
+      padding: .55rem .8rem .15rem;
+      border-top: 7px solid;
+      border-image: linear-gradient(90deg, var(--red) 0 33%, var(--gold) 0 66%, rgb(37 84 204) 0) 1;
+      background: rgb(244 241 230);
+      color: rgb(21 18 28);
+      font: 1.45rem/1.15 "Permanent Marker", cursive;
+    }
+    h3 ~ p {
+      margin: 0;
+      padding: .15rem .8rem .7rem;
+      background: rgb(244 241 230);
+      color: rgb(21 18 28);
+      font: .82rem/1.35 "Courier Prime", var(--osd);
+    }
+    .tape-video { padding-top: 0; color: rgb(80 70 60); }
+    .tape-actions { margin-top: .9rem; }
+    .tape-actions a { color: var(--link); }
+    .play-version {
+      border: 1px solid #000;
+      border-radius: 3px;
+      background: linear-gradient(rgb(246 247 250), rgb(178 182 194));
+      color: rgb(21 18 28);
+      font: .8rem var(--display);
+      text-transform: uppercase;
+      box-shadow: 0 2px 0 #000, inset 0 1px 0 white;
+    }
+    &.playing {
+      outline: 3px solid var(--red);
+      outline-offset: 3px;
+    }
+  }
+
+  /* the jukebox: audio cassettes to go with the VHS tapes, with the same handwritten labels */
+  .cassettes {
+    --cs-shell: rgb(26 26 31);
+    --cs-screw: rgb(90 92 104);
+    --cs-label: rgb(244 241 230);
+    --cs-stripe: linear-gradient(90deg, var(--red) 0 33%, var(--gold) 0 66%, rgb(37 84 204) 0);
+    --cs-ink: rgb(21 18 28);
+    --cs-soft: rgb(66 58 50);
+    --cs-hub: rgb(214 216 224);
+    --cs-hub-ink: rgb(21 18 28);
+    --cs-tape: rgb(132 80 44);
+    --cs-window: rgb(4 4 6);
+    --cs-title: "Permanent Marker", cursive;
+    --cs-text: var(--type);
+    --cs-radius: 6px;
+  }
+  .cassette-meta { font-family: var(--osd); }
+  .cassette { box-shadow: 0 8px 0 rgb(0 0 0 / 45%), inset 0 1px 0 rgb(255 255 255 / 10%); }
+  .cassette-label h3 { font-size: 1.15rem; }
+  .cassette.playing { outline: 3px solid var(--red); outline-offset: 3px; }
+
+  .liner-body {
+    padding: 1.6rem 1.8rem;
+    border-top: 4px solid var(--gold);
+    background: var(--scan-panel), linear-gradient(rgb(18 42 124), rgb(10 24 80));
+    color: var(--ink);
+    font-family: var(--type);
+    rotate: none;
+    box-shadow: 0 10px 0 rgb(0 0 0 / 50%);
+    a { color: var(--link); }
+  }
+  .credits { font: .8rem/1.4 var(--osd); text-transform: uppercase; color: var(--gold); }
+  .colophon { font: .75rem/1.5 var(--osd); text-transform: uppercase; }
+}
+@keyframes piano-rock-glint {
+  0%, 70%, 100% { opacity: 0; scale: .2; rotate: 0deg; }
+  80% { opacity: 1; scale: 1.3; rotate: 45deg; }
+}
+
+/* ---------- indie folk: the pixel-art night ----------
+   Dark only: it's one long night, in the video's sixteen colours, with ordered dithering instead of any smooth gradient or
+   transparency. The pixel art (sky, stars, aurora, dawn, Clawd on his hill) is tiny palette PNGs, drawn at 3 CSS px a pixel. */
+:root[data-theme="indie-folk"] {
+  color-scheme: dark;
+  --c-void: rgb(5 7 26);
+  --c-ink: rgb(11 16 48);
+  --c-night: rgb(20 29 77);
+  --c-navy: rgb(33 49 120);
+  --c-dusk: rgb(58 79 158);
+  --c-haze: rgb(113 133 201);
+  --c-wine: rgb(74 23 51);
+  --c-rust: rgb(156 58 60);
+  --c-clay: rgb(217 119 79);
+  --c-amber: rgb(240 164 92);
+  --c-gold: rgb(245 212 137);
+  --c-cream: rgb(255 245 224);
+  --c-pine: rgb(16 48 58);
+  --c-teal: rgb(47 122 120);
+  --c-mint: rgb(143 224 184);
+  --c-violet: rgb(122 79 160);
+  --paper: var(--c-ink);
+  --ink: var(--c-cream);
+  --ink-soft: var(--c-haze);
+  --strip: var(--c-night);
+  --link: var(--c-mint);
+  --mono: "Space Mono", "Courier New", monospace;
+  --matrix: "Rubik Mono One", "Arial Black", sans-serif;
+  /* one low-res pixel, and a box with its corner pixels knocked out */
+  --px: 3px;
+  --notch: polygon(0 var(--px), var(--px) var(--px), var(--px) 0, calc(100% - var(--px)) 0, calc(100% - var(--px)) var(--px), 100% var(--px), 100% calc(100% - var(--px)), calc(100% - var(--px)) calc(100% - var(--px)), calc(100% - var(--px)) 100%, var(--px) 100%, var(--px) calc(100% - var(--px)), 0 calc(100% - var(--px)));
+  /* dot-matrix lettering: 2×2 dots on a 3-px grid */
+  --dots: conic-gradient(from 270deg at 2px 2px, #000 25%, transparent 0) 0 0 / 3px 3px;
+  --sky: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAACWCAMAAADOgdkEAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAABVSURBVHja3cgxDsAwDELRFLj/mdsMRVhykj0e0Pcbz3fjgkG8sK0KYbAdC2Gw9YUw2MowXm5tFl290VaKYbT1xTDajqN4ZVuVwmQrpTBtbc5fvckmvWR6BP+M88MsAAAAAElFTkSuQmCC");
+  --ridge: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAAAaCAMAAAAHQKcMAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAAC8SURBVHja7ZFBDsIwDAR3c4MT/38tpaqASIljrwMUKb616YwnKm4nH6zAFfiPgWWf1F63AqI6lVgCDuhqNbGEJBhpLLOUOJZUb+CWdCedZ4qRzQsVCmakJe1f1DqRzChWHi/RxgfE1tGIZ+c9qltucj795PuT5Z4EsRd43PL1YT2eTZMoI9BYRaVPpMxAKrvopa4+yggkhUJOp7qBVHbxA1QnkHQtqx1OqMQgVhDogxqS70DgyWcFrsBfzx1iBW7A76x1wgAAAABJRU5ErkJggg==");
+  --stars-a: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAADZSURBVHja7dvJEQMhDERRDuiivpB/tI7AZTCbgK8E5pVazMqkUl1eZlQqc8p3AwqAJoBtOrgRAQAAAAAAAFAP8Dc6YJsBJnu8A4FXgXMe+Fr6dde9pgP2cAQA+l8bEMFggAYDNH8imIE7Afm8DogZAADgFoCIAACAUwBWCeh/9iUCAAAAAAAAoANgmwHLvt+E7cDjQ2gsw9Z7a4YwPkBEAAAAAAC3A5wIAJwE8AM7IGYAQHyAbuqAmAEAAAD8UewrBrAekMdduIggzXnmjdGB4X9Y5KbtspX1Ab92/sGucyM3AAAAAElFTkSuQmCC");
+  --stars-b: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGEAAABhCAMAAADx2D+RAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAABxSURBVHja7dUhDsAgEEVBxMf3/qetr6hhm5Rl1qEmvA1hXNWTx3lcX8//hdngDjVCmm96Rcgx74HQV4hKH3ykKu0spEyIPRAIhCphqkQgEAgEQk8hKhEaClMlAuF0Yaq0KESl/YWoRKgSckal2DThdW6L40tzqLWLLAAAAABJRU5ErkJggg==");
+  --aurora-teal: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAA4CAMAAAA1mw2QAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAAGsSURBVHja7VfRkoMgDMwPhNn//9qTahVMNsHqcXMzhYdaCWQ3GwIKkqaqUHzeJFt/61fbPitxUHTYQ6m2FpcM4c89tHbtLJUSYSqN5Yav4ixmkq62qv2cpYtB0s7qbZUyUm4r2sB5Y12fFyzLWGe946u/7fq7rfEjr3c24n1MEXLgc1A1qL5Vt3w/8LV4DwY7ziNntI+91aBaR7H28ZleCG9xcDZ5c+7M1tGr08DDBhvPJvIxt0Z/XwPGgeL04oA3A5ohHn6qgYn/u9ixuILFmr4vTg6fGaDz31t6/60+pmbJK4d1MEODfLZreAwsB1+DaEzPDAguBFoi2TNwNehxh6eUU4HpmVE10ELqWFSnMw7HmWz3K8MP5xxI8K8aKD9LvHhjoLr3t4oIt4eX6UMZjMc5HbMchO9BwuFKfq0his5ztsswtssaDe42uobkNxJcyDHr6RkNMKgBz0T9tFJM18BaRnmEZOy4vutdnHxMsjwe2k0TNIg+ofIcyr6lcg1mMMDAVxI+1ABTNXgW/ywG9zOVrzGDAR6o1vhTDfCr1WKeBvjnGnwdfB3caD+pM0TkeKy90gAAAABJRU5ErkJggg==");
+  --aurora-violet: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAA4CAMAAAA1mw2QAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAAGrSURBVHja7VjblsMgCOSFZ/j/r10bTWKUAUxPdrvnVB96EZ2BmZC0pGAIl6nvD0LntxkPMXbGACWKmRMIW4ww5kUu/xihRbGo2LssgEJdmgZlehBSTysb6p72ubzyCHCizmzkqJo4mQ6Te4Due9lrv/G67Nl5WuePsa/8T4BpbWCP6muvD0oT4mlUqubW6itDzdmIrQCimammVzp90CQb25pbbghH5jrztocOfgrqGXnmvJ7NM2wNgPMOf4nvgs5XLYMZW6ccfP6wDgSxZzSpdb1qgNGvGijgouaapc/1/RFDo/7Mdq/ovbKggRLwiZWDBB7zNVDs6bTK1iRQZ9z7bQ1gLE0u9fiLBJ3PygB7Rc277Qr/V7MTpxvkO4Wanea+Bpq4V2uXAfaCBlWO+Itx0/dz0FQOvQaavtL8DBR0TEo8q62ujxrkPIQ0wvzrOgG3+7wWciDEMXqijNy8r9PNGt9/fPc6gSRyGH1Ez/Jf1GDm58d4v3Ce10BvajCe8fsZRF0s2+30zzKIfvktduuP02C9o/9XDfTjNXj/35YnNcgN+dgMvgBfgOXxA5w2SKEnDzCXAAAAAElFTkSuQmCC");
+  --aurora-wine: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAA4CAMAAAA1mw2QAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAAGlSURBVHja7VfLcsMwCOS0V/j/r62TWq6EeFl1nXQm8mRiRyB2vQgUkmmAIZCrBs3r71c+SnY042euRQA2WyCJRw6qPAK6Sxgec1KgDvyZEo/Z3fbhs1HZ/aADYEANHp5c9j1+MEY+QwBoW2ZRv6HhnNfn5sNOBCa92oS7x9mvP+ql7w87YmicBn784Bwiez7NbvM5wWB412L6GbbkrVHA2eum5tozKwZzviBl2H/LzI3snDE1djkYGhy25OKz80hzkMlX5RfVNXY1aPvBtCXj/Y07Voxc9+rXuE+ed4RqngYaHHXIuMjQX+Of96vXQYz8CjTQHJijLLXXwbNcQ31mhBF+u9MsaPA9jGw8p4GYWGDmis8Bfj+IdhoQZIFdsWH0ZFuD+AwRdNeQQaRPpVK0nuznjwR7xLI5y0ASBtpGhironeyik8rCHGUIcwYiVhU/zyDTwD+bxpVYUvzxefkqDaSogVyigdyuQaVa57XiVRpIWonrHQe/ZLD6JxBF9mvV7g4GOYf1HLqLQVWDlbn30KCq0ys1+LNK8VYM/r8GnwCfAM74AiAVLNFACzUjAAAAAElFTkSuQmCC");
+  --dawn: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAABgCAMAAAANSiMAAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAAB3SURBVHjaTckxFgAhCENB18ZAw/1vuwExSvHfGMfHG53ZmqUp8UdbabZ4zNG3nzfRilJI/NFWihaPOZr7ebNaq7Qk/mgrrRaPOYoM9lZBCyU8wgCkBWjLXDEmAaYtZY9smEkw05a5Ylwyc20pf+TDXTJ3bZkr9x9ZGgubEBBZSAAAAABJRU5ErkJggg==");
+  --horizon: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAoCAMAAADuQasBAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAAA2SURBVHjarcixDQAgDAPBKD+A998WQyJA1HxhnRzp4uOQWGxlElAf86Pl3tElLamlklrOcyQNqoIC4S9ZEqIAAAAASUVORK5CYII=");
+  --lantern: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABEAAAARCAMAAAAMs7fIAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAAA5SURBVHjaYxBABwzki7ADISeYRFbDjqaLk52dnRPVHC4uLmQ1QFkubi4wDVPDia4GqzlEuYdCnwIANdgRFij54yEAAAAASUVORK5CYII=");
+  --scene: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAZAAAAA6CAMAAACpkf/CAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAALaSURBVHja7dfdkqIwEAXg5Ebsnr7w/Z92hOGnId0h0YA4dc5O7dYoupgvp8HwQC6VgCUACAIQgCAAAQgCEIAgAAEIAhAEIABBAAIQBCAAQQACEAQgCEAAggAEIAhAAHLl3FSGBzqAfNTjrnJDQy4HQs+GEEA+OLDu9zBg9H/3Q6vrOjTks/1YQPqOMPPjizvyHxqiRtazIfzD/6Ah8Zn5sTjmC68hJFNDDphb5evyxmqWgKjfL+Uk/c+t6/ofGf+R/hoyPNFaIlmXzEonq0nngrxcqKhTDyLBjkhbkwmE1yBUDtK4IcuJ2NTW/1h0Dq+CyPNPyKf3Oqchxulbq+nJxRIQNhrCdQ2JxDF39FQ4rgP5W+RQllYk+yAUt1v6obYz6VeuDLMg82FNRpa/zJu3qwSRUo1GJpvVs0A4+QR2Q0wQtkA23ZvErRXcjix3QXMgvAYhs/Ox5qqRH17qchLNeOesl3zp82aSGytgvAdPaz8Lkt+Q+QWqIdwUZL1FeLchFoi8xDGQLD2xOGgFws7u1jTOkwmInjfzx+f9kbWehVUja9zf7IKkp5zOALUR5hdTbFAONbrSPc8lDSHdYRoXSJ1kHcj4O9uDLjeyKkAyDaESELZB9PsV3FSVTC4pGlmUfnDvaHYbwlmQmLl21oCs1iwHEt1sL2mkC+yASJQYWkQkc2K5L2D5K47TEAcgdXwPhE0Q3gehv+msWrO5601BxscbcQwkZ4KwBzKsGB3YEH69Ic4HVsc25OjTv2GMzrTZbq3tUVTzPcRvyBVGFr8MElpHzLMraQi7DeEsCFmrS1F9386BsAlCLgjnQJi8e4wVCBsg/Xm8eWdVM7jOvIbUNYQrG5IF0ZuDcg3h1UHDE/KI4ahUg7D3rWW1mb5oZNVfQw5qh0dy3YZcAkSO9kjugQGyAxKOjwCkGCScEwFIEYiEswKQApDzODQJQByQczkWkuuAIAiCfE9+Ad/qCooZLgaJAAAAAElFTkSuQmCC");
+  --moon: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA8AAAAPCAMAAAAMCGV4AAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAAA8SURBVHjaYxBABQxQmguZzwUBCHkgh5sbLABXDxWA8SECSHyQAAafC4kvgCYvgKGeC50vgGIfF073IwEA/VQM4wA+8w0AAAAASUVORK5CYII=");
+  --hill: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAAWCAMAAABHYGoGAAAAM1BMVEUFBxoLEDAUHU0hMXg6T55xhclKFzOcOjzZd0/wpFz11In/9eAQMDoveniP4Lh6T6AAAADhnyPCAAAAEXRSTlP/////////////////////ACWtmWIAAACRSURBVHjaxZDLDsIwDAT3tKZmD/7/ryUtVARKm4cPjKJEirKjjRFJ0HrAihkBbxUMK1eWERzyLQGLAFt43cklzCyWbgH36L4z3H20QfWF0sDvXhrY/AwGG0hm63oe1OgMAt/ER/pagDPUFEjCNQ0BetCpAL1IR4H6468WSMQ3BabK/5qn5uJvAZARCMgJ8EfBA5XmLpfRAwVwAAAAAElFTkSuQmCC");
+  scrollbar-color: var(--c-dusk) var(--c-void);
+
+  body {
+    /* the ground under the footer's hill runs on under the docked player */
+    background: linear-gradient(var(--c-void) 0 0) no-repeat 0 100% / 100% var(--bottom-dock-h), var(--stars-a) 0 0 / 384px 384px, var(--stars-b) 40px 70px / 291px 291px, var(--c-ink);
+    font: 16px/1.6 var(--mono);
+    image-rendering: pixelated;
+  }
+  body::after { content: none; }
+
+  /* a few bigger stars twinkle on the slow beat */
+  .fx { display: block; }
+  .fx i {
+    position: absolute;
+    left: calc(mod(var(--i) * 37 + 11, 97) * 1%);
+    top: calc(mod(var(--i) * 53 + 7, 89) * 1% + 4%);
+    width: 9px;
+    height: 9px;
+    background: var(--c-cream);
+    clip-path: polygon(33.4% 0, 66.6% 0, 66.6% 33.4%, 100% 33.4%, 100% 66.6%, 66.6% 66.6%, 66.6% 100%, 33.4% 100%, 33.4% 66.6%, 0 66.6%, 0 33.4%, 33.4% 33.4%);
+    animation: indie-folk-twinkle 3.2s steps(1) infinite;
+    animation-delay: calc(var(--i) * -.83s);
+    &:nth-child(3n) { background: var(--c-gold); }
+    &:nth-child(4n + 1) { width: 3px; height: 3px; clip-path: none; }
+  }
+
+  .masthead {
+    background: var(--c-void);
+    color: var(--c-haze);
+    font: 13px/1.3 var(--mono);
+    letter-spacing: .04em;
+    text-transform: none;
+    border-bottom: var(--px) solid var(--c-night);
+  }
+
+  /* the cover is the night sky over the ridge, with the moon up in the corner */
+  .cover {
+    position: relative;
+    isolation: isolate;
+    &::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: 0 calc(50% - 50vw) auto;
+      height: 528px;
+      background:
+        var(--moon) no-repeat right max(24px, calc(50vw - 600px)) top 48px / 45px 45px,
+        var(--ridge) repeat-x 0 450px / 480px 78px,
+        linear-gradient(var(--c-dusk) 0 0) no-repeat 0 450px / 100% 45px,
+        var(--sky) repeat-x 0 0 / 12px 450px;
+      @media (max-width: 640px) { background-position: right 14px top 112px, 0 450px, 0 450px, 0 0; background-size: 36px 36px, 480px 78px, 100% 45px, 12px 450px; }
+    }
+    h1 {
+      font-size: clamp(1.75rem, 7.2vw, 4.9rem);
+      gap: .2em;
+      mask: radial-gradient(circle, #000 40%, transparent 46%) 0 0 / .085em .085em;
+      filter: drop-shadow(0 0 .07em var(--c-gold));
+    }
+  }
+  .ransom .word { gap: .04em; }
+  .ransom .glyph {
+    padding: 0;
+    color: var(--c-cream);
+    font-family: var(--matrix);
+    transform: none;
+    &::before, &::after { content: none; }
+  }
+  .dek { max-width: 40rem; font-size: .95rem; color: var(--c-cream); }
+  .tape {
+    display: table;
+    margin: 0 auto .5rem;
+    padding: 0;
+    background: none;
+    color: var(--c-cream);
+    font: 1.1rem var(--mono);
+    rotate: 0deg;
+    box-shadow: none;
+    &::after { content: "▮"; margin-left: .15em; animation: indie-folk-blink 1.1s steps(1) infinite; }
+  }
+
+  /* the player: a pixel window on the night */
+  .player {
+    background: var(--c-void);
+    clip-path: var(--notch);
+    box-shadow: inset 0 0 0 var(--px) var(--c-dusk);
+    &::before, &::after { content: none; }
+  }
+  .stage { background: var(--c-void); }
+  .big-play {
+    border: var(--px) solid var(--c-gold);
+    border-radius: 0;
+    background: var(--c-ink);
+    color: var(--c-gold);
+    font-family: var(--mono);
+    clip-path: var(--notch);
+    rotate: 0deg;
+    box-shadow: none;
+  }
+  .deck {
+    font-family: var(--mono);
+    button {
+      border: var(--px) solid var(--c-dusk);
+      background: var(--c-night);
+      color: var(--c-cream);
+      box-shadow: none;
+      clip-path: var(--notch);
+    }
+    .version select {
+      border: var(--px) solid var(--c-dusk);
+      background: var(--c-night);
+      color: var(--c-cream);
+      box-shadow: none;
+    }
+  }
+  .check input { border-color: var(--c-haze); background: var(--c-ink); color: var(--c-gold); }
+  .scrub input {
+    &::-webkit-slider-runnable-track { background: linear-gradient(to right, var(--c-gold) var(--pct, 0%), var(--c-night) 0); border: var(--px) solid var(--c-dusk); }
+    &::-moz-range-track { background: var(--c-night); border: var(--px) solid var(--c-dusk); }
+    &::-moz-range-progress { background: var(--c-gold); }
+    &::-webkit-slider-thumb { background: var(--c-cream); border: var(--px) solid var(--c-void); }
+    &::-moz-range-thumb { background: var(--c-cream); border: var(--px) solid var(--c-void); }
+  }
+  .scrub .ticks span { color: var(--c-haze); &::before { border-color: var(--c-dusk); } }
+
+  /* headings are dot-matrix signs */
+  .lyrics-head h2, .album h2, .jukebox h2, .liner h2 {
+    display: inline-block;
+    color: var(--c-cream);
+    font: clamp(1.1rem, 5.6vw, 1.7rem)/1.2 var(--matrix);
+    letter-spacing: .02em;
+    mask: var(--dots);
+  }
+  .lyrics-head .inline-play { border-radius: 0; border-color: var(--c-haze); }
+
+  .verse-head {
+    align-items: center;
+    /* an LED sign: lit gold dots over the unlit ones, on one 3-px grid */
+    h3 {
+      padding: 6px 9px;
+      background: radial-gradient(circle, var(--c-wine) 1px, transparent 1.2px) 0 0 / 3px 3px, var(--c-void);
+      font-size: 1.8rem;
+      clip-path: var(--notch);
+      .ransom { mask: var(--dots); }
+    }
+    .ransom .glyph { color: var(--c-gold); }
+    .era { font: 1rem var(--mono); color: var(--c-haze); }
+    .era-span {
+      margin-left: .5rem;
+      padding: 0 .45em;
+      border: 0;
+      background: var(--c-navy);
+      color: var(--c-cream);
+      font: .7rem/1.7 var(--mono);
+      letter-spacing: .08em;
+      rotate: 0deg;
+      clip-path: var(--notch);
+    }
+  }
+
+  /* dates: the month small over the year in dot-matrix, on a dim plate */
+  .stamp {
+    display: inline-grid;
+    justify-items: end;
+    padding: 4px 6px 3px;
+    border: 0;
+    background: var(--c-void);
+    color: var(--c-haze);
+    font: .64rem/1.1 var(--mono);
+    letter-spacing: .1em;
+    rotate: 0deg;
+    opacity: 1;
+    mask: none;
+    clip-path: var(--notch);
+    @media (max-width: 640px) { display: inline-flex; align-items: baseline; gap: .6em; }
+  }
+  .stamp-y { color: var(--c-cream); font: 1.05rem/1.05 var(--matrix); letter-spacing: .04em; mask: var(--dots); }
+  .line.now .stamp { scale: 1; background: var(--c-wine); color: var(--c-amber); .stamp-y { color: var(--c-gold); } }
+
+  /* lines are captions on dim bands; the one being sung glows in lantern light, a cursor blinking at its end */
+  .lyric {
+    padding: .35rem .75rem .35rem;
+    border: var(--px) solid var(--c-navy);
+    background: var(--c-night);
+    color: var(--c-cream);
+    font: clamp(.95rem, 2.2vw, 1.12rem)/1.4 var(--mono);
+    clip-path: var(--notch);
+    box-shadow: none;
+    rotate: 0deg;
+  }
+  .lyric-text::after { content: "▮"; margin-left: .2em; visibility: hidden; }
+  button.lyric {
+    &:hover, &:focus-visible { background: var(--c-navy); border-color: var(--c-dusk); rotate: 0deg; }
+    &:focus-visible { border-color: var(--c-mint); box-shadow: none; }
+  }
+  .lyric .tab, .line:nth-child(3n + 2) .lyric .tab, .line:nth-child(3n + 3) .lyric .tab {
+    width: 1.3rem;
+    height: 1.3rem;
+    background: var(--c-dusk);
+    color: var(--c-cream);
+    font: 1rem/1 var(--mono);
+    clip-path: var(--notch);
+    box-shadow: none;
+  }
+  .line.seed .lyric { background: var(--c-pine); border-color: var(--c-teal); }
+  .line.open .lyric { background: var(--c-navy); border-color: var(--c-haze); }
+  .line.now .lyric {
+    background: var(--c-wine);
+    border-color: var(--c-amber);
+    color: var(--c-gold);
+    scale: 1;
+    rotate: 0deg;
+    box-shadow: none;
+    .tab { background: var(--c-rust); color: var(--c-cream); }
+  }
+  .line.now .lyric-text::after { visibility: visible; animation: indie-folk-blink 1.1s steps(1) infinite; }
+  .from-here {
+    border: var(--px) solid var(--c-dusk);
+    border-radius: 0;
+    background: var(--c-ink);
+    color: var(--c-haze);
+    clip-path: var(--notch);
+    &:hover, &:focus-visible { background: var(--c-navy); color: var(--c-cream); }
+  }
+
+  /* annotations are dialog boxes, with the ▼ that says there's more */
+  .note, .line:nth-child(3n + 2) .note, .line:nth-child(3n + 3) .note {
+    padding: .9rem 1.2rem 1.5rem;
+    border: var(--px) solid var(--c-haze);
+    background: var(--c-void);
+    color: var(--c-cream);
+    font: .88rem/1.65 var(--mono);
+    clip-path: var(--notch);
+    rotate: 0deg;
+    box-shadow: none;
+    &::before {
+      content: "▼";
+      inset: auto .7rem .35rem auto;
+      width: auto;
+      height: auto;
+      background: none;
+      color: var(--c-gold);
+      font-size: .7rem;
+      rotate: 0deg;
+      animation: indie-folk-blink 1.1s steps(1) infinite;
+    }
+    .sources li::before { content: "* "; color: var(--c-gold); }
+  }
+  .seed-credit { font: .9rem var(--mono); color: var(--c-haze); rotate: 0deg; }
+
+  /* choruses go back to Clawd's hill under the aurora, later in the night each time: teal, violet city glow, wine, dawn */
+  .chorus {
+    --aurora: var(--aurora-teal);
+    margin: 2.5rem -16px;
+    padding: 8.5rem clamp(16px, 3vw, 2.5rem) 5.5rem;
+    background:
+      var(--hill) no-repeat right max(12px, 6%) bottom / 192px 66px,
+      var(--aurora) repeat-x 0 0 / 288px 168px,
+      var(--horizon) repeat-x 0 100% / 12px 120px,
+      var(--stars-a) 0 0 / 384px 384px,
+      var(--c-night);
+    box-shadow: none;
+    rotate: 0deg;
+    .lyric {
+      padding: .15rem .5rem;
+      border: var(--px) solid transparent;
+      background: none;
+      color: var(--c-gold);
+      font: clamp(1.15rem, 2.8vw, 1.75rem)/1.3 var(--mono);
+      text-transform: none;
+      /* a 1-pixel outline, as the video's captions have on busy art */
+      text-shadow: var(--px) 0 var(--c-void), calc(-1 * var(--px)) 0 var(--c-void), 0 var(--px) var(--c-void), 0 calc(-1 * var(--px)) var(--c-void), var(--px) var(--px) var(--c-void);
+    }
+    button.lyric:hover, button.lyric:focus-visible { background: var(--c-navy); }
+    .line.open .lyric { background: var(--c-navy); border-color: var(--c-haze); }
+    .line.now .lyric { background: var(--c-wine); border-color: var(--c-amber); color: var(--c-gold); scale: 1; box-shadow: none; }
+    .from-here { background: var(--c-ink); border-color: var(--c-dusk); color: var(--c-haze); }
+    .lyric .tab { font-size: 1rem; width: 1.3rem; height: 1.3rem; }
+    .twist .lyric, &.final .twist .lyric { color: var(--c-cream); }
+  }
+  #c2 { --aurora: var(--aurora-violet); }
+  #c3 { --aurora: var(--aurora-wine); }
+  .chorus.final {
+    background:
+      var(--hill) no-repeat right max(12px, 6%) bottom / 192px 66px,
+      var(--dawn) repeat-x 0 100% / 12px 288px,
+      var(--stars-b) 0 0 / 291px 291px,
+      var(--c-ink);
+    padding-bottom: 12rem;
+  }
+  .outro .lyric { color: var(--c-haze); font: clamp(1rem, 2.4vw, 1.3rem) var(--mono); rotate: 0deg; mask-image: none; background: none; border: 0; clip-path: none; }
+  .outro .line.now .lyric { background: var(--c-wine); color: var(--c-gold); }
+  .line.unsung .lyric-text { opacity: .55; }
+
+  /* the now-playing card: a dialog box with Clawd's lantern in the corner */
+  .now-card {
+    padding: 1rem 1.1rem;
+    border: var(--px) solid var(--c-dusk);
+    background: var(--c-void);
+    color: var(--c-cream);
+    font: .85rem/1.6 var(--mono);
+    clip-path: var(--notch);
+    box-shadow: none;
+    rotate: 0deg;
+    &::before {
+      inset: .5rem .6rem auto auto;
+      width: 51px;
+      height: 51px;
+      background: var(--lantern) 0 0 / 100% 100%;
+      rotate: 0deg;
+      animation: indie-folk-flicker 1.6s steps(1) infinite;
+    }
+    .side-play { border: var(--px) solid var(--c-gold); background: var(--c-ink); color: var(--c-gold); font-family: var(--mono); box-shadow: none; clip-path: var(--notch); }
+    .now-stamp:not(:empty) { border: 0; padding: 1px 6px; background: var(--c-wine); color: var(--c-gold); font: .7rem/1.5 var(--mono); rotate: 0deg; clip-path: var(--notch); }
+    .now-line { max-width: calc(100% - 3.5rem); font: 1.05rem/1.35 var(--mono); color: var(--c-gold); }
+    .sources li::before { content: "* "; }
+  }
+
+  /* the tape wall: each version is one of the headline stars */
+  .tapes { gap: 1.2rem; }
+  .tape-card {
+    padding: 2.3rem 1rem 1rem;
+    border: var(--px) solid var(--c-navy);
+    background: var(--c-night);
+    clip-path: var(--notch);
+    box-shadow: none;
+    rotate: 0deg;
+    &:nth-child(2n) { rotate: 0deg; }
+    .tape-label, .tape-model { top: .8rem; padding: 0 .5em; font: .66rem/1.7 var(--mono); letter-spacing: .08em; clip-path: var(--notch); }
+    .tape-label { left: .9rem; background: var(--c-dusk); color: var(--c-cream); }
+    .tape-model { right: .9rem; background: var(--c-navy); color: var(--c-cream); &[data-model^="Suno"] { background: var(--c-violet); } }
+    /* the one playing is a star */
+    &.playing::after {
+      content: "";
+      position: absolute;
+      top: .75rem;
+      right: .9rem;
+      width: 15px;
+      height: 15px;
+      background: var(--c-gold);
+      clip-path: polygon(40% 0, 60% 0, 60% 40%, 100% 40%, 100% 60%, 60% 60%, 60% 100%, 40% 100%, 40% 60%, 0 60%, 0 40%, 40% 40%);
+    }
+    h3 { margin: 0 0 .3rem; color: var(--c-cream); font: 1.2rem/1.3 var(--mono); }
+    p { color: var(--c-cream); font-size: .82rem; line-height: 1.6; }
+    .tape-video { color: var(--c-haze); font: .78rem/1.5 var(--mono); }
+    .play-version { border: var(--px) solid var(--c-haze); background: var(--c-navy); color: var(--c-cream); font: .85rem var(--mono); box-shadow: none; clip-path: var(--notch); }
+    &.playing {
+      outline: 0;
+      border-color: var(--c-gold);
+      &::after { animation: indie-folk-twinkle 1.6s steps(1) infinite; }
+      .tape-model { right: 2.4rem; }
+      .play-version { border-color: var(--c-gold); background: var(--c-wine); color: var(--c-gold); }
+    }
+  }
+
+  /* the liner notes are read as the night ends, and the footer is the dawn */
+  /* the jukebox: pixel cassettes */
+  .cassettes {
+    --cs-shell: var(--c-night);
+    --cs-screw: var(--c-dusk);
+    --cs-label: var(--c-void);
+    --cs-stripe: linear-gradient(90deg, var(--c-rust) 0 50%, var(--c-violet) 0);
+    --cs-ink: var(--c-cream);
+    --cs-soft: var(--c-haze);
+    --cs-hub: var(--c-gold);
+    --cs-hub-ink: var(--c-void);
+    --cs-tape: var(--c-amber);
+    --cs-window: var(--c-ink);
+    --cs-title: var(--mono);
+    --cs-text: var(--mono);
+    --cs-radius: 0;
+  }
+  .cassette { border: var(--px) solid var(--c-navy); clip-path: var(--notch); }
+  .cassette.playing { border-color: var(--c-gold); }
+  .cassette-label { border-radius: 0; clip-path: var(--notch); background-size: 100% var(--px), auto; }
+  /* (the notch clips anything outside the button, so its focus ring goes inside) */
+  .cassette-play {
+    border-radius: 0; border-width: var(--px); clip-path: var(--notch);
+    .hub { display: none; }
+    &:focus-visible { outline: var(--px) solid var(--c-void); outline-offset: calc(-2 * var(--px)); }
+  }
+  .cassette.playing .cassette-play { animation: indie-folk-blink 1.1s steps(1) infinite; }
+  .cassette-seek {
+    &::-webkit-slider-runnable-track { border-radius: 0; }
+    &::-moz-range-track, &::-moz-range-progress { border-radius: 0; }
+    &::-webkit-slider-thumb { border-radius: 0; }
+    &::-moz-range-thumb { border-radius: 0; }
+  }
+
+  .liner-body {
+    padding: 1.4rem 1.6rem;
+    border: var(--px) solid var(--c-dusk);
+    background: var(--c-void);
+    color: var(--c-cream);
+    font-size: .92rem;
+    line-height: 1.75;
+    clip-path: var(--notch);
+    box-shadow: none;
+    rotate: 0deg;
+    a { color: var(--c-mint); }
+  }
+  .credits { font: .85rem var(--mono); color: var(--c-gold); }
+  .colophon {
+    position: relative;
+    isolation: isolate;
+    padding: 2.5rem 1rem 300px;
+    color: var(--c-haze);
+    font-size: .8rem;
+    &::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: auto calc(50% - 50vw) 0;
+      height: 288px;
+      background: var(--scene) no-repeat 50% 100% / 1200px 174px, linear-gradient(var(--c-void) 0 0) no-repeat 0 100% / 100% 9px, var(--dawn) repeat-x 0 100% / 12px 288px;
+    }
+  }
+}
+@keyframes indie-folk-twinkle {
+  0% { opacity: 1; }
+  40% { opacity: 0; }
+  55% { opacity: .5; }
+  70% { opacity: 1; }
+}
+@keyframes indie-folk-blink { 50% { opacity: 0; } }
+@keyframes indie-folk-flicker { 50% { opacity: .75; } 75% { opacity: .9; } }
+
+/* ---------- K-pop: ATTN!'s comeback ----------
+   Light is a variety-show cutaway: pastel polka dots, stickers with thick plum lineart. Dark is the LED stage at night. The
+   four members' colours run through it: verse line n is sung by TOKI, RELU, ADA and LOGI in turn, as in the video. */
+:root[data-theme="k-pop"] {
+  color-scheme: light;
+  --toki: rgb(255 79 168);
+  --relu: rgb(31 214 168);
+  --ada: rgb(143 99 255);
+  --logi: rgb(255 179 33);
+  --toki-lt: rgb(255 214 234);
+  --relu-lt: rgb(200 246 230);
+  --ada-lt: rgb(228 218 255);
+  --logi-lt: rgb(255 234 184);
+  --toki-dk: rgb(206 16 116);
+  --relu-dk: rgb(8 128 98);
+  --ada-dk: rgb(104 64 224);
+  --logi-dk: rgb(168 96 0);
+  --neon-pink: rgb(255 61 168);
+  --neon-cyan: rgb(53 232 255);
+  --lilac: rgb(201 182 255);
+  --plum: rgb(58 33 80);
+  --paper: rgb(255 242 249);
+  --ink: rgb(43 24 56);
+  --ink-soft: rgb(43 24 56 / 76%);
+  --card: white;
+  --chip-ink: white;
+  --link: rgb(170 20 110);
+  --rainbow: linear-gradient(90deg, var(--toki), var(--ada) 30%, var(--neon-cyan) 55%, var(--relu) 75%, var(--logi));
+  --outline: 2px 2px 0 var(--plum), -2px 2px 0 var(--plum), 2px -2px 0 var(--plum), -2px -2px 0 var(--plum), 0 3px 0 var(--plum), 3px 0 0 var(--plum), -3px 0 0 var(--plum), 0 -3px 0 var(--plum);
+  --display: "Rammetto One", "Arial Rounded MT Bold", sans-serif;
+  --heavy: "Rammetto One", "Arial Rounded MT Bold", sans-serif;
+  --type: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  --code: "Space Mono", "Courier New", monospace;
+  /* who sings: choruses are everyone */
+  --m: var(--toki);
+  --m-lt: var(--toki-lt);
+  --m-dk: var(--toki-dk);
+  --mname: "ATTN!";
+
+  @media (prefers-color-scheme: dark) {
+    color-scheme: dark;
+    --toki-lt: rgb(118 26 84);
+    --relu-lt: rgb(8 92 76);
+    --ada-lt: rgb(74 46 160);
+    --logi-lt: rgb(150 96 12);
+    --toki-dk: var(--toki);
+    --relu-dk: var(--relu);
+    --ada-dk: rgb(172 140 255);
+    --logi-dk: var(--logi);
+    --plum: rgb(8 2 22);
+    --paper: rgb(21 11 46);
+    --ink: rgb(252 245 255);
+    --ink-soft: rgb(252 245 255 / 76%);
+    --card: rgb(42 20 82);
+    --chip-ink: rgb(24 8 44);
+    --link: rgb(255 158 212);
+  }
+
+  .verse .line:nth-child(4n + 1) { --m: var(--toki); --m-lt: var(--toki-lt); --m-dk: var(--toki-dk); --mname: "TOKI"; }
+  .verse .line:nth-child(4n + 2) { --m: var(--relu); --m-lt: var(--relu-lt); --m-dk: var(--relu-dk); --mname: "RELU"; }
+  .verse .line:nth-child(4n + 3) { --m: var(--ada); --m-lt: var(--ada-lt); --m-dk: var(--ada-dk); --mname: "ADA"; }
+  .verse .line:nth-child(4n + 4) { --m: var(--logi); --m-lt: var(--logi-lt); --m-dk: var(--logi-dk); --mname: "LOGI"; }
+
+  body {
+    background:
+      radial-gradient(circle, rgb(255 179 214 / 60%) 2.6px, transparent 3.2px) 0 0 / 28px 28px,
+      radial-gradient(circle, rgb(201 182 255 / 50%) 2.6px, transparent 3.2px) 14px 14px / 28px 28px,
+      linear-gradient(rgb(255 234 245), rgb(244 234 255) 40%, rgb(230 244 255) 75%, rgb(255 240 248));
+    font: 17px/1.55 var(--type);
+    @media (prefers-color-scheme: dark) {
+      /* the LED wall behind the stage */
+      background:
+        radial-gradient(circle, rgb(170 130 255 / 16%) 1.6px, transparent 2.1px) 0 0 / 9px 9px,
+        radial-gradient(ellipse 70rem 30rem at 50% 0, rgb(255 61 168 / 22%), transparent),
+        linear-gradient(rgb(21 11 46), rgb(36 14 72) 45%, rgb(21 11 46));
+    }
+  }
+  body::after { content: none; }
+
+  /* sparkles */
+  .fx { display: block; }
+  /* in the margins, clear of the text */
+  .fx i {
+    position: absolute;
+    left: calc(mod(var(--i) * 41, 11) * 1% + mod(var(--i), 2) * 87% + 1%);
+    top: calc(mod(var(--i) * 29 + 9, 86) * 1% + 6%);
+    width: calc(12px + mod(var(--i) * 7, 16) * 1px);
+    @media (max-width: 640px) { width: 8px; }
+    aspect-ratio: 1;
+    background: var(--toki);
+    clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
+    opacity: .7;
+    animation: k-pop-twinkle 2.4s ease-in-out infinite;
+    animation-delay: calc(var(--i) * -.37s);
+    &:nth-child(4n + 2) { background: var(--ada); }
+    &:nth-child(4n + 3) { background: var(--neon-cyan); }
+    &:nth-child(4n + 4) { background: var(--logi); }
+    @media (prefers-color-scheme: dark) { background: white; &:nth-child(2n) { background: var(--neon-pink); } }
+  }
+
+  .masthead {
+    background: var(--plum);
+    color: white;
+    border-bottom: 4px solid;
+    border-image: var(--rainbow) 1;
+    font: 11px/1.4 var(--display);
+    letter-spacing: .08em;
+  }
+
+  /* the title is the group's logo: candy letters in the members' colours, bouncing on a wave */
+  .cover h1 {
+    position: relative;
+    font-size: clamp(1.7rem, 7vw, 4.9rem);
+    gap: .1em;
+    &::before, &::after {
+      content: "";
+      position: absolute;
+      width: .7em;
+      aspect-ratio: 1;
+      background: var(--logi);
+      clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
+      animation: k-pop-twinkle 1.6s ease-in-out infinite;
+    }
+    &::before { left: 4%; top: -.2em; }
+    &::after { right: 5%; bottom: -.1em; width: .5em; background: var(--neon-cyan); animation-delay: -.8s; }
+  }
+  .ransom .word { gap: .02em; }
+  .ransom .gap { width: .3em; }
+  .ransom .glyph {
+    --c: var(--toki);
+    --c-lt: var(--toki-lt);
+    padding: 0 .02em;
+    font-family: var(--display);
+    color: white;
+    -webkit-text-stroke: .24em white;
+    text-shadow: 0 .09em 0 rgb(58 33 80 / 30%);
+    transform: translateY(calc(sin(var(--i) * 1.3) * .07em)) rotate(calc(sin(var(--i) * 2.1) * 5deg));
+    animation: k-pop-spring .45s cubic-bezier(.3, 1.6, .5, 1) backwards;
+    animation-delay: calc(var(--i) * 35ms);
+    &:nth-child(4n + 2) { --c: var(--relu); --c-lt: rgb(200 246 230); }
+    &:nth-child(4n + 3) { --c: var(--ada); --c-lt: rgb(228 218 255); }
+    &:nth-child(4n + 4) { --c: var(--logi); --c-lt: rgb(255 234 184); }
+    &::before { color: rgb(58 33 80); -webkit-text-stroke: .12em rgb(58 33 80); text-shadow: none; }
+    &::after { background: linear-gradient(white 12%, var(--c-lt) 30%, var(--c) 72%); background-clip: text; color: transparent; -webkit-text-stroke: 0; text-shadow: none; }
+    @media (prefers-color-scheme: dark) { filter: drop-shadow(0 0 .1em var(--c)); text-shadow: none; }
+  }
+  .dek { font-size: 1.05rem; }
+  .tape {
+    display: table;
+    margin: 0 auto .9rem;
+    padding: .2rem .8rem .25rem;
+    border: 3px solid rgb(58 33 80);
+    border-radius: 14px;
+    background: rgb(255 226 150);
+    color: rgb(43 24 56);
+    font: 1.05rem/1.3 var(--display);
+    rotate: -2deg;
+    box-shadow: 3px 4px 0 var(--plum);
+  }
+
+  /* the player: a glossy card with sparkles for corners */
+  .player {
+    border-radius: 26px;
+    background: var(--card);
+    box-shadow: 0 0 0 3px var(--plum), 0 9px 0 var(--plum), 0 21px 44px rgb(143 99 255 / 28%);
+    &::before, &::after {
+      width: 38px;
+      height: 38px;
+      top: -20px;
+      background: var(--logi);
+      clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
+      rotate: 0deg;
+      animation: k-pop-twinkle 2s ease-in-out infinite;
+    }
+    /* close enough in that a twinkle (a 45° turn) stays on the page */
+    &::before { left: -6px; }
+    &::after { right: -6px; background: var(--toki); animation-delay: -1s; }
+    @media (prefers-color-scheme: dark) { box-shadow: 0 0 0 3px var(--plum), 0 0 0 5px var(--neon-pink), 0 9px 0 var(--plum), 0 0 36px rgb(255 61 168 / 45%); }
+  }
+  .stage { border-radius: 16px; }
+  .big-play {
+    border: 5px solid white;
+    background: radial-gradient(circle at 36% 30%, rgb(236 70 156), rgb(196 12 108) 62%);
+    color: white;
+    font-family: var(--display);
+    rotate: 0deg;
+    box-shadow: 0 0 0 4px var(--plum), 0 0 34px var(--neon-pink);
+    .big-play-label { font-size: calc(clamp(12px, 1.9cqi, 19px) * var(--grow)); }
+  }
+  .deck {
+    font-family: var(--code);
+    button {
+      border: 3px solid var(--plum);
+      border-radius: 999px;
+      background: var(--card);
+      color: var(--ink);
+      box-shadow: 0 3px 0 var(--plum);
+    }
+    .deck-play { background: var(--toki); color: rgb(43 24 56); }
+    .version select {
+      border: 3px solid var(--plum);
+      border-radius: 999px;
+      padding: .25rem .6rem;
+      background: light-dark(rgb(255 234 184), var(--card));
+      color: var(--ink);
+      box-shadow: 0 3px 0 var(--plum);
+    }
+  }
+  .check input { border: 2px solid var(--plum); border-radius: 6px; background: var(--card); color: var(--toki-dk); }
+  .scrub input {
+    &::-webkit-slider-runnable-track { background: linear-gradient(to right, var(--toki), var(--ada) var(--pct, 0%), var(--card) 0); border: 2px solid var(--plum); border-radius: 999px; }
+    &::-moz-range-track { background: var(--card); border: 2px solid var(--plum); border-radius: 999px; }
+    &::-moz-range-progress { background: linear-gradient(to right, var(--toki), var(--ada)); border-radius: 999px; }
+    &::-webkit-slider-thumb { width: 20px; height: 20px; margin-top: -7px; background: white; border: 3px solid var(--plum); border-radius: 50%; }
+    &::-moz-range-thumb { width: 14px; height: 14px; background: white; border: 3px solid var(--plum); border-radius: 50%; }
+  }
+  .scrub .ticks span { color: var(--ink-soft); &::before { border-color: var(--plum); } }
+
+  /* section heads are variety-show captions */
+  .lyrics-head h2, .album h2, .jukebox h2, .liner h2 {
+    color: white;
+    font: 1.9rem/1.2 var(--display);
+    letter-spacing: .02em;
+    text-shadow: var(--outline), 0 6px 0 var(--plum);
+  }
+  .lyrics-head .inline-play { border-color: var(--plum); }
+
+  .verse-head {
+    align-items: center;
+    h3 { font-size: 1.9rem; }
+    .ransom .glyph { -webkit-text-stroke-width: .2em; &::before { -webkit-text-stroke-width: .1em; } }
+    .era { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; font-family: var(--display); }
+    .era-dates { padding: .15em .75em; border-radius: 999px; background: var(--plum); color: white; font-size: .78rem; }
+    .era-span {
+      margin: 0;
+      padding: .1em .7em;
+      border: 2px solid var(--lilac);
+      border-radius: 999px;
+      background: var(--card);
+      color: var(--ada-dk);
+      font: .75rem/1.5 var(--display);
+      text-transform: none;
+      rotate: -3deg;
+      &::before { content: "("; }
+      &::after { content: "…)"; }
+    }
+  }
+
+  /* dates are the comeback-schedule card, counting down to D-DAY */
+  .stamp {
+    position: relative;
+    display: inline-grid;
+    grid-template-columns: auto auto;
+    justify-content: start;
+    column-gap: .3em;
+    row-gap: .15rem;
+    padding: .25rem .5rem .3rem 1.85rem;
+    border: 2px solid var(--m);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--ink);
+    font: .6rem/1.25 var(--display);
+    rotate: -1deg;
+    opacity: 1;
+    mask-image: none;
+    box-shadow: 0 2px 0 var(--plum);
+    &::before {
+      content: "";
+      position: absolute;
+      left: .38rem;
+      top: 50%;
+      translate: 0 -50%;
+      width: 1.1rem;
+      height: 1.15rem;
+      border: 2px solid var(--plum);
+      border-radius: 4px;
+      background: linear-gradient(var(--m) 0 38%, white 0);
+    }
+    &[data-comeback]::after {
+      content: "COMEBACK " attr(data-comeback);
+      grid-column: 1 / -1;
+      justify-self: start;
+      padding: 0 .5em;
+      border-radius: 999px;
+      background: var(--m-dk);
+      color: var(--chip-ink);
+      font: .5rem/1.6 var(--code);
+      letter-spacing: .02em;
+    }
+    @media (max-width: 640px) { grid-template-columns: auto auto auto; align-items: center; &[data-comeback]::after { grid-column: auto; margin-left: .3em; } }
+  }
+  .line.now .stamp { scale: 1.08; box-shadow: 0 2px 0 var(--plum), 0 0 0 4px var(--m-lt), 0 0 18px var(--m); }
+
+  /* lines are rounded caption cards; the one being sung fills with its member's colour, chip and all */
+  .lyric {
+    padding: .4rem .5rem .45rem 1rem;
+    border: 2px solid transparent;
+    border-radius: 18px;
+    background: var(--card);
+    color: var(--ink);
+    font: clamp(.98rem, 2.1vw, 1.16rem)/1.3 var(--heavy);
+    clip-path: none;
+    rotate: 0deg;
+    box-shadow: 0 3px 0 rgb(201 182 255);
+    @media (prefers-color-scheme: dark) { box-shadow: 0 3px 0 var(--plum), 0 0 0 1px rgb(255 255 255 / 10%); }
+  }
+  button.lyric {
+    &:hover, &:focus-visible { background: var(--m-lt); rotate: 0deg; }
+    &:focus-visible { border-color: var(--plum); box-shadow: 0 3px 0 var(--plum); }
+  }
+  .lyric .tab, .line:nth-child(3n + 2) .lyric .tab, .line:nth-child(3n + 3) .lyric .tab {
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    background: var(--m-lt);
+    color: var(--ink);
+    font: .95rem/1 var(--display);
+    clip-path: none;
+    box-shadow: inset 0 -2px 0 rgb(58 33 80 / 18%);
+  }
+  .line.seed .lyric { background: linear-gradient(90deg, var(--ada-lt), var(--toki-lt)); }
+  .line.open .lyric { background: var(--m-lt); border-color: var(--plum); box-shadow: 0 3px 0 var(--plum); rotate: 0deg; }
+  .lyric::before {
+    content: var(--mname);
+    position: absolute;
+    left: .7rem;
+    top: -.8rem;
+    padding: .05rem .55rem;
+    border-radius: 999px;
+    background: var(--m-dk);
+    color: var(--chip-ink);
+    font: .58rem/1.6 var(--display);
+    letter-spacing: .06em;
+    box-shadow: 0 0 0 2px var(--card);
+    visibility: hidden;
+    @media (max-width: 640px) { left: auto; right: 2.8rem; }
+  }
+  /* the member's colour wipes across the line as it's sung, in step with the audio (page.mjs sets --line-p) */
+  .line.now .lyric {
+    border: 3px solid var(--plum);
+    background: linear-gradient(90deg, var(--m-lt) 50%, var(--card) 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%;
+    color: var(--ink);
+    scale: 1.03;
+    rotate: -.5deg;
+    box-shadow: 0 4px 0 var(--plum), 0 0 0 5px color-mix(in srgb, var(--m) 40%, transparent), 0 0 26px var(--m);
+    &::before { visibility: visible; }
+  }
+  .from-here {
+    border: 2px solid var(--m-dk);
+    background: var(--card);
+    color: var(--m-dk);
+    opacity: .55;
+    &:hover, &:focus-visible { background: var(--m-dk); color: var(--chip-ink); }
+  }
+
+  /* annotations are the variety show's TMI cards */
+  .note, .line:nth-child(3n + 2) .note, .line:nth-child(3n + 3) .note {
+    padding: 1.3rem 1.2rem .9rem;
+    border: 3px solid var(--plum);
+    border-radius: 20px;
+    background: var(--card);
+    color: var(--ink);
+    font: .95rem/1.55 var(--type);
+    rotate: 0deg;
+    box-shadow: 0 5px 0 var(--plum);
+    &::before {
+      content: "TMI ♡";
+      left: 1rem;
+      top: -.85rem;
+      width: auto;
+      height: auto;
+      padding: .1rem .75rem;
+      border-radius: 999px;
+      background: var(--m-dk);
+      color: var(--chip-ink);
+      font: .72rem/1.5 var(--display);
+      rotate: -3deg;
+      box-shadow: 0 0 0 3px var(--card);
+    }
+    .sources li::before { content: "♡ "; color: var(--m-dk); }
+  }
+  .seed-credit { font: 1rem var(--type); rotate: 0deg; }
+
+  /* choruses are the stage: the LED wall, beams, and a lightstick ocean; the venue grows every time */
+  .chorus {
+    --hue: var(--neon-pink);
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    margin: 2.5rem -16px;
+    padding: 2rem clamp(16px, 3vw, 2.5rem) 3.6rem;
+    border-radius: 28px;
+    background:
+      radial-gradient(circle, var(--hue) 2.5px, transparent 3.5px) 0 calc(100% - 10px) / 20px 16px repeat-x,
+      radial-gradient(circle, var(--neon-cyan) 2.5px, transparent 3.5px) 10px calc(100% - 26px) / 20px 16px repeat-x,
+      radial-gradient(circle, rgb(255 255 255 / 11%) 1.5px, transparent 2px) 0 0 / 8px 8px,
+      conic-gradient(from 160deg at 15% -12%, transparent 0 8deg, color-mix(in srgb, var(--hue) 30%, transparent) 10deg 17deg, transparent 20deg 360deg),
+      conic-gradient(from 165deg at 85% -12%, transparent 0 20deg, rgb(53 232 255 / 22%) 23deg 30deg, transparent 33deg 360deg),
+      linear-gradient(rgb(11 5 32), rgb(24 10 52) 55%, rgb(58 26 107));
+    box-shadow: 0 0 0 4px var(--plum), 0 12px 32px rgb(58 33 80 / 35%);
+    rotate: 0deg;
+    .lyric {
+      padding: .2rem .6rem;
+      border: 3px solid transparent;
+      background: transparent;
+      color: white;
+      font: clamp(1.25rem, 3vw, 2rem)/1.2 var(--display);
+      text-transform: none;
+      text-shadow: 0 0 14px var(--hue), 0 3px 0 rgb(24 8 44);
+      box-shadow: none;
+    }
+    button.lyric:hover, button.lyric:focus-visible { background: rgb(255 255 255 / 12%); }
+    .line.open .lyric { background: rgb(255 255 255 / 14%); border-color: rgb(255 255 255 / 50%); box-shadow: none; }
+    .line.now .lyric {
+      --m-dk: var(--toki-dk);
+      border-color: white;
+      background: linear-gradient(90deg, rgb(255 140 200), rgb(214 196 255) 25%, rgb(150 240 255) 50%, rgb(255 255 255 / 82%) 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%;
+      color: rgb(43 24 56);
+      text-shadow: none;
+      box-shadow: 0 0 28px var(--hue);
+      scale: 1.02;
+      &::before { background: var(--rainbow); color: rgb(43 24 56); box-shadow: 0 0 0 2px white; }
+    }
+    .lyric .tab { width: 1.6rem; height: 1.6rem; background: var(--toki-lt); color: rgb(43 24 56); }
+    .from-here { background: rgb(255 255 255 / 12%); border-color: rgb(255 255 255 / 60%); color: white; opacity: .8; }
+    .twist .lyric { color: rgb(255 214 64); }
+    .twist.now .lyric { color: rgb(43 24 56); }
+  }
+  #c2 { --hue: var(--logi); }
+  #c3 { --hue: var(--neon-cyan); }
+  .chorus.final {
+    --hue: rgb(255 210 63);
+    rotate: 0deg;
+    &::before {
+      content: "D-DAY";
+      position: absolute;
+      z-index: -1;
+      right: -.05em;
+      top: 50%;
+      translate: 0 -50%;
+      color: rgb(255 210 63 / 13%);
+      font: clamp(4rem, 13vw, 10rem)/1 var(--display);
+      pointer-events: none;
+    }
+  }
+  .outro .lyric {
+    padding: .2rem 1rem;
+    border: 2px solid var(--lilac);
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--ada-dk);
+    font: clamp(1rem, 2.4vw, 1.25rem)/1.4 var(--display);
+    rotate: -2deg;
+    mask-image: none;
+  }
+  .outro .line.now .lyric { background: var(--ada-lt); color: var(--ink); }
+
+  /* the now-playing card is a photocard of whoever's singing, with a holographic frame */
+  .lyrics:has(.verse .line.now:nth-child(4n + 1)) .now-card { --m: var(--toki); --m-dk: var(--toki-dk); --mname: "TOKI"; }
+  .lyrics:has(.verse .line.now:nth-child(4n + 2)) .now-card { --m: var(--relu); --m-dk: var(--relu-dk); --mname: "RELU"; }
+  .lyrics:has(.verse .line.now:nth-child(4n + 3)) .now-card { --m: var(--ada); --m-dk: var(--ada-dk); --mname: "ADA"; }
+  .lyrics:has(.verse .line.now:nth-child(4n + 4)) .now-card { --m: var(--logi); --m-dk: var(--logi-dk); --mname: "LOGI"; }
+  .now-card {
+    padding: 1.5rem 1.2rem 1rem;
+    border: 7px solid transparent;
+    border-radius: 24px;
+    background: linear-gradient(var(--card), var(--card)) padding-box, linear-gradient(135deg, rgb(255 179 214), rgb(201 182 255), rgb(174 227 255), rgb(169 243 218), rgb(255 226 150), rgb(255 179 214)) border-box;
+    color: var(--ink);
+    font: .92rem/1.5 var(--type);
+    rotate: .8deg;
+    box-shadow: 0 0 0 3px var(--plum), 0 7px 0 3px var(--plum);
+    &::before {
+      content: var(--mname);
+      left: 50%;
+      top: -1.1rem;
+      translate: -50% 0;
+      width: auto;
+      height: auto;
+      padding: .15rem 1rem;
+      border-radius: 999px;
+      background: var(--m-dk);
+      color: var(--chip-ink);
+      font: .8rem/1.5 var(--display);
+      letter-spacing: .08em;
+      rotate: -2deg;
+      box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--plum);
+    }
+    .side-play { border: 3px solid var(--plum); border-radius: 999px; background: var(--toki-dk); color: var(--chip-ink); font-family: var(--display); box-shadow: 0 3px 0 var(--plum); }
+    .now-stamp:not(:empty) { padding: .05rem .6rem; border: 2px solid var(--m); border-radius: 999px; color: var(--ink); font: .66rem/1.5 var(--display); rotate: 0deg; }
+    .now-line { font: 1.1rem/1.3 var(--display); }
+    .sources li::before { content: "♡ "; }
+  }
+
+  /* the tape wall is an album's photocard binder */
+  .tapes { gap: 2rem 1.6rem; }
+  .tape-card {
+    padding: 1.6rem 1.1rem 1rem;
+    border: 3px solid var(--plum);
+    border-radius: 22px;
+    background: linear-gradient(90deg, rgb(255 179 214), rgb(201 182 255), rgb(174 227 255), rgb(169 243 218), rgb(255 226 150)) top / 100% 10px no-repeat, var(--card);
+    box-shadow: 0 5px 0 var(--plum);
+    rotate: -.6deg;
+    &:nth-child(2n) { rotate: .6deg; }
+    .tape-label, .tape-model { top: -.85rem; padding: .05rem .65rem; border: 2px solid var(--plum); border-radius: 999px; font: .62rem/1.5 var(--display); letter-spacing: .05em; }
+    .tape-label { background: var(--toki-lt); color: var(--ink); }
+    .tape-model { background: var(--ada-lt); color: var(--ink); &[data-model^="Suno"] { background: var(--relu-lt); } }
+    h3 { color: var(--ink); font: 1.35rem/1.2 var(--display); }
+    p { font-family: var(--type); }
+    .tape-video { font: .82rem/1.4 var(--type); }
+    .play-version { border: 3px solid var(--plum); border-radius: 999px; background: var(--toki-dk); color: var(--chip-ink); font: .82rem var(--display); box-shadow: 0 3px 0 var(--plum), inset 0 2px 0 rgb(255 255 255 / 30%); }
+    &.playing { outline: 0; box-shadow: 0 5px 0 var(--plum), 0 0 0 7px var(--toki-lt), 0 0 30px var(--neon-pink); }
+  }
+
+  /* the jukebox: pastel cassettes, the kind sold at the merch table */
+  .cassettes {
+    --cs-shell: light-dark(rgb(232 222 255), rgb(58 26 107));
+    --cs-screw: var(--toki);
+    --cs-label: var(--card);
+    --cs-stripe: var(--rainbow);
+    --cs-ink: var(--ink);
+    --cs-soft: var(--ink-soft);
+    --cs-hub: var(--toki);
+    --cs-hub-ink: rgb(43 24 56);
+    --cs-tape: var(--toki);
+    --cs-window: rgb(43 24 56);
+    --cs-title: var(--display);
+    --cs-text: var(--type);
+    --cs-radius: 20px;
+  }
+  .cassette { border: 3px solid var(--plum); box-shadow: 0 4px 0 var(--plum); }
+  .cassette.playing { box-shadow: 0 4px 0 var(--plum), 0 0 0 6px var(--toki-lt), 0 0 24px var(--neon-pink); }
+  .cassette-label { border-radius: 12px; h3 { font-size: 1rem; } }
+
+  .liner-body {
+    padding: 1.5rem 1.7rem;
+    border: 3px solid var(--plum);
+    border-radius: 24px;
+    background: var(--card);
+    color: var(--ink);
+    font-family: var(--type);
+    rotate: 0deg;
+    box-shadow: 0 6px 0 var(--plum);
+    a { color: var(--link); }
+  }
+  .credits {
+    font: .72rem/1.4 var(--display);
+    gap: .5rem;
+    span { padding: .3em .9em; border-radius: 999px; background: var(--toki-lt); }
+    span:nth-child(2) { background: var(--relu-lt); }
+    span:nth-child(3) { background: var(--ada-lt); }
+    span:nth-child(4) { background: var(--logi-lt); }
+  }
+  .colophon { font-family: var(--type); }
+}
+@keyframes k-pop-twinkle {
+  0%, 100% { scale: .55; opacity: .35; rotate: 0deg; }
+  50% { scale: 1; opacity: 1; rotate: 45deg; }
+}
+@keyframes k-pop-spring { from { scale: 0; opacity: 0; } }
+
+/* ---------- anisong: the Scaling Club's TV-anime opening ----------
+   Light is an airy spring sky with sakura; dark is the same sky at night. The verses follow the video's school year
+   (spring, summer, autumn, winter), and each chorus is one of its scenes: the rooftop at noon, the summer festival at
+   dusk, sunset silhouettes, and the sunrise, with the scaling curve steeper each time. */
+:root[data-theme="anisong"] {
+  color-scheme: light;
+  --navy: rgb(38 48 90);
+  --rim: rgb(27 35 80);
+  --line: rgb(185 198 240);
+  --pink: rgb(255 92 154);
+  --pink-dk: rgb(200 40 100);
+  --orange: rgb(255 154 60);
+  --blue: rgb(63 123 255);
+  --blue-dk: rgb(47 85 212);
+  --lav: rgb(184 166 240);
+  --sakura: rgb(255 194 214);
+  --paper: rgb(234 244 255);
+  --ink: var(--navy);
+  --ink-soft: rgb(38 48 90 / 78%);
+  --card: white;
+  --card-2: rgb(243 247 255);
+  --link: var(--blue-dk);
+  --stripe: linear-gradient(90deg, var(--pink), var(--orange));
+  --white-rim: 2px 2px 0 white, -2px 2px 0 white, 2px -2px 0 white, -2px -2px 0 white, 0 3px 0 white, 3px 0 0 white, -3px 0 0 white, 0 -3px 0 white;
+  --navy-rim: 2px 2px 0 var(--rim), -2px 2px 0 var(--rim), 2px -2px 0 var(--rim), -2px -2px 0 var(--rim), 0 3px 0 var(--rim), 3px 0 0 var(--rim), -3px 0 0 var(--rim), 0 -3px 0 var(--rim);
+  --display: "Rammetto One", "Arial Rounded MT Bold", sans-serif;
+  --heavy: "Archivo Black", "Arial Black", sans-serif;
+  --type: system-ui, sans-serif;
+  --code: "Space Mono", "Courier New", monospace;
+  --season: var(--pink);
+  --season-dk: var(--pink-dk);
+  --season-lt: rgb(255 228 238);
+  --curve-c1: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 300' preserveAspectRatio='none'%3E%3Cg fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M0 290L42 287L83 284L125 280L167 276L208 272L250 267L292 262L333 256L375 250L417 243L458 236L500 228L542 219L583 209L625 198L667 186L708 173L750 159L792 143L833 126L875 108L917 87L958 65L1000 40' stroke='white' stroke-opacity='.45' stroke-width='14' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 290L42 287L83 284L125 280L167 276L208 272L250 267L292 262L333 256L375 250L417 243L458 236L500 228L542 219L583 209L625 198L667 186L708 173L750 159L792 143L833 126L875 108L917 87L958 65L1000 40' stroke='white' stroke-width='4' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 290L42 287L83 284L125 280L167 276L208 272L250 267L292 262L333 256L375 250L417 243L458 236L500 228L542 219L583 209L625 198L667 186L708 173L750 159L792 143L833 126L875 108L917 87L958 65L1000 40' stroke='rgb(255 92 154)' stroke-width='1.5' vector-effect='non-scaling-stroke'/%3E%3C/g%3E%3C/svg%3E");
+  --curve-c2: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 300' preserveAspectRatio='none'%3E%3Cg fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M0 290L42 289L83 287L125 285L167 283L208 281L250 278L292 274L333 271L375 266L417 261L458 256L500 249L542 241L583 233L625 223L667 211L708 197L750 182L792 164L833 144L875 120L917 93L958 61L1000 25' stroke='white' stroke-opacity='.45' stroke-width='14' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 290L42 289L83 287L125 285L167 283L208 281L250 278L292 274L333 271L375 266L417 261L458 256L500 249L542 241L583 233L625 223L667 211L708 197L750 182L792 164L833 144L875 120L917 93L958 61L1000 25' stroke='white' stroke-width='4' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 290L42 289L83 287L125 285L167 283L208 281L250 278L292 274L333 271L375 266L417 261L458 256L500 249L542 241L583 233L625 223L667 211L708 197L750 182L792 164L833 144L875 120L917 93L958 61L1000 25' stroke='rgb(255 92 154)' stroke-width='1.5' vector-effect='non-scaling-stroke'/%3E%3C/g%3E%3C/svg%3E");
+  --curve-c3: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 300' preserveAspectRatio='none'%3E%3Cg fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M0 290L42 290L83 289L125 288L167 288L208 287L250 285L292 284L333 282L375 280L417 277L458 273L500 269L542 263L583 257L625 249L667 239L708 226L750 211L792 192L833 169L875 141L917 106L958 63L1000 10' stroke='white' stroke-opacity='.45' stroke-width='14' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 290L42 290L83 289L125 288L167 288L208 287L250 285L292 284L333 282L375 280L417 277L458 273L500 269L542 263L583 257L625 249L667 239L708 226L750 211L792 192L833 169L875 141L917 106L958 63L1000 10' stroke='white' stroke-width='4' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 290L42 290L83 289L125 288L167 288L208 287L250 285L292 284L333 282L375 280L417 277L458 273L500 269L542 263L583 257L625 249L667 239L708 226L750 211L792 192L833 169L875 141L917 106L958 63L1000 10' stroke='rgb(255 92 154)' stroke-width='1.5' vector-effect='non-scaling-stroke'/%3E%3C/g%3E%3C/svg%3E");
+  --curve-c4: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 300' preserveAspectRatio='none'%3E%3Cg fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M0 290L42 290L83 290L125 290L167 290L208 290L250 290L292 289L333 289L375 289L417 288L458 287L500 286L542 284L583 282L625 278L667 273L708 265L750 253L792 236L833 212L875 176L917 125L958 49L1000 -60' stroke='white' stroke-opacity='.45' stroke-width='14' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 290L42 290L83 290L125 290L167 290L208 290L250 290L292 289L333 289L375 289L417 288L458 287L500 286L542 284L583 282L625 278L667 273L708 265L750 253L792 236L833 212L875 176L917 125L958 49L1000 -60' stroke='white' stroke-width='4' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 290L42 290L83 290L125 290L167 290L208 290L250 290L292 289L333 289L375 289L417 288L458 287L500 286L542 284L583 282L625 278L667 273L708 265L750 253L792 236L833 212L875 176L917 125L958 49L1000 -60' stroke='rgb(255 92 154)' stroke-width='1.5' vector-effect='non-scaling-stroke'/%3E%3C/g%3E%3C/svg%3E");
+
+  @media (prefers-color-scheme: dark) {
+    color-scheme: dark;
+    --paper: rgb(16 20 50);
+    --ink: rgb(238 241 255);
+    --ink-soft: rgb(238 241 255 / 76%);
+    --card: rgb(30 37 82);
+    --card-2: rgb(40 48 100);
+    --line: rgb(78 92 160);
+    --link: rgb(150 190 255);
+    --season-lt: rgb(96 40 90);
+  }
+
+  #v1 { --season: var(--pink); --season-dk: var(--pink-dk); --season-name: "Spring"; }
+  #v2 { --season: rgb(63 169 255); --season-dk: rgb(31 111 208); --season-lt: light-dark(rgb(222 240 255), rgb(24 60 110)); --season-name: "Summer"; }
+  #v3 { --season: rgb(242 155 56); --season-dk: rgb(179 90 0); --season-lt: light-dark(rgb(255 236 214), rgb(96 56 14)); --season-name: "Autumn"; }
+  #v4 { --season: rgb(124 139 224); --season-dk: rgb(68 83 184); --season-lt: light-dark(rgb(230 234 255), rgb(46 54 120)); --season-name: "Winter"; }
+
+  body {
+    background: linear-gradient(rgb(142 201 255), rgb(191 227 255) 14rem, rgb(234 244 255) 44rem, rgb(250 247 255) 60%, rgb(255 238 243));
+    font: 17px/1.6 var(--type);
+    @media (prefers-color-scheme: dark) {
+      /* stars: dots on tiles of unrelated sizes, so no grid shows */
+      background:
+        radial-gradient(circle, rgb(255 255 255 / 80%) 1.1px, transparent 1.7px) 13px 7px / 97px 89px,
+        radial-gradient(circle, rgb(255 230 240 / 60%) 1px, transparent 1.6px) 40px 60px / 131px 113px,
+        radial-gradient(circle, rgb(255 255 255 / 55%) .9px, transparent 1.5px) 71px 23px / 173px 157px,
+        radial-gradient(circle, rgb(210 225 255 / 70%) 1.2px, transparent 1.8px) 5px 97px / 211px 193px,
+        radial-gradient(circle, white 1.3px, rgb(255 255 255 / 25%) 2px, transparent 3px) 150px 40px / 331px 293px,
+        linear-gradient(rgb(12 16 44), rgb(22 26 66) 40rem, rgb(34 30 80) 80%, rgb(48 32 84));
+    }
+  }
+  /* god-rays from the top-left corner */
+  body::after {
+    z-index: -1;
+    opacity: 1;
+    mix-blend-mode: normal;
+    background: repeating-conic-gradient(from 95deg at -5% -10%, rgb(255 255 255 / 45%) 0 2.5deg, transparent 2.5deg 7deg);
+    mask-image: radial-gradient(circle at 0 0, black, transparent 55vmax);
+    @media (prefers-color-scheme: dark) { opacity: .12; }
+  }
+
+  /* sakura drifting down */
+  .fx { display: block; }
+  .fx i {
+    position: absolute;
+    left: calc(mod(var(--i) * 37 + 3, 100) * 1%);
+    top: calc(mod(var(--i) * 23 + 5, 90) * 1%);
+    width: calc(11px + mod(var(--i) * 5, 7) * 1px);
+    height: calc(8px + mod(var(--i) * 3, 5) * 1px);
+    border-radius: 100% 0 100% 0 / 100% 0 100% 0;
+    background: radial-gradient(ellipse at 35% 35%, white 0 12%, var(--sakura) 45%, rgb(255 143 184));
+    opacity: .85;
+    animation: anisong-fall linear infinite;
+    animation-duration: calc(12s + mod(var(--i) * 3, 7) * 1s);
+    animation-delay: calc(var(--i) * -2.3s);
+  }
+
+  .masthead {
+    background: rgb(255 255 255 / 70%);
+    color: var(--navy);
+    border-bottom: 3px solid;
+    border-image: var(--stripe) 1;
+    font: 12px/1.3 var(--code);
+    letter-spacing: .08em;
+    @media (prefers-color-scheme: dark) { background: rgb(10 14 40 / 80%); color: var(--ink); }
+  }
+
+  /* the title card: blue then a big pink SCALING, white-rimmed and outlined, dropping in letter by letter */
+  .cover {
+    position: relative;
+    isolation: isolate;
+    /* clouds under the title */
+    &::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: 14rem calc(50% - 50vw) auto;
+      height: 22rem;
+      background:
+        radial-gradient(closest-side, white 70%, transparent) 4% 40% / 22rem 9rem no-repeat,
+        radial-gradient(closest-side, white 70%, transparent) 14% 20% / 14rem 10rem no-repeat,
+        radial-gradient(closest-side, white 70%, transparent) 90% 30% / 24rem 10rem no-repeat,
+        radial-gradient(closest-side, white 70%, transparent) 80% 10% / 12rem 9rem no-repeat,
+        radial-gradient(closest-side, rgb(255 255 255 / 70%) 60%, transparent) 50% 90% / 60rem 10rem no-repeat;
+      opacity: .85;
+      @media (prefers-color-scheme: dark) { opacity: .08; }
+    }
+    h1 {
+      position: relative;
+      font-size: clamp(1.6rem, 6.4vw, 4.4rem);
+      gap: 0;
+      rotate: -4deg;
+      .line-1 { translate: .5em 0; }
+      .line-2 { translate: -.2em 0; font-size: 1em; }
+      .line-2 .word:last-child { font-size: 1.45em; }
+      &::after {
+        content: "";
+        position: absolute;
+        right: 6%;
+        top: 42%;
+        width: .9em;
+        aspect-ratio: 1;
+        background: radial-gradient(white 20%, rgb(255 255 255 / 0) 65%);
+        clip-path: polygon(50% 0, 57% 43%, 100% 50%, 57% 57%, 50% 100%, 43% 57%, 0 50%, 43% 43%);
+        animation: anisong-glint 3.5s ease-in-out infinite;
+      }
+    }
+  }
+  .ransom .word { gap: 0; }
+  .ransom .gap { width: .3em; }
+  .ransom .glyph {
+    --fill: linear-gradient(rgb(215 238 255) 10%, rgb(110 176 255) 45%, rgb(47 85 212) 85%);
+    padding: 0 .01em;
+    font-family: var(--display);
+    color: white;
+    -webkit-text-stroke: .2em white;
+    text-shadow: .03em .08em .08em rgb(90 110 190 / 45%);
+    transform: none;
+    animation: anisong-drop .5s cubic-bezier(.2, 1.4, .4, 1) backwards;
+    animation-delay: calc(var(--i) * 45ms);
+    &::before { color: var(--rim); -webkit-text-stroke: .1em var(--rim); text-shadow: none; }
+    &::after { background: var(--fill); background-clip: text; color: transparent; -webkit-text-stroke: 0; text-shadow: none; }
+  }
+  .cover .line-2 .word:last-child .glyph { --fill: linear-gradient(rgb(255 236 244) 8%, rgb(255 150 190) 40%, rgb(240 60 130) 80%); }
+  .dek { max-width: 42rem; }
+  /* the dek's hook is a speech bubble */
+  .tape {
+    position: relative;
+    display: table;
+    margin: 0 auto 1.1rem;
+    padding: .35rem 1.1rem;
+    border: 2px solid var(--rim);
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--ink);
+    font: 1rem/1.3 var(--heavy);
+    rotate: 0deg;
+    box-shadow: 0 3px 0 var(--line);
+    &::after {
+      content: "";
+      position: absolute;
+      left: 22%;
+      bottom: -8px;
+      width: 12px;
+      height: 12px;
+      border-right: 2px solid var(--rim);
+      border-bottom: 2px solid var(--rim);
+      background: var(--card);
+      rotate: 45deg;
+    }
+  }
+
+  /* the player: a clean card with the date card's pink-to-orange stripe */
+  .player {
+    border-radius: 22px;
+    background: var(--stripe) top / 100% 5px no-repeat, var(--card);
+    box-shadow: 0 0 0 1px var(--line), 0 16px 44px rgb(90 120 200 / 28%);
+    &::before, &::after { content: none; }
+  }
+  .stage { border-radius: 14px; }
+  .big-play {
+    border: 5px solid white;
+    background: radial-gradient(circle at 35% 30%, rgb(226 70 128), var(--pink-dk) 70%);
+    color: white;
+    font-family: var(--display);
+    rotate: 0deg;
+    box-shadow: 0 0 0 3px var(--rim), 0 0 30px rgb(255 255 255 / 80%);
+    .big-play-label { font-size: calc(clamp(12px, 1.9cqi, 19px) * var(--grow)); }
+  }
+  .deck {
+    font-family: var(--code);
+    button {
+      border: 2px solid var(--line);
+      border-radius: 999px;
+      background: var(--card);
+      color: var(--ink);
+      box-shadow: 0 2px 0 var(--line);
+    }
+    .deck-play { border-color: var(--pink-dk); background: var(--pink-dk); color: white; }
+    .version select {
+      border: 2px solid var(--line);
+      border-radius: 999px;
+      padding: .25rem .6rem;
+      background: var(--card);
+      color: var(--ink);
+      box-shadow: 0 2px 0 var(--line);
+    }
+  }
+  .check input { border: 2px solid var(--line); border-radius: 5px; background: var(--card); color: var(--pink-dk); }
+  .scrub input {
+    &::-webkit-slider-runnable-track { background: linear-gradient(to right, var(--pink), var(--orange) var(--pct, 0%), var(--card-2) 0); border: 2px solid var(--line); border-radius: 999px; }
+    &::-moz-range-track { background: var(--card-2); border: 2px solid var(--line); border-radius: 999px; }
+    &::-moz-range-progress { background: linear-gradient(to right, var(--pink), var(--orange)); border-radius: 999px; }
+    &::-webkit-slider-thumb { width: 20px; height: 20px; margin-top: -7px; background: white; border: 3px solid var(--rim); border-radius: 50%; }
+    &::-moz-range-thumb { width: 14px; height: 14px; background: white; border: 3px solid var(--rim); border-radius: 50%; }
+  }
+  .scrub .ticks span { color: var(--ink-soft); &::before { border-color: var(--line); } }
+
+  /* section heads are logo lettering */
+  .lyrics-head h2, .album h2, .jukebox h2, .liner h2 {
+    display: inline-block;
+    color: var(--blue-dk);
+    font: 1.8rem/1.2 var(--display);
+    text-shadow: var(--white-rim), 0 5px 0 var(--line);
+    transform: skewX(-8deg);
+    @media (prefers-color-scheme: dark) { color: rgb(150 190 255); text-shadow: var(--navy-rim), 0 5px 0 rgb(8 10 30); }
+  }
+  .lyrics-head .inline-play { border-color: var(--line); }
+
+  /* verse heads are episode title cards, with the season */
+  .verse-head {
+    align-items: center;
+    h3 {
+      padding: .1em .7em .12em .6em;
+      border-left: .35em solid var(--season);
+      background: var(--card);
+      font-size: 1.55rem;
+      transform: skewX(-12deg);
+      box-shadow: 0 4px 0 var(--line);
+    }
+    .ransom .glyph { color: var(--ink); -webkit-text-stroke: 0; text-shadow: none; &::before, &::after { content: none; } }
+    .era { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font: .9rem var(--code); }
+    .era-span { margin: 0; padding: .05em .7em; border: 0; border-radius: 999px; background: var(--season-lt); color: var(--ink); font: .75rem/1.6 var(--code); rotate: 0deg; }
+    &::after {
+      content: var(--season-name);
+      padding: .15em .8em;
+      border-radius: 999px;
+      background: var(--season-dk);
+      color: white;
+      font: .72rem/1.5 var(--code);
+      letter-spacing: .2em;
+      text-transform: uppercase;
+    }
+  }
+
+  /* dates are the slanted date card: month and day small over the year */
+  .stamp {
+    display: inline-grid;
+    justify-items: end;
+    padding: .2rem .6rem .25rem 1rem;
+    border: 0;
+    border-radius: 3px;
+    background: var(--stripe) left / .3rem 100% no-repeat, var(--card);
+    color: var(--ink);
+    transform: skewX(-12deg);
+    rotate: 0deg;
+    opacity: 1;
+    mask-image: none;
+    box-shadow: 0 2px 0 var(--line), 0 4px 12px rgb(90 120 200 / 16%);
+    @media (max-width: 640px) { display: inline-flex; align-items: baseline; gap: .5em; }
+  }
+  .stamp-md { color: var(--season-dk); font: .64rem/1.2 var(--code); letter-spacing: .1em; @media (prefers-color-scheme: dark) { color: var(--season); } }
+  .stamp-y { font: .95rem/1.05 var(--display); }
+  .line.now .stamp { scale: 1.08; box-shadow: 0 2px 0 var(--pink), 0 0 16px rgb(255 92 154 / 45%); }
+
+  /* lines are clean cards; the sung one fills pink, letter by letter, as the karaoke subtitle does */
+  .lyric {
+    padding: .4rem .5rem .45rem .95rem;
+    border: 2px solid var(--line);
+    border-radius: 14px;
+    background: var(--card);
+    color: var(--ink);
+    /* Chromium's rasterizer merges the dot of Archivo Black's "i" into the stem at about 19 px, so stay off that size */
+    font: clamp(1rem, 2.2vw, 1.25rem)/1.3 var(--heavy);
+    clip-path: none;
+    rotate: 0deg;
+    box-shadow: 0 3px 0 var(--line);
+  }
+  button.lyric {
+    &:hover, &:focus-visible { background: var(--card-2); rotate: 0deg; }
+    &:focus-visible { border-color: var(--blue-dk); box-shadow: 0 3px 0 var(--line); }
+  }
+  .lyric .tab, .line:nth-child(3n + 2) .lyric .tab, .line:nth-child(3n + 3) .lyric .tab {
+    width: 1.45rem;
+    height: 1.45rem;
+    border-radius: 50%;
+    background: var(--season-lt);
+    color: var(--ink);
+    font: .95rem/1 var(--display);
+    clip-path: none;
+    box-shadow: inset 0 -2px 0 rgb(38 48 90 / 12%);
+  }
+  .line.seed .lyric { background: linear-gradient(90deg, var(--card), var(--season-lt)); }
+  .line.open .lyric { background: var(--season-lt); border-color: var(--season); rotate: 0deg; }
+  .lyric::before {
+    content: "♪";
+    position: absolute;
+    left: -.55rem;
+    top: -.55rem;
+    display: grid;
+    place-items: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 50%;
+    background: var(--pink-dk);
+    color: white;
+    font: .8rem/1 var(--type);
+    box-shadow: 0 0 0 2px white;
+    visibility: hidden;
+  }
+  .line.now .lyric {
+    border-color: var(--pink);
+    background: var(--card);
+    scale: 1.03;
+    rotate: 0deg;
+    box-shadow: 0 3px 0 var(--pink), 0 0 0 4px rgb(255 92 154 / 22%), 0 8px 24px rgb(255 92 154 / 30%);
+    &::before { visibility: visible; }
+    .lyric-text {
+      background: linear-gradient(90deg, var(--pink-dk) 50%, var(--ink) 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%;
+      background-clip: text;
+      color: transparent;
+      @media (prefers-color-scheme: dark) { background-image: linear-gradient(90deg, rgb(255 150 190) 50%, var(--ink) 50%); }
+    }
+  }
+  .from-here {
+    border: 2px solid var(--line);
+    background: var(--card);
+    color: var(--ink);
+    &:hover, &:focus-visible { border-color: var(--season-dk); background: var(--season-dk); color: white; }
+  }
+
+  /* annotations are Kiri's explanations, in speech bubbles */
+  .note, .line:nth-child(3n + 2) .note, .line:nth-child(3n + 3) .note {
+    padding: 1.3rem 1.2rem .9rem;
+    border: 2px solid var(--rim);
+    border-radius: 18px;
+    background: var(--card);
+    color: var(--ink);
+    font: .95rem/1.6 var(--type);
+    rotate: 0deg;
+    box-shadow: 0 4px 0 var(--line);
+    animation-name: anisong-note-in;
+    &::before {
+      content: "Kiri explains";
+      left: auto;
+      right: 1rem;
+      top: -.8rem;
+      width: auto;
+      height: auto;
+      padding: .1rem .7rem;
+      border-radius: 999px;
+      background: var(--lav);
+      color: rgb(38 48 90);
+      font: .66rem/1.6 var(--code);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      rotate: 0deg;
+    }
+    &::after {
+      content: "";
+      position: absolute;
+      left: 2rem;
+      top: -8px;
+      width: 13px;
+      height: 13px;
+      border-left: 2px solid var(--rim);
+      border-top: 2px solid var(--rim);
+      background: var(--card);
+      rotate: 45deg;
+    }
+    @media (prefers-color-scheme: dark) { border-color: var(--line); &::after { border-color: var(--line); } }
+    .sources li::before { content: "✦ "; color: var(--pink-dk); }
+  }
+  .seed-credit { font: 1rem var(--type); rotate: 0deg; }
+
+  /* choruses are the opening's big scenes, the curve getting steeper each time */
+  .chorus {
+    --scene: linear-gradient(rgb(110 180 255), rgb(180 222 255) 60%, rgb(255 244 232));
+    --curve: var(--curve-c1);
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    margin: 2.5rem -16px;
+    padding: 2.2rem clamp(16px, 3vw, 2.5rem);
+    border-radius: 24px;
+    background: var(--curve) 0 0 / 100% 100%, var(--scene);
+    box-shadow: 0 0 0 1px var(--line), 0 12px 34px rgb(90 120 200 / 28%);
+    rotate: 0deg;
+    --lyric: var(--navy);
+    --lyric-rim: var(--white-rim);
+    .lyric {
+      padding: .15rem .6rem;
+      border: 2px solid transparent;
+      background: transparent;
+      color: var(--lyric);
+      font: clamp(1.25rem, 3vw, 2rem)/1.2 var(--display);
+      text-transform: none;
+      text-shadow: var(--lyric-rim);
+      box-shadow: none;
+    }
+    button.lyric:hover, button.lyric:focus-visible { background: rgb(255 255 255 / 30%); }
+    .line.open .lyric { background: rgb(255 255 255 / 35%); border-color: white; }
+    .line.now .lyric {
+      border-color: white;
+      background: linear-gradient(90deg, rgb(255 236 170), rgb(255 211 107));
+      color: rgb(38 48 90);
+      text-shadow: none;
+      box-shadow: 0 0 0 3px rgb(255 211 107 / 45%), 0 0 26px rgb(255 211 107 / 80%);
+      .lyric-text { background: none; color: inherit; }
+      &::before { background: rgb(214 140 0); }
+    }
+    .from-here { border-color: white; background: rgb(255 255 255 / 55%); color: var(--navy); }
+    .lyric .tab { width: 1.6rem; height: 1.6rem; background: white; color: var(--navy); }
+  }
+  /* by night, the rooftop is moonlit */
+  #c1 {
+    @media (prefers-color-scheme: dark) {
+      --scene: radial-gradient(circle at 92% 16%, rgb(255 250 230) 0 1.6rem, rgb(255 250 230 / 25%) 2.2rem, transparent 6rem), linear-gradient(rgb(26 40 104), rgb(52 70 150) 65%, rgb(90 96 170));
+      --lyric: white;
+      --lyric-rim: var(--navy-rim);
+    }
+  }
+  /* the summer festival at dusk: lanterns and fireworks */
+  #c2 {
+    --curve: var(--curve-c2);
+    --scene:
+      radial-gradient(circle, rgb(255 190 120) 5px, rgb(255 140 80 / 40%) 7px, transparent 10px) 0 1.2rem / 3.2rem 2rem repeat-x,
+      repeating-conic-gradient(rgb(255 200 230 / 55%) 0 2deg, transparent 2deg 15deg) 88% 22% / 9rem 9rem no-repeat,
+      linear-gradient(rgb(43 47 122), rgb(96 56 148) 65%, rgb(176 78 100));
+    --lyric: white;
+    --lyric-rim: var(--navy-rim);
+  }
+  /* sunset silhouettes on the rooftop */
+  #c3 {
+    --curve: var(--curve-c3);
+    --scene: radial-gradient(circle at 90% 104%, rgb(255 224 150) 0 3.5rem, rgb(255 190 110 / 60%) 5rem, transparent 11rem), linear-gradient(rgb(91 42 134), rgb(176 50 104) 55%, rgb(214 96 52) 90%, rgb(240 150 80));
+    --lyric: white;
+    --lyric-rim: var(--navy-rim);
+  }
+  /* the climax: sunrise, and the key change */
+  .chorus.final {
+    --curve: var(--curve-c4);
+    --scene: radial-gradient(ellipse 60% 45% at 50% 100%, rgb(255 236 170), rgb(255 190 120 / 70%) 45%, transparent 75%), linear-gradient(rgb(150 200 255), rgb(255 214 190) 60%, rgb(255 180 120));
+    .twist { --lyric: rgb(160 16 76); }
+  }
+  .outro .lyric { color: var(--blue-dk); font: clamp(1.2rem, 3vw, 1.7rem)/1.3 var(--hand); rotate: -2deg; @media (prefers-color-scheme: dark) { color: rgb(150 190 255); } }
+  .outro .line.now .lyric { background: var(--card); mask-image: none; .lyric-text { background: none; color: inherit; } }
+
+  /* the now-playing card is a character card: a diagonal split in the cast's colours */
+  .now-card {
+    padding: 2.2rem 1.2rem 1rem;
+    border-radius: 18px;
+    background: linear-gradient(110deg, var(--pink) 0 45%, rgb(110 180 255) 45%) top / 100% 1.3rem no-repeat, var(--card);
+    color: var(--ink);
+    font: .93rem/1.55 var(--type);
+    rotate: 0deg;
+    box-shadow: 0 0 0 1px var(--line), 0 12px 30px rgb(90 120 200 / 25%);
+    &::before {
+      content: "♪ Now playing";
+      left: 1rem;
+      top: .15rem;
+      width: auto;
+      height: auto;
+      background: none;
+      color: white;
+      font: .7rem/1.5 var(--code);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      rotate: 0deg;
+    }
+    .side-play { border: 2px solid var(--pink-dk); border-radius: 999px; background: var(--pink-dk); color: white; font-family: var(--display); box-shadow: none; }
+    .now-stamp:not(:empty) { padding: .05rem .6rem .05rem .8rem; border: 0; background: var(--stripe) left / .25rem 100% no-repeat, var(--card-2); color: var(--ink); font: .75rem/1.5 var(--display); transform: skewX(-12deg); rotate: 0deg; }
+    .now-line { font: 1.1rem/1.3 var(--heavy); }
+    .sources li::before { content: "✦ "; color: var(--pink-dk); }
+  }
+
+  /* the tape wall is a row of character cards */
+  .tapes { gap: 2rem 1.6rem; }
+  .tape-card {
+    --c1: var(--pink);
+    --c2: rgb(110 180 255);
+    padding: 2rem 1.1rem 1rem;
+    border: 0;
+    border-radius: 18px;
+    background: linear-gradient(110deg, var(--c1) 0 50%, var(--c2) 50%) top / 100% .8rem no-repeat, var(--card);
+    box-shadow: 0 0 0 1px var(--line), 0 10px 26px rgb(90 120 200 / 20%);
+    rotate: 0deg;
+    &:nth-child(2n) { rotate: 0deg; }
+    &:nth-child(4n + 2) { --c1: var(--orange); --c2: var(--pink); }
+    &:nth-child(4n + 3) { --c1: var(--lav); --c2: rgb(110 180 255); }
+    &:nth-child(4n + 4) { --c1: rgb(40 60 140); --c2: var(--lav); }
+    .tape-label, .tape-model { top: 1.15rem; padding: 0 .6rem; border-radius: 999px; font: .62rem/1.6 var(--code); letter-spacing: .08em; }
+    .tape-label { background: var(--card-2); color: var(--ink); }
+    .tape-model, .tape-model[data-model^="Suno"] { background: var(--card-2); color: var(--ink); }
+    h3 { margin-top: .9rem; color: var(--ink); font: 1.3rem/1.2 var(--display); }
+    p { font-family: var(--type); }
+    .tape-video { font: .82rem/1.45 var(--type); }
+    .play-version { border: 2px solid var(--pink-dk); border-radius: 999px; background: var(--pink-dk); color: white; font: .82rem var(--display); box-shadow: 0 3px 0 rgb(150 20 70); }
+    &.playing { outline: 0; box-shadow: 0 0 0 3px var(--pink), 0 0 0 7px rgb(255 92 154 / 22%), 0 10px 30px rgb(255 92 154 / 35%); }
+  }
+
+  /* the jukebox: clean cassettes with the date card's stripe */
+  .cassettes {
+    --cs-shell: light-dark(rgb(218 230 255), rgb(22 28 70));
+    --cs-screw: var(--line);
+    --cs-label: var(--card);
+    --cs-stripe: var(--stripe);
+    --cs-ink: var(--ink);
+    --cs-soft: var(--ink-soft);
+    --cs-hub: var(--pink-dk);
+    --cs-hub-ink: white;
+    --cs-tape: var(--pink);
+    --cs-window: var(--rim);
+    --cs-title: var(--heavy);
+    --cs-text: var(--type);
+    --cs-radius: 16px;
+  }
+  .cassette { box-shadow: 0 0 0 1px var(--line), 0 8px 22px rgb(90 120 200 / 18%); }
+  .cassette.playing { box-shadow: 0 0 0 3px var(--pink), 0 8px 24px rgb(255 92 154 / 30%); }
+  .cassette-label { border-radius: 8px; }
+
+  .liner-body {
+    padding: 1.5rem 1.7rem;
+    border-radius: 18px;
+    background: var(--card);
+    color: var(--ink);
+    font-family: var(--type);
+    rotate: 0deg;
+    box-shadow: 0 0 0 1px var(--line), 0 12px 30px rgb(90 120 200 / 20%);
+    a { color: var(--link); }
+  }
+  .credits { font: .78rem/1.5 var(--code); span::before { content: "✦ "; color: var(--pink-dk); } }
+  .colophon { font-family: var(--type); }
+}
+@keyframes anisong-fall {
+  from { translate: -4vw -60vh; rotate: 0deg; }
+  50% { translate: 4vw 0; }
+  to { translate: -2vw 70vh; rotate: 420deg; }
+}
+@keyframes anisong-drop { from { translate: 0 -.5em; opacity: 0; } }
+@keyframes anisong-glint {
+  0%, 60%, 100% { opacity: 0; scale: .3; }
+  75% { opacity: 1; scale: 1.2; }
+}
+@keyframes anisong-note-in { from { opacity: 0; translate: 0 -6px; scale: .96; } }
+
+/* ---------- Eurodance: hype★TV, a late-90s music channel ----------
+   The page is the channel's broadcast of DJ Clawd pres. Softmax feat. MC Token: a chroma-key sky with laser fans over a
+   checkerboard floor, chrome lettering, the chart show's hit-parade bars for the verses, karaoke for the line being sung, and
+   Windows 98 for everything with buttons. Light is the daylight studio set; dark is the club at night. */
+:root[data-theme="eurodance"] {
+  color-scheme: light;
+  --line: rgb(26 15 51);
+  --ultra: rgb(22 51 255);
+  --uv: rgb(91 31 224);
+  --cyan: rgb(18 231 255);
+  --magenta: rgb(255 31 163);
+  --hot: rgb(214 0 128);
+  --yellow: rgb(255 232 31);
+  --laser: rgb(59 255 74);
+  --w98: rgb(192 192 192);
+  --w98-dk: rgb(128 128 128);
+  --w98-lt: rgb(223 223 223);
+  --raised: inset -1px -1px rgb(10 10 10), inset 1px 1px white, inset -2px -2px rgb(128 128 128), inset 2px 2px rgb(223 223 223);
+  --sunken: inset -1px -1px white, inset 1px 1px rgb(128 128 128), inset -2px -2px rgb(223 223 223), inset 2px 2px rgb(10 10 10);
+  --titlebar: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14'%3E%3Cg transform='translate(0 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='4' y='9' width='6' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(16 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='3' y='2' width='9' height='9' fill='none' stroke='%23000'/%3E%3Crect x='3' y='2' width='9' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(36 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Cpath d='M4 3l2 0 2 2 2-2 2 0-3 3.5 3 3.5-2 0-2-2-2 2-2 0 3-3.5z' fill='%23000'/%3E%3C/g%3E%3C/svg%3E") right 3px center / 52px 14px no-repeat, linear-gradient(90deg, rgb(0 0 128), rgb(16 132 208));
+  --paper: rgb(238 238 255);
+  --ink: var(--line);
+  --ink-soft: rgb(26 15 51 / 78%);
+  --link: rgb(22 40 210);
+  --display: "Archivo Black", "Arial Black", sans-serif;
+  --heavy: "Archivo Black", "Arial Black", sans-serif;
+  --type: Verdana, Tahoma, "DejaVu Sans", system-ui, sans-serif;
+  --win: Tahoma, Verdana, "DejaVu Sans", system-ui, sans-serif;
+  --code: "Space Mono", "Courier New", monospace;
+  --logo: "Rammetto One", "Arial Rounded MT Bold", sans-serif;
+  /* the video's chrome lettering: sky-to-sunset chrome, gold and hot pink, each with a horizon line through the middle */
+  --chrome: linear-gradient(rgb(255 255 255) 8%, rgb(206 226 255) 26%, rgb(104 138 230) 47%, rgb(40 24 110) 50%, rgb(255 170 100) 53%, rgb(255 226 190) 76%, white 96%);
+  --gold: linear-gradient(rgb(255 252 224) 8%, rgb(255 226 120) 30%, rgb(214 150 28) 47%, rgb(100 54 0) 50%, rgb(255 204 70) 55%, rgb(255 240 180) 92%);
+  --hot-chrome: linear-gradient(rgb(255 240 250) 8%, rgb(255 150 214) 28%, rgb(255 31 163) 47%, rgb(110 0 70) 50%, rgb(255 80 90) 56%, rgb(255 196 130) 94%);
+  --ice: linear-gradient(white 8%, rgb(200 250 255) 28%, rgb(18 200 240) 47%, rgb(0 60 110) 50%, rgb(60 220 255) 56%, rgb(220 255 255) 94%);
+  --extrude: .03em .03em 0 var(--line), .06em .06em 0 var(--line), .09em .09em 0 var(--line), .12em .12em 0 var(--line), .15em .17em .12em rgb(0 0 0 / 40%);
+  --edge: 2px 0 0 var(--line), -2px 0 0 var(--line), 0 2px 0 var(--line), 0 -2px 0 var(--line), 2px 2px 0 var(--line), -2px 2px 0 var(--line), 2px -2px 0 var(--line), -2px -2px 0 var(--line), 0 4px 0 var(--line);
+  --sky: linear-gradient(rgb(70 100 255), rgb(150 172 255) 38%, rgb(226 224 255) 70%, rgb(255 214 240));
+  --clouds:
+    radial-gradient(closest-side, white 65%, rgb(255 255 255 / 0)) 6% 22% / 20rem 6rem no-repeat,
+    radial-gradient(closest-side, white 65%, rgb(255 255 255 / 0)) 14% 12% / 11rem 7rem no-repeat,
+    radial-gradient(closest-side, white 65%, rgb(255 255 255 / 0)) 94% 18% / 22rem 6.5rem no-repeat,
+    radial-gradient(closest-side, white 65%, rgb(255 255 255 / 0)) 86% 8% / 10rem 6rem no-repeat;
+  --floor: rgb(52 72 250);
+  --tiles: white;
+  --beam-a: rgb(255 255 255 / 55%);
+  --beam-b: rgb(255 31 163 / 40%);
+  --checker: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 300' preserveAspectRatio='none'%3E%3Cpath d='M-29 0.0L0 0.0L-124 24.8L-158 24.8ZM29 0.0L57 0.0L-55 24.8L-90 24.8ZM86 0.0L114 0.0L14 24.8L-21 24.8ZM143 0.0L171 0.0L83 24.8L48 24.8ZM200 0.0L229 0.0L152 24.8L117 24.8ZM257 0.0L286 0.0L221 24.8L186 24.8ZM314 0.0L343 0.0L290 24.8L255 24.8ZM371 0.0L400 0.0L359 24.8L324 24.8ZM429 0.0L457 0.0L428 24.8L393 24.8ZM486 0.0L514 0.0L497 24.8L462 24.8ZM543 0.0L571 0.0L566 24.8L531 24.8ZM600 0.0L629 0.0L634 24.8L600 24.8ZM657 0.0L686 0.0L703 24.8L669 24.8ZM714 0.0L743 0.0L772 24.8L738 24.8ZM771 0.0L800 0.0L841 24.8L807 24.8ZM829 0.0L857 0.0L910 24.8L876 24.8ZM886 0.0L914 0.0L979 24.8L945 24.8ZM943 0.0L971 0.0L1048 24.8L1014 24.8ZM1000 0.0L1029 0.0L1117 24.8L1083 24.8ZM1057 0.0L1086 0.0L1186 24.8L1152 24.8ZM1114 0.0L1143 0.0L1255 24.8L1221 24.8ZM1171 0.0L1200 0.0L1324 24.8L1290 24.8ZM14 24.8L48 24.8L-160 79.4L-207 79.4ZM83 24.8L117 24.8L-65 79.4L-112 79.4ZM152 24.8L186 24.8L30 79.4L-17 79.4ZM221 24.8L255 24.8L125 79.4L78 79.4ZM290 24.8L324 24.8L220 79.4L173 79.4ZM359 24.8L393 24.8L315 79.4L268 79.4ZM428 24.8L462 24.8L410 79.4L363 79.4ZM497 24.8L531 24.8L505 79.4L458 79.4ZM566 24.8L600 24.8L600 79.4L553 79.4ZM634 24.8L669 24.8L695 79.4L647 79.4ZM703 24.8L738 24.8L790 79.4L742 79.4ZM772 24.8L807 24.8L885 79.4L837 79.4ZM841 24.8L876 24.8L980 79.4L932 79.4ZM910 24.8L945 24.8L1075 79.4L1027 79.4ZM979 24.8L1014 24.8L1170 79.4L1122 79.4ZM1048 24.8L1083 24.8L1265 79.4L1217 79.4ZM1117 24.8L1152 24.8L1360 79.4L1312 79.4ZM1186 24.8L1221 24.8L1455 79.4L1407 79.4ZM30 79.4L78 79.4L-66 134.3L-127 134.3ZM125 79.4L173 79.4L55 134.3L-5 134.3ZM220 79.4L268 79.4L176 134.3L116 134.3ZM315 79.4L363 79.4L297 134.3L237 134.3ZM410 79.4L458 79.4L418 134.3L358 134.3ZM505 79.4L553 79.4L539 134.3L479 134.3ZM600 79.4L647 79.4L661 134.3L600 134.3ZM695 79.4L742 79.4L782 134.3L721 134.3ZM790 79.4L837 79.4L903 134.3L842 134.3ZM885 79.4L932 79.4L1024 134.3L963 134.3ZM980 79.4L1027 79.4L1145 134.3L1084 134.3ZM1075 79.4L1122 79.4L1266 134.3L1205 134.3ZM1170 79.4L1217 79.4L1387 134.3L1327 134.3ZM55 134.3L116 134.3L34 177.0L-36 177.0ZM176 134.3L237 134.3L176 177.0L105 177.0ZM297 134.3L358 134.3L317 177.0L246 177.0ZM418 134.3L479 134.3L459 177.0L388 177.0ZM539 134.3L600 134.3L600 177.0L529 177.0ZM661 134.3L721 134.3L741 177.0L671 177.0ZM782 134.3L842 134.3L883 177.0L812 177.0ZM903 134.3L963 134.3L1024 177.0L954 177.0ZM1024 134.3L1084 134.3L1166 177.0L1095 177.0ZM1145 134.3L1205 134.3L1307 177.0L1236 177.0ZM34 177.0L105 177.0L54 207.7L-24 207.7ZM176 177.0L246 177.0L210 207.7L132 207.7ZM317 177.0L388 177.0L366 207.7L288 207.7ZM459 177.0L529 177.0L522 207.7L444 207.7ZM600 177.0L671 177.0L678 207.7L600 207.7ZM741 177.0L812 177.0L834 207.7L756 207.7ZM883 177.0L954 177.0L990 207.7L912 207.7ZM1024 177.0L1095 177.0L1146 207.7L1068 207.7ZM1166 177.0L1236 177.0L1302 207.7L1224 207.7ZM54 207.7L132 207.7L101 229.2L18 229.2ZM210 207.7L288 207.7L267 229.2L184 229.2ZM366 207.7L444 207.7L434 229.2L351 229.2ZM522 207.7L600 207.7L600 229.2L517 229.2ZM678 207.7L756 207.7L766 229.2L683 229.2ZM834 207.7L912 207.7L933 229.2L849 229.2ZM990 207.7L1068 207.7L1099 229.2L1016 229.2ZM1146 207.7L1224 207.7L1265 229.2L1182 229.2ZM-65 229.2L18 229.2L-8 244.5L-94 244.5ZM101 229.2L184 229.2L166 244.5L79 244.5ZM267 229.2L351 229.2L340 244.5L253 244.5ZM434 229.2L517 229.2L513 244.5L426 244.5ZM600 229.2L683 229.2L687 244.5L600 244.5ZM766 229.2L849 229.2L860 244.5L774 244.5ZM933 229.2L1016 229.2L1034 244.5L947 244.5ZM1099 229.2L1182 229.2L1208 244.5L1121 244.5ZM-8 244.5L79 244.5L63 255.6L-26 255.6ZM166 244.5L253 244.5L242 255.6L153 255.6ZM340 244.5L426 244.5L421 255.6L332 255.6ZM513 244.5L600 244.5L600 255.6L511 255.6ZM687 244.5L774 244.5L779 255.6L689 255.6ZM860 244.5L947 244.5L958 255.6L868 255.6ZM1034 244.5L1121 244.5L1137 255.6L1047 255.6ZM63 255.6L153 255.6L143 263.8L52 263.8ZM242 255.6L332 255.6L326 263.8L234 263.8ZM421 255.6L511 255.6L509 263.8L417 263.8ZM600 255.6L689 255.6L691 263.8L600 263.8ZM779 255.6L868 255.6L874 263.8L783 263.8ZM958 255.6L1047 255.6L1057 263.8L966 263.8ZM1137 255.6L1226 255.6L1240 263.8L1148 263.8ZM-40 263.8L52 263.8L43 270.0L-50 270.0ZM143 263.8L234 263.8L229 270.0L136 270.0ZM326 263.8L417 263.8L414 270.0L321 270.0ZM509 263.8L600 263.8L600 270.0L507 270.0ZM691 263.8L783 263.8L786 270.0L693 270.0ZM874 263.8L966 263.8L971 270.0L879 270.0ZM1057 263.8L1148 263.8L1157 270.0L1064 270.0ZM43 270.0L136 270.0L130 274.8L36 274.8ZM229 270.0L321 270.0L318 274.8L224 274.8ZM414 270.0L507 270.0L506 274.8L412 274.8ZM600 270.0L693 270.0L694 274.8L600 274.8ZM786 270.0L879 270.0L882 274.8L788 274.8ZM971 270.0L1064 270.0L1070 274.8L976 274.8ZM1157 270.0L1250 270.0L1258 274.8L1164 274.8ZM-58 274.8L36 274.8L31 278.5L-64 278.5ZM130 274.8L224 274.8L220 278.5L126 278.5ZM318 274.8L412 274.8L410 278.5L315 278.5ZM506 274.8L600 274.8L600 278.5L505 278.5ZM694 274.8L788 274.8L790 278.5L695 278.5ZM882 274.8L976 274.8L980 278.5L885 278.5ZM1070 274.8L1164 274.8L1169 278.5L1074 278.5ZM31 278.5L126 278.5L122 281.5L26 281.5ZM220 278.5L315 278.5L313 281.5L218 281.5ZM410 278.5L505 278.5L504 281.5L409 281.5ZM600 278.5L695 278.5L696 281.5L600 281.5ZM790 278.5L885 278.5L887 281.5L791 281.5ZM980 278.5L1074 278.5L1078 281.5L982 281.5ZM1169 278.5L1264 278.5L1269 281.5L1174 281.5ZM-69 281.5L26 281.5L23 283.9L-73 283.9ZM122 281.5L218 281.5L215 283.9L119 283.9ZM313 281.5L409 281.5L408 283.9L312 283.9ZM504 281.5L600 281.5L600 283.9L504 283.9ZM696 281.5L791 281.5L792 283.9L696 283.9ZM887 281.5L982 281.5L985 283.9L888 283.9ZM1078 281.5L1174 281.5L1177 283.9L1081 283.9ZM23 283.9L119 283.9L117 285.9L20 285.9ZM215 283.9L312 283.9L310 285.9L213 285.9ZM408 283.9L504 283.9L503 285.9L407 285.9ZM600 283.9L696 283.9L697 285.9L600 285.9ZM792 283.9L888 283.9L890 285.9L793 285.9ZM985 283.9L1081 283.9L1083 285.9L987 285.9ZM1177 283.9L1273 283.9L1276 285.9L1180 285.9ZM-76 285.9L20 285.9L18 287.5L-79 287.5ZM117 285.9L213 285.9L212 287.5L115 287.5ZM310 285.9L407 285.9L406 287.5L309 287.5ZM503 285.9L600 285.9L600 287.5L503 287.5ZM697 285.9L793 285.9L794 287.5L697 287.5ZM890 285.9L987 285.9L988 287.5L891 287.5ZM1083 285.9L1180 285.9L1182 287.5L1085 287.5ZM18 287.5L115 287.5L113 288.9L16 288.9ZM212 287.5L309 287.5L308 288.9L211 288.9ZM406 287.5L503 287.5L503 288.9L405 288.9ZM600 287.5L697 287.5L697 288.9L600 288.9ZM794 287.5L891 287.5L892 288.9L795 288.9ZM988 287.5L1085 287.5L1087 288.9L989 288.9ZM1182 287.5L1279 287.5L1282 288.9L1184 288.9ZM-82 288.9L16 288.9L14 290.1L-84 290.1ZM113 288.9L211 288.9L209 290.1L112 290.1ZM308 288.9L405 288.9L405 290.1L307 290.1ZM503 288.9L600 288.9L600 290.1L502 290.1ZM697 288.9L795 288.9L795 290.1L698 290.1ZM892 288.9L989 288.9L991 290.1L893 290.1ZM1087 288.9L1184 288.9L1186 290.1L1088 290.1ZM14 290.1L112 290.1L111 291.0L13 291.0ZM209 290.1L307 290.1L306 291.0L209 291.0ZM405 290.1L502 290.1L502 291.0L404 291.0ZM600 290.1L698 290.1L698 291.0L600 291.0ZM795 290.1L893 290.1L894 291.0L796 291.0ZM991 290.1L1088 290.1L1089 291.0L991 291.0ZM1186 290.1L1284 290.1L1285 291.0L1187 291.0ZM-85 291.0L13 291.0L12 291.9L-86 291.9ZM111 291.0L209 291.0L208 291.9L110 291.9ZM306 291.0L404 291.0L404 291.9L306 291.9ZM502 291.0L600 291.0L600 291.9L502 291.9ZM698 291.0L796 291.0L796 291.9L698 291.9ZM894 291.0L991 291.0L992 291.9L894 291.9ZM1089 291.0L1187 291.0L1188 291.9L1090 291.9ZM12 291.9L110 291.9L109 292.6L11 292.6ZM208 291.9L306 291.9L305 292.6L207 292.6ZM404 291.9L502 291.9L502 292.6L404 292.6ZM600 291.9L698 291.9L698 292.6L600 292.6ZM796 291.9L894 291.9L895 292.6L796 292.6ZM992 291.9L1090 291.9L1091 292.6L993 292.6ZM1188 291.9L1286 291.9L1288 292.6L1189 292.6Z' fill='white'/%3E%3C/svg%3E");
+
+  @media (prefers-color-scheme: dark) {
+    color-scheme: dark;
+    --paper: rgb(13 7 38);
+    --ink: rgb(246 242 255);
+    --ink-soft: rgb(226 216 255 / 80%);
+    --link: rgb(127 233 255);
+    --sky: radial-gradient(ellipse 70% 50% at 50% 100%, rgb(255 31 163 / 80%), rgb(255 31 163 / 0) 70%), linear-gradient(rgb(11 6 32), rgb(38 14 98) 55%, rgb(96 18 140));
+    --clouds: radial-gradient(circle, rgb(255 255 255 / 80%) 1px, transparent 1.6px) 13px 9px / 83px 71px, radial-gradient(circle, rgb(190 230 255 / 60%) 1px, transparent 1.6px) 40px 30px / 127px 109px;
+    --floor: rgb(34 12 92);
+    --tiles: rgb(236 230 255);
+    --beam-a: rgb(18 231 255 / 45%);
+    --beam-b: rgb(255 31 163 / 45%);
+  }
+
+  body {
+    background:
+      radial-gradient(circle, rgb(91 31 224 / 12%) 1.2px, transparent 1.8px) 0 0 / 22px 22px,
+      linear-gradient(rgb(226 232 255), rgb(244 236 255) 50%, rgb(232 244 255));
+    font: 16px/1.6 var(--type);
+    @media (prefers-color-scheme: dark) {
+      background:
+        radial-gradient(circle, rgb(255 255 255 / 70%) 1px, transparent 1.6px) 13px 7px / 97px 89px,
+        radial-gradient(circle, rgb(18 231 255 / 50%) 1px, transparent 1.6px) 40px 60px / 131px 113px,
+        radial-gradient(circle, rgb(255 31 163 / 50%) 1px, transparent 1.6px) 71px 23px / 173px 157px,
+        linear-gradient(rgb(11 6 32), rgb(24 10 60) 50%, rgb(11 6 32));
+    }
+  }
+  /* the channel bug: translucent, top left, its star pulsing on the kick (141 BPM). It sits behind the page's content (but
+     in front of the cover's sky, which isn't isolated for that reason), so it never covers any text. */
+  body::after {
+    content: "hype★";
+    inset: 42px auto auto 14px;
+    z-index: -1;
+    opacity: 1;
+    mix-blend-mode: normal;
+    background: none;
+    color: rgb(255 255 255 / 55%);
+    font: 1.6rem/1 var(--logo);
+    text-shadow: 0 1px 2px rgb(26 15 51 / 30%);
+    letter-spacing: -.02em;
+    transform-origin: 0 50%;
+    animation: eurodance-kick calc(60s / 141) ease-out infinite;
+  }
+
+  /* lens-flare glints in the margins */
+  .fx { display: block; }
+  .fx i {
+    position: absolute;
+    left: calc(mod(var(--i) * 43, 11) * 1% + mod(var(--i), 2) * 87% + 1%);
+    top: calc(mod(var(--i) * 31 + 7, 86) * 1% + 7%);
+    width: calc(12px + mod(var(--i) * 5, 14) * 1px);
+    aspect-ratio: 1;
+    background: var(--magenta);
+    clip-path: polygon(50% 0, 56% 44%, 100% 50%, 56% 56%, 50% 100%, 44% 56%, 0 50%, 44% 44%);
+    animation: eurodance-glint 1.7s ease-in-out infinite;
+    animation-delay: calc(var(--i) * -.29s);
+    &:nth-child(3n) { background: var(--ultra); }
+    @media (prefers-color-scheme: dark) { background: white; &:nth-child(3n) { background: var(--cyan); } &:nth-child(3n + 1) { background: var(--magenta); } }
+  }
+
+  /* the masthead is the Windows 98 taskbar: the way home is the Start button, and the channel's line is in the tray */
+  .masthead {
+    padding-inline: 3px;
+    background: var(--w98);
+    color: black;
+    box-shadow: inset 0 1px var(--w98-lt), inset 0 2px white, inset 0 -1px rgb(10 10 10);
+    font: 11px/1.2 var(--win);
+    letter-spacing: 0;
+    text-transform: none;
+    .home {
+      padding: 4px 8px;
+      background: var(--w98);
+      box-shadow: var(--raised);
+      font-weight: bold;
+      &:hover { text-decoration: none; }
+      &:active { box-shadow: var(--sunken); }
+      &:focus-visible { outline: 1px dotted black; outline-offset: -4px; }
+    }
+    .issue { padding: 4px 10px; box-shadow: inset 1px 1px var(--w98-dk), inset -1px -1px white; }
+  }
+
+  /* the cover is the chroma-key set: sky and laser fans, then the checkerboard floor running under the player */
+  .cover {
+    --horizon: 9rem;
+    position: relative;
+    &::before, &::after {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: 0 calc(50% - 50vw) auto;
+      height: calc(var(--cover-pad) + var(--cover-head-h) + var(--horizon));
+    }
+    &::before { background: var(--clouds), var(--sky); }
+    /* two fans of beams from the horizon, kept faint where the title and dek are */
+    &::after {
+      background:
+        repeating-conic-gradient(from -86deg at 50% 100%, var(--beam-a) 0 .3deg, transparent .3deg 7deg),
+        repeating-conic-gradient(from -82.5deg at 50% 100%, var(--beam-b) 0 .3deg, transparent .3deg 7deg);
+      mask: linear-gradient(90deg, black 10%, rgb(0 0 0 / 30%) 35% 65%, black 90%), linear-gradient(transparent, black 45%);
+      mask-composite: intersect;
+    }
+  }
+  .player-slot {
+    &::before, &::after {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: var(--horizon) calc(50% - 50vw) auto;
+      height: 26rem;
+    }
+    &::before { background: var(--floor); mask: linear-gradient(black 35%, transparent); }
+    &::after {
+      background: var(--tiles);
+      mask: var(--checker) 0 0 / 100% 100%, linear-gradient(black 25%, transparent 95%);
+      mask-composite: intersect;
+    }
+  }
+
+  /* the title: extruded chrome, gold and hot pink, slanted, with a lens flare */
+  .cover h1 {
+    position: relative;
+    font-size: clamp(1.6rem, 6.6vw, 4.6rem);
+    gap: .04em;
+    .line-2 { font-size: 1.24em; }
+    &::after {
+      content: "";
+      position: absolute;
+      right: 5%;
+      top: 44%;
+      width: .9em;
+      aspect-ratio: 1;
+      background: radial-gradient(white 22%, rgb(255 255 255 / 0) 62%);
+      clip-path: polygon(50% 0, 56% 44%, 100% 50%, 56% 56%, 50% 100%, 44% 56%, 0 50%, 44% 44%);
+      animation: eurodance-glint 2.8s ease-in-out infinite;
+    }
+  }
+  .ransom .word { gap: 0; }
+  .ransom .gap { width: .28em; }
+  .ransom .glyph {
+    --fill: var(--chrome);
+    padding: 0 .01em;
+    font-family: var(--display);
+    color: var(--line);
+    -webkit-text-stroke: .09em var(--line);
+    text-shadow: var(--extrude);
+    transform: skewX(-12deg);
+    &::before { content: none; }
+    &::after { background: var(--fill) 0 0 / 100% 1.1em; background-clip: text; color: transparent; -webkit-text-stroke: 0; text-shadow: none; }
+  }
+  .cover .line-2 .word:first-child .glyph { --fill: var(--gold); }
+  .cover .line-2 .word:last-child .glyph { --fill: var(--hot-chrome); }
+  .dek { max-width: 42rem; color: var(--ink); }
+  /* the hook is the karaoke's singer chip */
+  .tape {
+    display: table;
+    margin: 0 auto .9rem;
+    padding: .25rem 1rem .3rem;
+    border-radius: 999px;
+    background: linear-gradient(rgb(226 0 138), rgb(170 0 110));
+    color: white;
+    font: 1.05rem/1.3 var(--display);
+    rotate: -2deg;
+    box-shadow: 0 0 0 2px white, 0 0 0 4px var(--line), 0 5px 0 4px var(--line);
+  }
+
+  /* the player is a Windows 98 media player; its title bar sits just above it */
+  .player {
+    border-radius: 0;
+    background: var(--w98);
+    box-shadow: inset -1px -1px rgb(10 10 10), inset 1px 0 white, inset -2px -2px var(--w98-dk), inset 2px 0 var(--w98-lt), 0 18px 40px rgb(26 15 51 / 45%);
+    &::before {
+      content: "hype★TV Media Player – We Didn't Start the Scaling";
+      inset: -26px 0 auto;
+      width: auto;
+      height: 26px;
+      padding: 0 64px 0 9px;
+      rotate: 0deg;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14'%3E%3Cg transform='translate(0 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='4' y='9' width='6' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(16 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='3' y='2' width='9' height='9' fill='none' stroke='%23000'/%3E%3Crect x='3' y='2' width='9' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(36 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Cpath d='M4 3l2 0 2 2 2-2 2 0-3 3.5 3 3.5-2 0-2-2-2 2-2 0 3-3.5z' fill='%23000'/%3E%3C/g%3E%3C/svg%3E") right 6px top 6px / 52px 14px no-repeat, linear-gradient(90deg, rgb(0 0 128), rgb(16 132 208)) 3px 3px / calc(100% - 6px) 20px no-repeat, var(--w98);
+      box-shadow: inset 1px 1px white, inset 2px 2px var(--w98-lt), inset -1px 0 rgb(10 10 10), inset -2px 0 var(--w98-dk);
+      color: white;
+      font: bold 12px/26px var(--win);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    &::after { content: none; }
+  }
+  .stage {
+    background: black;
+    &::before { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; box-shadow: var(--sunken); }
+  }
+  .big-play {
+    z-index: 2;
+    border: 4px solid white;
+    background: radial-gradient(circle at 35% 30%, white 0 6%, rgb(255 120 210) 16%, rgb(214 0 128) 55%, rgb(110 0 70));
+    color: white;
+    font-family: var(--display);
+    rotate: 0deg;
+    box-shadow: 0 0 0 3px var(--line), 0 0 40px rgb(255 31 163 / 70%);
+    text-shadow: 0 2px 0 rgb(90 0 60);
+  }
+  .deck {
+    color: black;
+    button {
+      border: 0;
+      border-radius: 0;
+      background: var(--w98);
+      color: black;
+      box-shadow: var(--raised);
+      &:active { box-shadow: var(--sunken); }
+      &:focus-visible { outline: 1px dotted black; outline-offset: -5px; }
+    }
+    /* the CD player's LCD */
+    .time {
+      background: black;
+      color: var(--laser);
+      box-shadow: 0 0 0 .25rem black, 0 0 0 calc(.25rem + 1px) var(--w98-dk);
+      text-shadow: 0 0 6px rgb(59 255 74 / 60%);
+    }
+    /* a combo box */
+    .version select {
+      appearance: none;
+      padding: 0 22px 0 5px;
+      border: 0;
+      border-radius: 0;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='17'%3E%3Crect width='17' height='17' fill='%230a0a0a'/%3E%3Crect width='16' height='16' fill='%23dfdfdf'/%3E%3Crect x='1' y='1' width='15' height='15' fill='%23808080'/%3E%3Crect x='1' y='1' width='14' height='14' fill='%23fff'/%3E%3Crect x='2' y='2' width='13' height='13' fill='%23c0c0c0'/%3E%3Cpath d='M5 7h7l-3.5 4z' fill='%23000'/%3E%3C/svg%3E") right 2px center / 17px 17px no-repeat, white;
+      color: black;
+      box-shadow: var(--sunken);
+      font: 13px var(--win);
+    }
+  }
+  .check input { border: 0; border-radius: 0; background: white; color: black; box-shadow: var(--sunken); }
+  /* a trackbar */
+  .scrub input {
+    &::-webkit-slider-runnable-track { height: 6px; border: 1px solid; border-color: var(--w98-dk) white white var(--w98-dk); background: linear-gradient(to right, rgb(0 0 128) var(--pct, 0%), white 0); }
+    &::-moz-range-track { height: 4px; border: 1px solid; border-color: var(--w98-dk) white white var(--w98-dk); background: white; }
+    &::-moz-range-progress { height: 4px; background: rgb(0 0 128); }
+    &::-webkit-slider-thumb { width: 11px; height: 21px; margin-top: -9px; border: 0; border-radius: 0; background: var(--w98); box-shadow: var(--raised); }
+    &::-moz-range-thumb { width: 11px; height: 21px; border: 0; border-radius: 0; background: var(--w98); box-shadow: var(--raised); }
+  }
+  .scrub .ticks span { color: rgb(34 34 34); &::before { border-color: black; } }
+
+  /* section heads are chrome slams */
+  .lyrics-head h2, .album h2, .jukebox h2, .liner h2 {
+    display: inline-block;
+    padding: 0 .2em .1em 0;
+    background: var(--chrome) 0 0 / 100% 1.15em;
+    background-clip: text;
+    color: transparent;
+    font: 2.2rem/1.15 var(--display);
+    font-style: italic;
+    text-transform: uppercase;
+    -webkit-text-stroke: .025em var(--line);
+    filter: drop-shadow(.035em .035em 0 var(--line)) drop-shadow(.035em .035em 0 var(--line)) drop-shadow(.02em .03em 0 var(--line));
+  }
+  .album h2 { background-image: var(--hot-chrome); }
+  .jukebox h2 { background-image: var(--ice); }
+  .liner h2 { background-image: var(--gold); }
+  .lyrics-head .inline-play { border-color: var(--ink-soft); }
+
+  /* verse heads: a chrome title card, the dates in the date cube, and a sticker for the span */
+  #v1 { --verse: var(--chrome); }
+  #v2 { --verse: var(--gold); }
+  #v3 { --verse: var(--hot-chrome); }
+  #v4 { --verse: var(--ice); }
+  .verse-head {
+    align-items: center;
+    gap: .5rem 1.1rem;
+    h3 { font-size: 2.3rem; }
+    .glyph { --fill: var(--verse); }
+    .era { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; font-family: var(--display); }
+    .era-dates {
+      padding: .2rem .7rem;
+      border: 2px solid rgb(200 204 222);
+      border-radius: 4px;
+      background: linear-gradient(rgb(52 58 170), rgb(16 12 70));
+      color: var(--yellow);
+      font-size: .85rem;
+      box-shadow: 0 0 0 1px var(--line), inset 0 1px 0 rgb(255 255 255 / 35%);
+    }
+    .era-span {
+      margin: 0;
+      padding: 1.05em 1.25em;
+      border: 0;
+      background: var(--yellow);
+      color: rgb(190 0 50);
+      font: .74rem/1.1 var(--display);
+      text-transform: uppercase;
+      rotate: -8deg;
+      clip-path: polygon(50.0% 0.0%, 54.9% 9.3%, 62.0% 1.5%, 64.5% 11.7%, 73.2% 5.7%, 73.3% 16.3%, 83.2% 12.6%, 80.7% 22.8%, 91.1% 21.6%, 86.3% 30.9%, 96.8% 32.3%, 89.8% 40.2%, 99.6% 44.0%, 91.0% 50.0%, 99.6% 56.0%, 89.8% 59.8%, 96.8% 67.7%, 86.3% 69.1%, 91.1% 78.4%, 80.7% 77.2%, 83.2% 87.4%, 73.3% 83.7%, 73.2% 94.3%, 64.5% 88.3%, 62.0% 98.5%, 54.9% 90.7%, 50.0% 100.0%, 45.1% 90.7%, 38.0% 98.5%, 35.5% 88.3%, 26.8% 94.3%, 26.7% 83.7%, 16.8% 87.4%, 19.3% 77.2%, 8.9% 78.4%, 13.7% 69.1%, 3.2% 67.7%, 10.2% 59.8%, 0.4% 56.0%, 9.0% 50.0%, 0.4% 44.0%, 10.2% 40.2%, 3.2% 32.3%, 13.7% 30.9%, 8.9% 21.6%, 19.3% 22.8%, 16.8% 12.6%, 26.7% 16.3%, 26.8% 5.7%, 35.5% 11.7%, 38.0% 1.5%, 45.1% 9.3%);
+      &::after { content: "!"; }
+    }
+  }
+
+  /* dates are the date cube: a glass prism in a chrome frame, with a CD, and the year in yellow */
+  .stamp {
+    display: inline-flex;
+    align-items: center;
+    gap: .35em;
+    padding: .12rem .45rem .12rem .3rem;
+    border: 2px solid rgb(200 204 222);
+    border-radius: 4px;
+    background: linear-gradient(rgb(52 58 170), rgb(16 12 70));
+    color: white;
+    font: .66rem/1.35 var(--display);
+    letter-spacing: .03em;
+    rotate: 0deg;
+    opacity: 1;
+    mask-image: none;
+    box-shadow: 0 0 0 1px var(--line), inset 0 1px 0 rgb(255 255 255 / 35%);
+    &::before {
+      content: "";
+      flex: none;
+      width: 1.1em;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgb(16 12 70) 0 14%, rgb(230 230 240) 15% 24%, transparent 25%), conic-gradient(rgb(255 150 220), rgb(150 220 255), rgb(255 245 150), rgb(170 255 180), rgb(255 150 220));
+    }
+  }
+  .stamp-y { color: var(--yellow); }
+  .line.now .stamp {
+    scale: 1;
+    box-shadow: 0 0 0 1px var(--line), 0 0 14px rgb(18 231 255 / 70%);
+    transform: perspective(12em) rotateX(calc(-90deg * pow(max(0, 1 - var(--line-t, 1) / .35), 2)));
+    &::before { animation: eurodance-spin 1.1s linear infinite; }
+    @media (prefers-reduced-motion: reduce) { transform: none; }
+  }
+
+  /* verse lines are the chart show's hit-parade bars, numbered like chart positions */
+  .lines { counter-reset: rank; }
+  .line { counter-increment: rank; }
+  .lyric {
+    padding: .42rem .5rem .44rem 2.45rem;
+    border: 0;
+    border-radius: 999px 12px 12px 999px;
+    background: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0) 50%), linear-gradient(90deg, var(--ultra), var(--uv));
+    color: white;
+    font: clamp(.98rem, 2.1vw, 1.1rem)/1.3 var(--heavy);
+    text-shadow: 0 1px 0 rgb(0 0 60 / 60%);
+    clip-path: none;
+    rotate: 0deg;
+    box-shadow: 0 0 0 2px var(--line), 0 4px 0 2px var(--line);
+    &::before {
+      content: counter(rank);
+      position: absolute;
+      left: .3rem;
+      top: 50%;
+      translate: 0 -50%;
+      display: grid;
+      place-items: center;
+      width: 1.75rem;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, white 0 8%, rgb(255 244 130) 18%, rgb(255 204 0) 60%, rgb(190 120 0));
+      color: var(--line);
+      font: .82rem/1 var(--display);
+      text-shadow: none;
+      box-shadow: 0 0 0 1.5px var(--line);
+    }
+  }
+  button.lyric {
+    &:hover, &:focus-visible { background: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0) 50%), linear-gradient(90deg, rgb(40 70 255), rgb(110 50 235)); rotate: 0deg; }
+    &:focus-visible { box-shadow: 0 0 0 2px var(--line), 0 4px 0 2px var(--line), 0 0 0 5px var(--cyan); }
+  }
+  .lyric .tab, .line:nth-child(3n + 2) .lyric .tab, .line:nth-child(3n + 3) .lyric .tab {
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, white, rgb(214 218 240) 60%, rgb(160 160 190));
+    color: var(--line);
+    font: .95rem/1 var(--display);
+    text-shadow: none;
+    clip-path: none;
+    box-shadow: 0 0 0 1.5px var(--line);
+  }
+  .line.seed .lyric { background: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0) 50%), linear-gradient(90deg, var(--hot), rgb(130 0 150)); }
+  .line.open .lyric { background: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0) 50%), linear-gradient(90deg, rgb(0 100 130), rgb(22 51 200)); }
+  /* the line being sung is karaoke: MC Token's chip, the words filling cyan, and the bouncing ball */
+  .line.now .lyric {
+    background: linear-gradient(rgb(26 16 60), rgb(8 4 24));
+    scale: 1.03;
+    rotate: 0deg;
+    box-shadow: 0 0 0 2px var(--cyan), 0 0 22px rgb(18 231 255 / 60%);
+    &::after {
+      content: "MC TOKEN";
+      position: absolute;
+      left: 2.2rem;
+      top: -.8rem;
+      padding: .05rem .5rem;
+      border-radius: 999px;
+      background: var(--cyan);
+      color: var(--line);
+      font: .56rem/1.6 var(--display);
+      letter-spacing: .08em;
+      text-shadow: none;
+      box-shadow: 0 0 0 2px var(--line);
+      /* on phones the date stamp sits above the line's start, so the chip goes to the other end */
+      @media (max-width: 640px) { left: auto; right: 2.4rem; }
+    }
+    /* the words fill, and the ball rides over them, in step with the audio (page.mjs sets --line-p); the ball bounces on the beat */
+    .lyric-text {
+      position: relative;
+      background: linear-gradient(90deg, var(--cyan) 50%, white 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%;
+      background-clip: text;
+      color: transparent;
+      text-shadow: none;
+      &::after {
+        content: "";
+        position: absolute;
+        left: calc(var(--line-p, 0) * 100% - .3rem);
+        top: -.62rem;
+        width: .6rem;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: radial-gradient(circle at 35% 30%, white 0 18%, var(--cyan) 55%, rgb(0 90 140));
+        box-shadow: 0 0 6px var(--cyan);
+        animation: eurodance-ball-y calc(30s / 141) ease-out infinite alternate;
+      }
+    }
+    .tab { background: radial-gradient(circle at 35% 30%, white, var(--cyan) 60%, rgb(0 120 150)); }
+  }
+  /* the outro is Softmax's, like the choruses */
+  .outro .line.now .lyric::after { content: "SOFTMAX"; background: var(--magenta); color: white; }
+  /* the ball stops bouncing, and the CDs stop spinning, while the song isn't playing */
+  &:not([data-playback="playing"]) {
+    .line.now .lyric-text::after, .line.now .stamp::before, .tape-card.playing::after { animation-play-state: paused; }
+  }
+  .from-here {
+    border: 2px solid var(--line);
+    background: radial-gradient(circle at 35% 30%, white, rgb(214 218 240) 60%, rgb(160 160 190));
+    color: var(--line);
+    opacity: .75;
+    &:hover, &:focus-visible { background: radial-gradient(circle at 35% 30%, rgb(255 150 214), var(--hot) 60%, rgb(120 0 70)); color: white; }
+  }
+
+  /* annotations are Windows 98 message boxes */
+  .note, .line:nth-child(3n + 2) .note, .line:nth-child(3n + 3) .note {
+    padding: 2.15rem 1rem .9rem;
+    border-radius: 0;
+    background: var(--w98);
+    color: black;
+    font: .9rem/1.55 var(--type);
+    rotate: 0deg;
+    box-shadow: var(--raised), 6px 8px 0 rgb(26 15 51 / 25%);
+    &::before {
+      content: "hype★TV";
+      inset: 3px 3px auto;
+      width: auto;
+      height: 20px;
+      padding: 0 60px 0 6px;
+      rotate: 0deg;
+      background: var(--titlebar);
+      color: white;
+      font: bold 12px/20px var(--win);
+    }
+    > p:first-child::before {
+      content: "";
+      float: left;
+      width: 32px;
+      height: 32px;
+      margin: .1rem .8rem .3rem 0;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='17' cy='17' r='14' fill='%23000' opacity='.35'/%3E%3Ccircle cx='15' cy='15' r='14' fill='%23fff' stroke='%23000' stroke-width='1'/%3E%3Ccircle cx='15' cy='15' r='12.5' fill='%231633ff'/%3E%3Ccircle cx='15' cy='8.5' r='2.2' fill='%23fff'/%3E%3Cpath d='M12 12.5h5v10h2v2h-7v-2h2v-8h-2z' fill='%23fff'/%3E%3C/svg%3E") 0 0 / 100% 100%;
+    }
+    a { color: rgb(0 0 128); }
+    .sources { clear: both; li::before { content: "▸ "; } }
+  }
+  .seed-credit { font: .95rem var(--type); color: var(--ink-soft); rotate: 0deg; }
+
+  /* choruses are Softmax's dance breaks, and the venue grows each time: the chroma-key studio, the foam party, the warehouse
+     rave, the cyberspace megarave */
+  .chorus {
+    --scene: linear-gradient(rgb(22 51 230), rgb(60 100 255) 60%, rgb(170 200 255));
+    --beams: none;
+    --floor-c: rgb(40 60 230);
+    --tiles-c: white;
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    margin: 2.5rem -16px;
+    padding: 2rem clamp(16px, 3vw, 2.5rem) 5.6rem;
+    background: var(--beams), var(--scene);
+    box-shadow: 0 0 0 3px var(--line), 0 10px 30px rgb(26 15 51 / 35%);
+    rotate: 0deg;
+    &::before, &::after { content: ""; position: absolute; z-index: -1; inset: auto 0 0; height: 5rem; }
+    &::before { background: var(--floor-c); }
+    &::after { background: var(--tiles-c); mask: var(--checker) 0 0 / 100% 100%; }
+    .lyric {
+      padding: .12rem .6rem;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      color: white;
+      font: clamp(1.25rem, 3vw, 1.95rem)/1.2 var(--display);
+      font-style: italic;
+      text-transform: none;
+      text-shadow: var(--edge);
+      box-shadow: none;
+      &::before { content: none; }
+    }
+    /* "We didn't start the scaling" goes up in chrome */
+    .line:nth-child(odd) .lyric-text {
+      background: var(--gold) 0 .05em / 100% 1.2em;
+      background-clip: text;
+      color: transparent;
+      text-shadow: none;
+      filter: drop-shadow(2px 0 0 var(--line)) drop-shadow(-2px 0 0 var(--line)) drop-shadow(0 2px 0 var(--line)) drop-shadow(0 -2px 0 var(--line)) drop-shadow(3px 3px 0 var(--line));
+    }
+    button.lyric:hover, button.lyric:focus-visible { background: rgb(255 255 255 / 14%); }
+    .line.open .lyric { background: rgb(8 4 24 / 55%); }
+    .line.now .lyric {
+      background: rgb(8 4 24 / 88%);
+      box-shadow: 0 0 0 2px var(--magenta), 0 0 26px rgb(255 31 163 / 70%);
+      scale: 1.02;
+      &::after { content: "SOFTMAX"; left: .5rem; background: var(--magenta); color: white; }
+      .lyric-text { background: linear-gradient(90deg, rgb(255 110 200) 50%, white 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%; background-clip: text; -webkit-text-stroke: 0; filter: none; }
+      .tab { background: radial-gradient(circle at 35% 30%, white, var(--magenta) 60%, rgb(120 0 70)); }
+      .lyric-text::after { background: radial-gradient(circle at 35% 30%, white 0 18%, var(--magenta) 55%, rgb(120 0 70)); box-shadow: 0 0 6px var(--magenta); }
+    }
+    .from-here { opacity: .85; }
+    .lyric .tab { width: 1.5rem; height: 1.5rem; }
+    .twist .lyric { color: var(--yellow); }
+  }
+  #c2 {
+    --scene:
+      radial-gradient(circle at 30% 30%, rgb(255 255 255 / 60%) 0 16%, rgb(255 255 255 / 14%) 34%, transparent 40%) 0 calc(100% - 4.4rem) / 58px 64px repeat-x,
+      radial-gradient(circle at 30% 30%, rgb(255 255 255 / 45%) 0 14%, rgb(255 255 255 / 10%) 30%, transparent 36%) 20px calc(100% - 6.2rem) / 90px 70px repeat-x,
+      linear-gradient(rgb(48 12 110), rgb(170 20 130) 55%, rgb(236 90 90) 85%, rgb(255 170 80));
+    --floor-c: rgb(0 150 170);
+    --tiles-c: rgb(210 255 250);
+  }
+  #c3 {
+    --scene:
+      radial-gradient(circle at 50% 100%, rgb(6 3 14) 0 56%, transparent 59%) 0 calc(100% - 4.6rem) / 46px 38px repeat-x,
+      radial-gradient(ellipse 70% 40% at 50% 90%, rgb(110 30 200 / 55%), transparent 70%),
+      rgb(8 4 18);
+    --beams:
+      repeating-conic-gradient(from -80deg at 12% 100%, rgb(59 255 74 / 42%) 0 .35deg, transparent .35deg 8deg),
+      repeating-conic-gradient(from -84deg at 88% 100%, rgb(59 255 74 / 42%) 0 .35deg, transparent .35deg 8deg);
+    --floor-c: rgb(18 10 36);
+    --tiles-c: rgb(80 60 120);
+  }
+  .chorus.final {
+    --scene:
+      repeating-radial-gradient(circle at 50% 42%, rgb(255 31 163 / 55%) 0 2px, transparent 2px 24px, rgb(18 231 255 / 50%) 24px 26px, transparent 26px 48px, rgb(255 232 31 / 45%) 48px 50px, transparent 50px 72px),
+      radial-gradient(circle at 50% 42%, rgb(90 30 200 / 50%), transparent 60%),
+      rgb(6 3 16);
+    --beams:
+      repeating-conic-gradient(from -80deg at 8% 100%, rgb(255 31 163 / 38%) 0 .35deg, transparent .35deg 9deg),
+      repeating-conic-gradient(from -84deg at 92% 100%, rgb(18 231 255 / 38%) 0 .35deg, transparent .35deg 9deg);
+    --floor-c: rgb(120 0 90);
+    --tiles-c: rgb(255 170 230);
+  }
+  /* the tag trails off like an echo */
+  .outro .lyric {
+    padding: .1rem .4rem;
+    background: none;
+    border: 0;
+    color: var(--ink);
+    font: clamp(1.1rem, 2.6vw, 1.5rem)/1.3 var(--display);
+    font-style: italic;
+    text-shadow: .5em 0 0 rgb(from var(--ink) r g b / 16%), 1em 0 0 rgb(from var(--ink) r g b / 8%);
+    rotate: 0deg;
+    mask-image: none;
+    box-shadow: none;
+    &::before { content: none; }
+  }
+  .outro .line.now .lyric { background: rgb(8 4 24 / 88%); color: white; text-shadow: none; }
+
+  /* the now-playing card is a Windows 98 window */
+  .now-card {
+    padding: 2.05rem .6rem .6rem;
+    border-radius: 0;
+    background: var(--w98);
+    color: black;
+    font: .86rem/1.5 var(--type);
+    rotate: 0deg;
+    box-shadow: var(--raised), 0 12px 30px rgb(26 15 51 / 35%);
+    &::before {
+      content: "Now playing – hype★TV";
+      inset: 3px 3px auto;
+      width: auto;
+      height: 20px;
+      padding: 0 60px 0 6px;
+      rotate: 0deg;
+      background: var(--titlebar);
+      color: white;
+      font: bold 12px/20px var(--win);
+    }
+    .now-hint, .now-body { padding: .6rem .7rem; background: white; box-shadow: var(--sunken); }
+    .side-play { border: 0; background: var(--w98); color: black; font: bold .85rem var(--win); box-shadow: var(--raised); &:active { box-shadow: var(--sunken); } }
+    .now-stamp:not(:empty) {
+      padding: .05rem .5rem;
+      border: 2px solid rgb(200 204 222);
+      border-radius: 4px;
+      background: linear-gradient(rgb(52 58 170), rgb(16 12 70));
+      color: var(--yellow);
+      font: .68rem/1.5 var(--display);
+      rotate: 0deg;
+    }
+    .now-line { font: 1.05rem/1.3 var(--display); }
+    a { color: rgb(0 0 128); }
+    .sources li::before { content: "▸ "; }
+  }
+
+  /* the album's tracks are CD singles in jewel cases, the one playing spinning inside its case */
+  .tapes { gap: 1.8rem 1.4rem; }
+  .tape-card {
+    --art: linear-gradient(135deg, rgb(200 0 90), rgb(110 20 130));
+    isolation: isolate;
+    padding: 2.2rem 1rem 1rem 1.7rem;
+    border: 0;
+    border-radius: 3px;
+    background:
+      linear-gradient(115deg, rgb(255 255 255 / 0) 28%, rgb(255 255 255 / 12%) 36%, rgb(255 255 255 / 0) 44%),
+      linear-gradient(90deg, rgb(16 12 36) 0 .75rem, rgb(255 255 255 / 40%) .75rem calc(.75rem + 1px), transparent 0),
+      var(--art);
+    color: white;
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 60%), 0 0 0 3px rgb(26 15 51 / 70%), 0 10px 24px rgb(26 15 51 / 40%);
+    rotate: 0deg;
+    &:nth-child(2n) { rotate: 0deg; }
+    &:nth-child(2) { --art: linear-gradient(135deg, rgb(10 30 120), rgb(40 80 200)); }
+    &:nth-child(3) { --art: linear-gradient(135deg, rgb(190 20 130), rgb(100 50 200)); }
+    &:nth-child(4) { --art: linear-gradient(135deg, rgb(60 10 160), rgb(200 0 140)); }
+    &:nth-child(5) { --art: linear-gradient(135deg, rgb(30 80 200), rgb(190 30 120)); }
+    &:nth-child(6) { --art: linear-gradient(135deg, rgb(12 16 60), rgb(80 40 140)); }
+    &::after {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      right: .8rem;
+      bottom: .8rem;
+      width: 3.4rem;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: radial-gradient(circle, transparent 0 11%, rgb(230 230 240 / 80%) 12% 22%, transparent 23%), conic-gradient(rgb(255 150 220 / 70%), rgb(150 220 255 / 70%), rgb(255 245 150 / 70%), rgb(170 255 180 / 70%), rgb(255 150 220 / 70%));
+      opacity: .55;
+    }
+    .tape-label, .tape-model { top: .7rem; padding: .05rem .55rem; border-radius: 999px; font: .6rem/1.5 var(--display); letter-spacing: .06em; }
+    .tape-label { left: 1.6rem; background: var(--yellow); color: var(--line); }
+    .tape-model, .tape-model[data-model^="Suno"] { right: .8rem; background: rgb(255 255 255 / 90%); color: var(--line); }
+    h3 { position: relative; color: white; font: 1.35rem/1.15 var(--display); font-style: italic; text-shadow: 2px 2px 0 var(--line); }
+    p { color: white; font-family: var(--type); font-size: .86rem; }
+    .tape-video { color: rgb(255 255 255 / 88%); font: .78rem/1.45 var(--type); }
+    .tape-dur { font-family: var(--code); }
+    a { color: white; }
+    .play-version { border: 0; background: var(--w98); color: black; font: bold .82rem var(--win); box-shadow: var(--raised); &:active { box-shadow: var(--sunken); } }
+    &.playing {
+      outline: 3px solid var(--yellow);
+      outline-offset: 3px;
+      &::after { opacity: .9; animation: eurodance-spin 1.6s linear infinite; }
+    }
+  }
+
+  /* the jukebox: little Windows 98 players */
+  .cassettes { gap: 1.2rem; }
+  .cassette {
+    padding: 1.95rem .6rem .6rem;
+    border-radius: 0;
+    background: var(--w98);
+    color: black;
+    box-shadow: var(--raised), 4px 5px 0 rgb(26 15 51 / 30%);
+  }
+  .cassette-label {
+    padding: 0;
+    border-radius: 0;
+    background: none;
+    color: black;
+    h3 {
+      position: absolute;
+      inset: 3px 3px auto;
+      height: 20px;
+      margin: 0;
+      padding: 0 60px 0 6px;
+      background: var(--titlebar);
+      color: white;
+      font: bold 12px/20px var(--win);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cassette-meta { color: rgb(34 34 34); font: 11px/1.6 var(--win); }
+    .cassette-blurb { font: .78rem/1.45 var(--type); }
+  }
+  .cassette-dl { color: rgb(0 0 128); }
+  .cassette-play {
+    width: 2.4rem;
+    border: 0;
+    border-radius: 0;
+    background: var(--w98);
+    color: black;
+    box-shadow: var(--raised);
+    .hub { display: none; }
+    &:focus-visible { outline: 1px dotted black; outline-offset: -5px; }
+  }
+  .cassette.playing .cassette-play { box-shadow: var(--sunken); }
+  .cassette.playing .cassette-label h3 { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14'%3E%3Cg transform='translate(0 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='4' y='9' width='6' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(16 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='3' y='2' width='9' height='9' fill='none' stroke='%23000'/%3E%3Crect x='3' y='2' width='9' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(36 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Cpath d='M4 3l2 0 2 2 2-2 2 0-3 3.5 3 3.5-2 0-2-2-2 2-2 0 3-3.5z' fill='%23000'/%3E%3C/g%3E%3C/svg%3E") right 3px center / 52px 14px no-repeat, linear-gradient(90deg, rgb(150 0 100), var(--magenta)); }
+  /* a progress bar, blocks and all */
+  .cassette-seek {
+    height: 16px;
+    margin-top: .35rem;
+    &::-webkit-slider-runnable-track { height: 16px; border: 1px solid; border-color: var(--w98-dk) white white var(--w98-dk); border-radius: 0; background: repeating-linear-gradient(90deg, rgb(0 0 128) 0 8px, transparent 8px 10px) 1px 1px / var(--pct, 0%) calc(100% - 2px) no-repeat, white; }
+    &::-moz-range-track { height: 14px; border: 1px solid; border-color: var(--w98-dk) white white var(--w98-dk); border-radius: 0; background: white; }
+    &::-moz-range-progress { height: 14px; border-radius: 0; background: repeating-linear-gradient(90deg, rgb(0 0 128) 0 8px, transparent 8px 10px); }
+    &::-webkit-slider-thumb { width: 3px; height: 14px; margin-top: 0; border-radius: 0; background: black; box-shadow: none; }
+    &::-moz-range-thumb { width: 3px; height: 14px; border-radius: 0; background: black; }
+  }
+
+  /* the liner notes are open in Notepad */
+  .liner-body {
+    position: relative;
+    padding: 3.4rem 1.3rem 1.2rem;
+    border-radius: 0;
+    background:
+      linear-gradient(white, white) 5px 47px / calc(100% - 10px) calc(100% - 52px) no-repeat,
+      linear-gradient(var(--w98-dk), var(--w98-dk)) 4px 46px / calc(100% - 8px) calc(100% - 50px) no-repeat,
+      var(--w98);
+    color: black;
+    font: .92rem/1.65 "Courier Prime", var(--code);
+    rotate: 0deg;
+    box-shadow: var(--raised), 0 12px 30px rgb(26 15 51 / 30%);
+    &::before {
+      content: "liner_notes.txt – Notepad";
+      position: absolute;
+      inset: 3px 3px auto;
+      height: 20px;
+      padding: 0 60px 0 6px;
+      background: var(--titlebar);
+      color: white;
+      font: bold 12px/20px var(--win);
+    }
+    &::after {
+      content: "File    Edit    Search    Help";
+      position: absolute;
+      left: 9px;
+      top: 25px;
+      color: black;
+      font: 12px/19px var(--win);
+      white-space: pre;
+    }
+    a { color: rgb(0 0 200); }
+  }
+  .credits { gap: 0 1.6rem; font: .85rem/1.6 "Courier Prime", var(--code); }
+
+  /* the end of the broadcast */
+  .colophon {
+    padding: 2.4rem 1rem 3rem;
+    background: black;
+    color: rgb(255 140 26);
+    font: .95rem/1.5 var(--win);
+    &::before { content: "It's now safe to turn off your computer."; display: block; margin-bottom: .5rem; font-size: 1.15rem; }
+    a { color: rgb(255 170 80); }
+  }
+}
+@keyframes eurodance-kick { from { scale: 1.08; } 45% { scale: 1; } }
+@keyframes eurodance-glint {
+  0%, 65%, 100% { opacity: 0; scale: .3; rotate: 0deg; }
+  80% { opacity: 1; scale: 1.15; rotate: 45deg; }
+}
+@keyframes eurodance-spin { to { rotate: 1turn; } }
+@keyframes eurodance-ball-y { from { translate: 0 0; } to { translate: 0 -.45rem; } }
+
+/* the fullscreen and follow toggles' pressed state, in each theme's own terms (the zine's is the base one, inverted) */
+:root[data-theme="piano-rock"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] {
+  background: linear-gradient(rgb(150 154 166), rgb(196 200 210));
+  color: rgb(21 18 28);
+  box-shadow: inset 0 2px 3px rgb(0 0 0 / 55%);
+}
+:root[data-theme="indie-folk"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { border-color: var(--c-amber); background: var(--c-wine); color: var(--c-gold); }
+:root[data-theme="k-pop"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { background: var(--toki); color: rgb(43 24 56); box-shadow: inset 0 3px 0 rgb(58 33 80 / 35%); }
+:root[data-theme="anisong"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { border-color: var(--pink-dk); background: var(--pink-dk); color: white; box-shadow: none; }
+/* a Windows 98 toggle button, pushed in */
+:root[data-theme="eurodance"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] {
+  background: repeating-conic-gradient(white 0 25%, var(--w98) 0 50%) 0 0 / 2px 2px;
+  color: black;
+  box-shadow: var(--sunken);
+}
+
+/* ==========================================================================
+   Geometry. Switching tracks restyles the page but never moves the player:
+   the masthead, the cover's title block, the player and its controls have the
+   same boxes in every theme, so a theme may recolour, re-letter and decorate
+   them but not resize them (it draws borders as shadows instead). These rules
+   come after the themes and use `#player`, so they win over any of them.
+   ========================================================================== */
+:root[data-theme] {
+  /* tall enough for the tallest theme's title and dek at any width; each theme's are centred inside */
+  --cover-head-h: clamp(306px, 236px + 10.5vw, 362px);
+  @media (max-width: 380px) { --cover-head-h: 345px; }
+  .masthead {
+    height: 34px;
+    padding-block: 0;
+    .issue { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  }
+  .cover-head {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    height: var(--cover-head-h);
+  }
+  #player {
+    padding: 12px 12px 8px;
+    border: 0;
+    &.docked-side { padding: 8px 8px 4px; }
+    &.docked-bottom { padding: 6px; }
+    .big-play { width: calc(clamp(88px, 16cqi, 150px) * var(--grow)); }
+    .deck { margin: 0; padding: .55rem .2rem .2rem; }
+    &.docked-bottom .deck { padding: 0; }
+    .deck-play { width: 44px; height: 36px; }
+    &.docked-bottom .deck-play { width: 38px; height: 32px; }
+    .undock { width: 36px; height: 32px; }
+    .modes { gap: .4rem; }
+    .follow { width: 9rem; height: 32px; padding: 0 .4rem; font-size: 12px; }
+    /* on the narrowest phones, the bottom bar's deck has no room for a Follow button that wide beside Back to top */
+    @media (width < 352px) { &.docked-bottom .follow { width: 7.5rem; font-size: 10px; } }
+    .fullscreen { width: 40px; height: 36px; }
+    &:is(.docked-side, .docked-bottom) .fullscreen { width: 36px; height: 32px; }
+    &[data-fullscreen] .big-play { width: calc(150px * var(--grow)); }
+    .time { padding: 0; }
+    .version select { width: 13.5rem; max-width: none; height: 35px; }
+    &.docked-side .version select { width: 100%; height: 32px; }
+    &.docked-bottom .version select { width: 100%; height: 28px; padding-block: 0; font-size: 11px; }
+    /* under the narrowest phones' little video, the longest track names fit only this small */
+    @media (width < 352px) { &.docked-bottom .version select { padding-inline: 4px 2px; font-size: 10px; } }
+  }
+}
+
+
+/* an idle cassette's tape bar reads as a scrollbar: show it only on the loaded one (hidden, not removed, so starting a
+   cassette moves nothing) */
+:root[data-theme] .cassette-seek:disabled { visibility: hidden; }
+
+/* links in a track's blurb read as part of it, in every theme: the card's own text colour, underlined */
+:root[data-theme] :is(.tape-card > p, .cassette-blurb) a { color: inherit; text-decoration: underline; text-underline-offset: .15em; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { transition: none !important; animation: none !important; }
+}

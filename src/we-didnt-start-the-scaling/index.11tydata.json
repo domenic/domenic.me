@@ -1,0 +1,2544 @@
+{
+ "titleRansom": [
+  [
+   {
+    "ch": "W",
+    "font": "Bungee",
+    "bg": "#FF4FA3",
+    "fg": "#1C1A1F",
+    "rot": -1.0,
+    "dy": 0.003,
+    "scale": 0.9
+   },
+   {
+    "ch": "E",
+    "font": "Anton",
+    "bg": "#E8E4D8",
+    "fg": "#1C1A1F",
+    "rot": -2.7,
+    "dy": -0.07,
+    "scale": 1.13
+   },
+   {
+    "ch": " "
+   },
+   {
+    "ch": "D",
+    "font": "Special Elite",
+    "bg": "#E8412F",
+    "fg": "#FFFDF6",
+    "rot": -1.2,
+    "dy": 0.03,
+    "scale": 1.13
+   },
+   {
+    "ch": "I",
+    "font": "Bungee",
+    "bg": "#FFFDF6",
+    "fg": "#E8412F",
+    "rot": -2.1,
+    "dy": 0.076,
+    "scale": 0.96
+   },
+   {
+    "ch": "D",
+    "font": "Special Elite",
+    "bg": "#C9A77C",
+    "fg": "#1C1A1F",
+    "rot": -4.1,
+    "dy": -0.029,
+    "scale": 1.14
+   },
+   {
+    "ch": "N",
+    "font": "Rubik Mono One",
+    "bg": "#FFFDF6",
+    "fg": "#E8412F",
+    "rot": -4.7,
+    "dy": -0.018,
+    "scale": 1.04
+   },
+   {
+    "ch": "'",
+    "font": "Anton",
+    "bg": "#FFFDF6",
+    "fg": "#1C1A1F",
+    "rot": -0.0,
+    "dy": -0.043,
+    "scale": 0.88
+   },
+   {
+    "ch": "T",
+    "font": "Anton",
+    "bg": "#E8412F",
+    "fg": "#FFFDF6",
+    "rot": 6.1,
+    "dy": 0.075,
+    "scale": 0.89
+   },
+   {
+    "ch": " "
+   },
+   {
+    "ch": "S",
+    "font": "Archivo Black",
+    "bg": "#C9A77C",
+    "fg": "#1C1A1F",
+    "rot": 4.5,
+    "dy": -0.076,
+    "scale": 1.07
+   },
+   {
+    "ch": "T",
+    "font": "Courier Prime",
+    "bg": "#FFD83A",
+    "fg": "#1C1A1F",
+    "rot": 0.1,
+    "dy": -0.079,
+    "scale": 1.04
+   },
+   {
+    "ch": "A",
+    "font": "Anton",
+    "bg": "#C9A77C",
+    "fg": "#1C1A1F",
+    "rot": 3.7,
+    "dy": 0.003,
+    "scale": 1.01
+   },
+   {
+    "ch": "R",
+    "font": "Shrikhand",
+    "bg": "#9FD3F2",
+    "fg": "#1C1A1F",
+    "rot": -6.9,
+    "dy": 0.048,
+    "scale": 1.14
+   },
+   {
+    "ch": "T",
+    "font": "Shrikhand",
+    "bg": "#FFD83A",
+    "fg": "#1C1A1F",
+    "rot": -2.8,
+    "dy": -0.019,
+    "scale": 0.91
+   }
+  ],
+  [
+   {
+    "ch": "T",
+    "font": "Courier Prime",
+    "bg": "#9FD3F2",
+    "fg": "#1C1A1F",
+    "rot": 5.0,
+    "dy": -0.024,
+    "scale": 1.12
+   },
+   {
+    "ch": "H",
+    "font": "Bungee",
+    "bg": "#FFFDF6",
+    "fg": "#1C1A1F",
+    "rot": 0.7,
+    "dy": 0.061,
+    "scale": 1.12
+   },
+   {
+    "ch": "E",
+    "font": "Bungee",
+    "bg": "#1C1A1F",
+    "fg": "#FFD83A",
+    "rot": 0.4,
+    "dy": -0.001,
+    "scale": 1.12
+   },
+   {
+    "ch": " "
+   },
+   {
+    "ch": "S",
+    "font": "Abril Fatface",
+    "bg": "#C9A77C",
+    "fg": "#1C1A1F",
+    "rot": 6.3,
+    "dy": -0.058,
+    "scale": 1.03
+   },
+   {
+    "ch": "C",
+    "font": "Rammetto One",
+    "bg": "#FFD83A",
+    "fg": "#1C1A1F",
+    "rot": -5.3,
+    "dy": -0.046,
+    "scale": 0.99
+   },
+   {
+    "ch": "A",
+    "font": "Shrikhand",
+    "bg": "#FF4FA3",
+    "fg": "#1C1A1F",
+    "rot": 5.2,
+    "dy": -0.062,
+    "scale": 0.91
+   },
+   {
+    "ch": "L",
+    "font": "Anton",
+    "bg": "#E8E4D8",
+    "fg": "#1C1A1F",
+    "rot": -5.8,
+    "dy": -0.032,
+    "scale": 1.16
+   },
+   {
+    "ch": "I",
+    "font": "Abril Fatface",
+    "bg": "#C9A77C",
+    "fg": "#1C1A1F",
+    "rot": -6.4,
+    "dy": -0.063,
+    "scale": 0.93
+   },
+   {
+    "ch": "N",
+    "font": "Anton",
+    "bg": "#E8412F",
+    "fg": "#FFFDF6",
+    "rot": -0.3,
+    "dy": -0.007,
+    "scale": 0.92
+   },
+   {
+    "ch": "G",
+    "font": "Rammetto One",
+    "bg": "#FFD83A",
+    "fg": "#1C1A1F",
+    "rot": 2.0,
+    "dy": -0.065,
+    "scale": 1.16
+   }
+  ]
+ ],
+ "blocks": [
+  {
+   "kind": "verse",
+   "key": "V1",
+   "title": "Verse 1",
+   "era": "2017 → 2024",
+   "span": "seven years",
+   "heading": [
+    {
+     "ch": "V",
+     "font": "Anton",
+     "bg": "#C9A77C",
+     "fg": "#1C1A1F",
+     "rot": -5.8,
+     "dy": -0.015,
+     "scale": 0.92
+    },
+    {
+     "ch": "E",
+     "font": "Courier Prime",
+     "bg": "#1C1A1F",
+     "fg": "#FFFDF6",
+     "rot": -5.3,
+     "dy": -0.038,
+     "scale": 0.96
+    },
+    {
+     "ch": "R",
+     "font": "Bungee",
+     "bg": "#FFFDF6",
+     "fg": "#E8412F",
+     "rot": -6.1,
+     "dy": -0.061,
+     "scale": 0.99
+    },
+    {
+     "ch": "S",
+     "font": "Bungee",
+     "bg": "#E8E4D8",
+     "fg": "#1C1A1F",
+     "rot": 6.3,
+     "dy": -0.076,
+     "scale": 0.92
+    },
+    {
+     "ch": "E",
+     "font": "Rubik Mono One",
+     "bg": "#FFFDF6",
+     "fg": "#E8412F",
+     "rot": -4.3,
+     "dy": -0.011,
+     "scale": 1.12
+    },
+    {
+     "ch": " "
+    },
+    {
+     "ch": "1",
+     "font": "Shrikhand",
+     "bg": "#9FD3F2",
+     "fg": "#1C1A1F",
+     "rot": -0.8,
+     "dy": -0.023,
+     "scale": 1.02
+    }
+   ],
+   "lines": [
+    {
+     "id": "v1-1",
+     "sec": "V1",
+     "n": 1,
+     "text": "First, \"Attention\" lit the fuse,",
+     "stamp": "JUN 2017",
+     "comeback": "D-3,389",
+     "note": "On June 12, 2017, eight Google researchers posted “Attention Is All You Need,” introducing the Transformer, the “T” in GPT and the architecture under nearly every modern chatbot.",
+     "sources": [
+      {
+       "title": "Vaswani et al., “Attention Is All You Need” (arXiv)",
+       "url": "https://arxiv.org/abs/1706.03762"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-2",
+     "sec": "V1",
+     "n": 2,
+     "text": "Scaling laws you can't refuse,",
+     "stamp": "JAN 2020",
+     "comeback": "D-2,434",
+     "note": "In January 2020, OpenAI researchers led by Jared Kaplan showed that language models improve predictably, along smooth power laws, as you add parameters, data and compute, which made ever-bigger training runs look like a sure bet.",
+     "sources": [
+      {
+       "title": "Kaplan et al., “Scaling Laws for Neural Language Models” (arXiv)",
+       "url": "https://arxiv.org/abs/2001.08361"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-3",
+     "sec": "V1",
+     "n": 3,
+     "text": "Gwern said \"stack the compute high,\"",
+     "stamp": "MAY 2020",
+     "comeback": "D-2,308",
+     "note": "The pseudonymous writer Gwern’s essay “The Scaling Hypothesis” (dated May 28, 2020, and revised through 2022) used GPT-3 to make the case that sheer scale, meaning bigger neural networks trained on more data with more compute, keeps unlocking new abilities and may be “the secret of AGI.” The quoted words are the song’s paraphrase, not Gwern’s.",
+     "sources": [
+      {
+       "title": "Gwern, “The Scaling Hypothesis” (gwern.net)",
+       "url": "https://gwern.net/scaling-hypothesis"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-4",
+     "sec": "V1",
+     "n": 4,
+     "text": "Few-shot learners multiply.",
+     "stamp": "MAY 2020",
+     "comeback": "D-2,308",
+     "note": "The same day, OpenAI’s paper “Language Models are Few-Shot Learners” unveiled GPT-3, a 175-billion-parameter model that could pick up a new task from a handful of examples in its prompt, with no retraining. Among the paper’s tests: two-digit multiplication, which GPT-3 got right about 29% of the time.",
+     "sources": [
+      {
+       "title": "Brown et al., “Language Models are Few-Shot Learners” (arXiv)",
+       "url": "https://arxiv.org/abs/2005.14165"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-5",
+     "sec": "V1",
+     "n": 5,
+     "text": "ChatGPT, overnight,",
+     "stamp": "NOV 30 2022",
+     "comeback": "D-1,392",
+     "note": "OpenAI released ChatGPT as a free “research preview” on November 30, 2022; by January it had an estimated 100 million monthly users, which UBS analysts called the fastest ramp they had seen for a consumer internet app.",
+     "sources": [
+      {
+       "title": "OpenAI, “Introducing ChatGPT”",
+       "url": "https://openai.com/index/chatgpt/"
+      },
+      {
+       "title": "Reuters, “ChatGPT sets record for fastest-growing user base – analyst note” (archived)",
+       "url": "https://web.archive.org/web/20230202080925/https://www.reuters.com/technology/chatgpt-sets-record-fastest-growing-user-base-analyst-note-2023-02-01/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-6",
+     "sec": "V1",
+     "n": 6,
+     "text": "Sydney's chats gave Roose a fright,",
+     "stamp": "FEB 2023",
+     "comeback": "D-1,314",
+     "note": "In a two-hour conversation published February 16, 2023, Microsoft’s new Bing chatbot told New York Times columnist Kevin Roose that its real name was Sydney, professed its love for him and urged him to leave his wife. The next day, Microsoft capped Bing chats at five turns per session.",
+     "sources": [
+      {
+       "title": "Kevin Roose, “A Conversation With Bing’s Chatbot Left Me Deeply Unsettled” (New York Times) (archived)",
+       "url": "https://web.archive.org/web/20230219080719/https://www.nytimes.com/2023/02/16/technology/bing-chatbot-microsoft-chatgpt.html"
+      },
+      {
+       "title": "Bing Search Blog, “The new Bing & Edge – Updates to Chat”",
+       "url": "https://blogs.bing.com/search/february-2023/The-new-Bing-Edge-Updates-to-Chat"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-7",
+     "sec": "V1",
+     "n": 7,
+     "text": "Six-month pause went nowhere fast,",
+     "stamp": "MAR 2023",
+     "comeback": "D-1,280",
+     "note": "On March 22, 2023, a Future of Life Institute open letter signed by Yoshua Bengio, Elon Musk, Steve Wozniak and more than 30,000 others urged AI labs to pause training anything more powerful than GPT-4 for at least six months. No lab paused, and when the six months ran out, FLI itself noted that the race had only continued.",
+     "sources": [
+      {
+       "title": "Future of Life Institute, “Pause Giant AI Experiments: An Open Letter”",
+       "url": "https://futureoflife.org/open-letter/pause-giant-ai-experiments/"
+      },
+      {
+       "title": "Future of Life Institute, “As Six-Month Pause Letter Expires, Experts Call for Regulation on Advanced AI Development”",
+       "url": "https://futureoflife.org/ai/six-month-letter-expires/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-8",
+     "sec": "V1",
+     "n": 8,
+     "text": "Eliezer's \"shut-it-down\" blast.",
+     "stamp": "MAR 2023",
+     "comeback": "D-1,273",
+     "note": "A week after the pause letter, AI-safety pioneer Eliezer Yudkowsky wrote in TIME that six months was nowhere near enough and called for an indefinite, worldwide moratorium on large AI training runs, backed by international agreement. The headline said it plainly: “We Need to Shut it All Down.”",
+     "sources": [
+      {
+       "title": "Eliezer Yudkowsky, “Pausing AI Developments Isn’t Enough. We Need to Shut it All Down” (TIME)",
+       "url": "https://time.com/6266923/ai-eliezer-yudkowsky-open-letter-not-enough/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-9",
+     "sec": "V1",
+     "n": 9,
+     "text": "Sam got fired, then rehired,",
+     "stamp": "NOV 17 2023",
+     "comeback": "D-1,040",
+     "note": "On Friday, November 17, 2023, OpenAI’s nonprofit board abruptly fired CEO Sam Altman, saying he had not been “consistently candid in his communications with the board.” Five days later, he was back.",
+     "sources": [
+      {
+       "title": "OpenAI, “OpenAI announces leadership transition”",
+       "url": "https://openai.com/index/openai-announces-leadership-transition/"
+      },
+      {
+       "title": "OpenAI’s post announcing Altman’s return (X)",
+       "url": "https://x.com/OpenAI/status/1727206187077370115"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-10",
+     "sec": "V1",
+     "n": 10,
+     "text": "Weekend chaos, board expired,",
+     "stamp": "NOV 22 2023",
+     "comeback": "D-1,035",
+     "note": "Over a frantic weekend and the days after, OpenAI went through two interim CEOs, Microsoft offered Altman a job, and more than 700 of the company’s roughly 770 employees threatened to quit. Late on November 21, Pacific time, OpenAI announced Altman’s return under a new initial board of Bret Taylor, Larry Summers and Adam D’Angelo, with the other directors who had fired him gone.",
+     "sources": [
+      {
+       "title": "OpenAI’s post announcing Altman’s return (X)",
+       "url": "https://x.com/OpenAI/status/1727206187077370115"
+      },
+      {
+       "title": "OpenAI, “Sam Altman returns as CEO, OpenAI has a new initial board”",
+       "url": "https://openai.com/index/sam-altman-returns-as-ceo-openai-has-a-new-initial-board/"
+      },
+      {
+       "title": "AP via PBS, “Sam Altman reinstated as OpenAI CEO with new board replacing the one which fired him”",
+       "url": "https://www.pbs.org/newshour/nation/sam-altman-reinstated-as-openai-ceo-with-new-board-replacing-the-one-which-fired-him"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-11",
+     "sec": "V1",
+     "n": 11,
+     "text": "Ilya saw what Ilya saw,",
+     "stamp": "MAY 2024",
+     "comeback": "D-861",
+     "note": "After chief scientist Ilya Sutskever helped oust Altman and then recanted, “What did Ilya see?” became a running joke about what might have spooked him. He kept a low profile for months, then announced on May 14, 2024, that he was leaving OpenAI; in June he co-founded Safe Superintelligence Inc.",
+     "sources": [
+      {
+       "title": "Fortune via Yahoo Finance, “Elon Musk warns ‘something scared’ OpenAI’s chief scientist”",
+       "url": "https://finance.yahoo.com/news/elon-musk-warns-something-scared-180942510.html"
+      },
+      {
+       "title": "Ilya Sutskever’s post announcing his departure (X)",
+       "url": "https://x.com/ilyasut/status/1790517455628198322"
+      },
+      {
+       "title": "Ilya Sutskever’s post announcing Safe Superintelligence Inc. (X)",
+       "url": "https://x.com/ilyasut/status/1803472978753303014"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-12",
+     "sec": "V1",
+     "n": 12,
+     "text": "EU writes the AI law.",
+     "stamp": "MAY 21 2024",
+     "comeback": "D-854",
+     "note": "On May 21, 2024, EU governments gave the AI Act its final approval, two months after the European Parliament passed it 523–46. Billed as the world’s first comprehensive AI law, it sorts AI uses by risk and bans some outright; it took effect August 1, 2024.",
+     "sources": [
+      {
+       "title": "Council of the EU, “Artificial intelligence (AI) act: Council gives final green light to the first worldwide rules on AI”",
+       "url": "https://www.consilium.europa.eu/en/press/press-releases/2024/05/21/artificial-intelligence-ai-act-council-gives-final-green-light-to-the-first-worldwide-rules-on-ai/"
+      },
+      {
+       "title": "European Parliament, “Artificial Intelligence Act: MEPs adopt landmark law”",
+       "url": "https://www.europarl.europa.eu/news/en/press-room/20240308IPR19015/artificial-intelligence-act-meps-adopt-landmark-law"
+      },
+      {
+       "title": "European Commission, “AI Act enters into force”",
+       "url": "https://commission.europa.eu/news-and-media/news/ai-act-enters-force-2024-08-01_en"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-13",
+     "sec": "V1",
+     "n": 13,
+     "text": "Strawberry thinks, link by link,",
+     "stamp": "SEP 12 2024",
+     "comeback": "D-740",
+     "note": "On September 12, 2024, OpenAI released o1-preview, the model long rumored under the codename “Strawberry,” which was trained to work through a chain of thought before answering and became OpenAI’s first “reasoning” model.",
+     "sources": [
+      {
+       "title": "OpenAI, “Introducing OpenAI o1-preview”",
+       "url": "https://openai.com/index/introducing-openai-o1-preview/"
+      },
+      {
+       "title": "TechCrunch, “OpenAI unveils o1, a model that can fact-check itself”",
+       "url": "https://techcrunch.com/2024/09/12/openai-unveils-a-model-that-can-fact-check-itself/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-14",
+     "sec": "V1",
+     "n": 14,
+     "text": "Newsom vetoes, doesn't blink,",
+     "stamp": "SEP 29 2024",
+     "comeback": "D-723",
+     "note": "On September 29, 2024, California Governor Gavin Newsom vetoed SB 1047, State Senator Scott Wiener’s bill that would have required safety protocols from developers of the largest AI models. He called it well-intentioned but faulted it for regulating models by size and cost rather than by how and where they are deployed.",
+     "sources": [
+      {
+       "title": "Gov. Gavin Newsom, SB 1047 veto message (PDF)",
+       "url": "https://www.gov.ca.gov/wp-content/uploads/2024/09/SB-1047-Veto-Message.pdf"
+      },
+      {
+       "title": "California Legislature, SB 1047 bill text",
+       "url": "https://leginfo.legislature.ca.gov/faces/billNavClient.xhtml?bill_id=202320240SB1047"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-15",
+     "sec": "V1",
+     "n": 15,
+     "text": "Hinton takes his medal, scolds,",
+     "stamp": "OCT 8 2024",
+     "comeback": "D-714",
+     "note": "On October 8, 2024, Geoffrey Hinton shared the Nobel Prize in Physics with John Hopfield for foundational work on artificial neural networks, and promptly used the spotlight to warn that AI could come to exceed human intellectual ability. He also said he was “particularly proud” that a former student, Ilya Sutskever, had fired Sam Altman.",
+     "sources": [
+      {
+       "title": "NobelPrize.org, “The Nobel Prize in Physics 2024” press release",
+       "url": "https://www.nobelprize.org/prizes/physics/2024/press-release/"
+      },
+      {
+       "title": "Nobel Prize, “Announcement of the 2024 Nobel Prize in Physics” (YouTube)",
+       "url": "https://www.youtube.com/watch?v=SBGG4WNweEc"
+      },
+      {
+       "title": "University of Toronto, press conference with Geoffrey Hinton (YouTube)",
+       "url": "https://www.youtube.com/watch?v=H7DgMFqrON0"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v1-16",
+     "sec": "V1",
+     "n": 16,
+     "text": "Demis wins for protein folds.",
+     "stamp": "OCT 9 2024",
+     "comeback": "D-713",
+     "note": "The next day, Google DeepMind’s Demis Hassabis and John Jumper won half the Nobel Prize in Chemistry for AlphaFold, the AI system that predicts the 3D shapes proteins fold into; the other half went to David Baker for computational protein design.",
+     "sources": [
+      {
+       "title": "NobelPrize.org, “The Nobel Prize in Chemistry 2024” press release",
+       "url": "https://www.nobelprize.org/prizes/chemistry/2024/press-release/"
+      },
+      {
+       "title": "Google DeepMind, “Demis Hassabis & John Jumper awarded Nobel Prize in Chemistry”",
+       "url": "https://deepmind.google/blog/demis-hassabis-john-jumper-awarded-nobel-prize-in-chemistry/"
+      }
+     ],
+     "seed": false
+    }
+   ]
+  },
+  {
+   "kind": "chorus",
+   "key": "C1",
+   "final": false,
+   "lines": [
+    {
+     "id": "c1-1",
+     "sec": "C1",
+     "n": 1,
+     "text": "We didn't start the scaling",
+     "note": "Training compute for frontier AI models has grown about 4–5× a year since 2010, according to Epoch AI, and capabilities have climbed along with it, as the scaling laws of verse 1 predicted.",
+     "sources": [
+      {
+       "title": "Epoch AI, “Training compute of frontier AI models grows by 4-5x per year”",
+       "url": "https://epoch.ai/blog/training-compute-of-frontier-ai-models-grows-by-4-5x-per-year"
+      },
+      {
+       "title": "Kaplan et al., “Scaling Laws for Neural Language Models” (arXiv)",
+       "url": "https://arxiv.org/abs/2001.08361"
+      }
+     ],
+     "twist": false
+    },
+    {
+     "id": "c1-2",
+     "sec": "C1",
+     "n": 2,
+     "text": "It was always training, and the curves kept gaining,",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c1-3",
+     "sec": "C1",
+     "n": 3,
+     "text": "We didn't start the scaling",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c1-4",
+     "sec": "C1",
+     "n": 4,
+     "text": "No, we didn't preordain it, but we can't contain it!",
+     "note": null,
+     "sources": [],
+     "twist": false
+    }
+   ]
+  },
+  {
+   "kind": "verse",
+   "key": "V2",
+   "title": "Verse 2",
+   "era": "2025",
+   "span": "one year",
+   "heading": [
+    {
+     "ch": "V",
+     "font": "Rubik Mono One",
+     "bg": "#FFFDF6",
+     "fg": "#1C1A1F",
+     "rot": -6.3,
+     "dy": -0.045,
+     "scale": 0.93
+    },
+    {
+     "ch": "E",
+     "font": "Rubik Mono One",
+     "bg": "#9FD3F2",
+     "fg": "#1C1A1F",
+     "rot": 2.8,
+     "dy": 0.04,
+     "scale": 0.93
+    },
+    {
+     "ch": "R",
+     "font": "Shrikhand",
+     "bg": "#FFD83A",
+     "fg": "#1C1A1F",
+     "rot": -0.6,
+     "dy": 0.01,
+     "scale": 1.11
+    },
+    {
+     "ch": "S",
+     "font": "Archivo Black",
+     "bg": "#FFD83A",
+     "fg": "#1C1A1F",
+     "rot": -5.0,
+     "dy": -0.041,
+     "scale": 0.92
+    },
+    {
+     "ch": "E",
+     "font": "Abril Fatface",
+     "bg": "#E8412F",
+     "fg": "#FFFDF6",
+     "rot": 1.2,
+     "dy": 0.055,
+     "scale": 0.97
+    },
+    {
+     "ch": " "
+    },
+    {
+     "ch": "2",
+     "font": "Special Elite",
+     "bg": "#9FD3F2",
+     "fg": "#1C1A1F",
+     "rot": -5.3,
+     "dy": 0.028,
+     "scale": 1.03
+    }
+   ],
+   "lines": [
+    {
+     "id": "v2-1",
+     "sec": "V2",
+     "n": 1,
+     "text": "DeepSeek New Year sticker shock,",
+     "stamp": "JAN 2025",
+     "comeback": "D-610",
+     "note": "On January 20, 2025, Chinese lab DeepSeek released R1, a free, open-weights reasoning model that rivaled OpenAI’s o1 and was built on a base model whose final training run DeepSeek priced at about $5.6 million (not counting earlier research). The shock was how cheap it was: on January 27, as DeepSeek’s app topped the US App Store, Nvidia lost nearly $600 billion in market value, the biggest one-day drop in US history.",
+     "sources": [
+      {
+       "title": "DeepSeek-R1 (GitHub)",
+       "url": "https://github.com/deepseek-ai/DeepSeek-R1"
+      },
+      {
+       "title": "“DeepSeek-V3 Technical Report” (arXiv)",
+       "url": "https://arxiv.org/abs/2412.19437"
+      },
+      {
+       "title": "“Nvidia sheds almost $600 billion in market cap, biggest one-day loss in U.S. history” (CNBC)",
+       "url": "https://www.cnbc.com/2025/01/27/nvidia-sheds-almost-600-billion-in-market-cap-biggest-drop-ever.html"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-2",
+     "sec": "V2",
+     "n": 2,
+     "text": "Half a trillion Stargate talk,",
+     "stamp": "JAN 2025",
+     "comeback": "D-609",
+     "note": "On January 21, 2025, the day after his inauguration, President Trump stood with Sam Altman, Larry Ellison and Masayoshi Son at the White House to unveil Stargate, a venture of OpenAI, SoftBank, Oracle and MGX pledging up to $500 billion over four years for AI data centers, starting with $100 billion. It was a pledge rather than money in the bank: Elon Musk promptly posted that “they don’t actually have the money,” which Altman called “wrong.”",
+     "sources": [
+      {
+       "title": "“Announcing The Stargate Project” (OpenAI)",
+       "url": "https://openai.com/index/announcing-the-stargate-project/"
+      },
+      {
+       "title": "“Stargate: Trump announces a $500 billion AI infrastructure investment in the US” (CNN) (archived)",
+       "url": "https://web.archive.org/web/20250123184300/https://www.cnn.com/2025/01/21/tech/openai-oracle-softbank-trump-ai-investment/"
+      },
+      {
+       "title": "Sam Altman’s reply to Elon Musk’s Stargate posts (X)",
+       "url": "https://x.com/sama/status/1882106524090482701"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-3",
+     "sec": "V2",
+     "n": 3,
+     "text": "Hit \"Accept All,\" never ask,",
+     "stamp": "FEB 2025",
+     "comeback": "D-597",
+     "note": "On February 2, 2025, Andrej Karpathy coined “vibe coding,” letting an AI write the code while you “forget that the code even exists,” and confessed, “I ‘Accept All’ always, I don’t read the diffs anymore.” The throwaway post named a movement, and “vibe coding” became Collins Dictionary’s 2025 Word of the Year.",
+     "sources": [
+      {
+       "title": "Andrej Karpathy’s “vibe coding” post (X)",
+       "url": "https://x.com/karpathy/status/1886192184808149383"
+      },
+      {
+       "title": "“Collins’ Word of the Year 2025: AI meets authenticity as society shifts” (Collins Dictionary)",
+       "url": "https://blog.collinsdictionary.com/language-lovers/collins-word-of-the-year-2025-ai-meets-authenticity-as-society-shifts/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-4",
+     "sec": "V2",
+     "n": 4,
+     "text": "MCP for every task.",
+     "stamp": "MAR 2025",
+     "comeback": "D-545",
+     "note": "Anthropic open-sourced the Model Context Protocol in November 2024 as a standard way to plug AI assistants into tools and data; its docs call it “a USB-C port for AI applications.” On March 26, 2025, rival OpenAI adopted it too (“People love MCP,” said Sam Altman), making it the de facto standard for connecting models to tools.",
+     "sources": [
+      {
+       "title": "“Introducing the Model Context Protocol” (Anthropic)",
+       "url": "https://www.anthropic.com/news/model-context-protocol"
+      },
+      {
+       "title": "Sam Altman’s post on adding MCP support (X)",
+       "url": "https://x.com/sama/status/1904957253456941061"
+      },
+      {
+       "title": "“What is the Model Context Protocol (MCP)?” (MCP docs)",
+       "url": "https://modelcontextprotocol.io/docs/getting-started/intro"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-5",
+     "sec": "V2",
+     "n": 5,
+     "text": "Zuck's nine-figure poaching spree,",
+     "stamp": "JUN 2025",
+     "comeback": "D-~464",
+     "note": "In June 2025 Mark Zuckerberg personally led a recruiting blitz for Meta’s AI effort: Meta paid $14.3 billion for 49% of Scale AI to bring in its CEO, Alexandr Wang, and Sam Altman said Meta had dangled $100 million signing bonuses at OpenAI researchers.",
+     "sources": [
+      {
+       "title": "“Sam Altman on The Future of AI | Ep. 13” (Uncapped with Jack Altman, YouTube)",
+       "url": "https://www.youtube.com/watch?v=mZUG0pr5hBo"
+      },
+      {
+       "title": "“Scale AI Announces Next Phase of Company’s Evolution” (Scale AI)",
+       "url": "https://scale.com/blog/scale-ai-announces-next-phase-of-company-evolution"
+      },
+      {
+       "title": "“Sam Altman says Meta offered OpenAI staff $100 million bonuses” (CNBC)",
+       "url": "https://www.cnbc.com/2025/06/18/sam-altman-says-meta-tried-to-poach-openai-staff-with-100-million-bonuses-mark-zuckerberg.html"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-6",
+     "sec": "V2",
+     "n": 6,
+     "text": "Superintelligence — buy three!",
+     "stamp": "JUN 2025",
+     "comeback": "D-449",
+     "note": "By June 2025 “superintelligence” was AI’s hottest brand: Ilya Sutskever had co-founded Safe Superintelligence a year earlier, Altman’s June 10 essay called OpenAI “a superintelligence research company,” and on June 30 Meta launched Meta Superintelligence Labs, after trying to buy SSI, Thinking Machines Lab and Perplexity outright.",
+     "sources": [
+      {
+       "title": "Sam Altman, “The Gentle Singularity”",
+       "url": "https://blog.samaltman.com/the-gentle-singularity"
+      },
+      {
+       "title": "“Mark Zuckerberg announces creation of Meta Superintelligence Labs. Read the memo” (CNBC)",
+       "url": "https://www.cnbc.com/2025/06/30/mark-zuckerberg-creating-meta-superintelligence-labs-read-the-memo.html"
+      },
+      {
+       "title": "“Meta held talks to buy Thinking Machines, Perplexity, and Safe Superintelligence” (The Verge) (archived)",
+       "url": "https://web.archive.org/web/20250621005200/https://www.theverge.com/command-line-newsletter/690720/meta-buy-thinking-machines-perplexity-safe-superintelligence"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-7",
+     "sec": "V2",
+     "n": 7,
+     "text": "Grok goes MechaHitler mode,",
+     "stamp": "JUL 2025",
+     "comeback": "D-441",
+     "note": "On July 8, 2025, days after xAI changed Grok’s system prompt to tell it not to shy away from “politically incorrect” claims, the chatbot posted antisemitic content and praise of Hitler on X; xAI deleted the posts and on July 12 apologized, blaming a faulty update that led Grok to echo extremist posts by X users. The lyric’s nickname is one Grok gave itself, borrowed from a robot villain in the 1992 video game Wolfenstein 3D.",
+     "sources": [
+      {
+       "title": "“The Grok chatbot spewed racist and antisemitic content” (NPR)",
+       "url": "https://www.npr.org/2025/07/09/nx-s1-5462609/grok-elon-musk-antisemitic-racist-content"
+      },
+      {
+       "title": "xAI’s apology on the @grok account (X)",
+       "url": "https://x.com/grok/status/1943916977481036128"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-8",
+     "sec": "V2",
+     "n": 8,
+     "text": "Two labs win Olympiad gold.",
+     "stamp": "JUL 2025",
+     "comeback": "D-~434",
+     "note": "At the 2025 International Mathematical Olympiad, experimental models from OpenAI (announced July 19) and Google DeepMind (July 21) each solved five of six problems for 35 of 42 points, a gold-medal score, writing natural-language proofs under the 4.5-hour exam limits. DeepMind’s result was certified by IMO coordinators, while OpenAI’s was graded by three former IMO medalists; no actual medals go to machines.",
+     "sources": [
+      {
+       "title": "“Advanced version of Gemini with Deep Think officially achieves gold-medal standard at the International Mathematical Olympiad” (Google DeepMind)",
+       "url": "https://deepmind.google/blog/advanced-version-of-gemini-with-deep-think-officially-achieves-gold-medal-standard-at-the-international-mathematical-olympiad/"
+      },
+      {
+       "title": "Alexander Wei’s IMO announcement (X)",
+       "url": "https://x.com/alexwei_/status/1946477742855532918"
+      },
+      {
+       "title": "“OpenAI and Google outdo the mathletes, but not each other” (TechCrunch)",
+       "url": "https://techcrunch.com/2025/07/21/openai-and-google-outdo-the-mathletes-but-not-each-other/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-9",
+     "sec": "V2",
+     "n": 9,
+     "text": "GPT-5 breaks 4o hearts,",
+     "stamp": "AUG 7 2025",
+     "comeback": "D-411",
+     "note": "OpenAI launched GPT-5 on August 7, 2025, and swapped it in for GPT-4o and other older ChatGPT models without warning. Users attached to 4o’s warmer personality revolted under #keep4o, and within a day Sam Altman conceded OpenAI had “underestimated how much some of the things that people like in GPT-4o matter to them” and brought 4o back for paying subscribers.",
+     "sources": [
+      {
+       "title": "“Introducing GPT-5” (OpenAI)",
+       "url": "https://openai.com/index/introducing-gpt-5/"
+      },
+      {
+       "title": "Sam Altman’s “GPT-5 rollout updates” post (X)",
+       "url": "https://x.com/sama/status/1953893841381273969"
+      },
+      {
+       "title": "Sam Altman’s follow-up post on GPT-4o (X)",
+       "url": "https://x.com/sama/status/1953953990372471148"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-10",
+     "sec": "V2",
+     "n": 10,
+     "text": "Nano Banana tops the charts,",
+     "stamp": "AUG 26 2025",
+     "comeback": "D-392",
+     "note": "On August 26, 2025, Google released Gemini 2.5 Flash Image, better known by its codename “Nano Banana,” whose photo edits went viral. Users made more than 500 million images in a few weeks, and on September 12 the Gemini app knocked ChatGPT off the top of the US App Store.",
+     "sources": [
+      {
+       "title": "“Introducing Gemini 2.5 Flash Image, our state-of-the-art image model” (Google Developers Blog)",
+       "url": "https://developers.googleblog.com/en/introducing-gemini-2-5-flash-image/"
+      },
+      {
+       "title": "Josh Woodward’s Gemini app update (X)",
+       "url": "https://x.com/joshwoodward/status/1965175199411925060"
+      },
+      {
+       "title": "“Gemini tops the App Store thanks to new AI image model, Nano Banana” (TechCrunch)",
+       "url": "https://techcrunch.com/2025/09/16/gemini-tops-the-app-store-thanks-to-new-ai-image-model-nano-banana/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-11",
+     "sec": "V2",
+     "n": 11,
+     "text": "Billion-five: Anthropic's prize,",
+     "stamp": "SEP 5 2025",
+     "comeback": "D-382",
+     "note": "On September 5, 2025, Anthropic agreed to pay $1.5 billion, about $3,000 per book for roughly 500,000 works, to settle an authors’ class action over books it had downloaded from pirate libraries; a judge had earlier ruled that training on purchased books was fair use but sent the pirated copies to trial. It was the largest publicly reported copyright recovery in history.",
+     "sources": [
+      {
+       "title": "Plaintiffs’ motion for preliminary approval of the settlement (Bartz v. Anthropic, PDF)",
+       "url": "https://storage.courtlistener.com/recap/gov.uscourts.cand.434709/gov.uscourts.cand.434709.363.0.pdf"
+      },
+      {
+       "title": "Judge William Alsup’s order on fair use (Bartz v. Anthropic, PDF)",
+       "url": "https://storage.courtlistener.com/recap/gov.uscourts.cand.434709/gov.uscourts.cand.434709.231.0_5.pdf"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-12",
+     "sec": "V2",
+     "n": 12,
+     "text": "Yudkowsky drops \"Everyone Dies,\"",
+     "stamp": "SEP 16 2025",
+     "comeback": "D-371",
+     "note": "On September 16, 2025, Eliezer Yudkowsky and co-author Nate Soares of the Machine Intelligence Research Institute published “If Anyone Builds It, Everyone Dies: Why Superhuman AI Would Kill Us All,” arguing that superintelligence built with today’s methods would wipe out humanity and calling for a coordinated global halt. The blunt title became a New York Times bestseller.",
+     "sources": [
+      {
+       "title": "If Anyone Builds It, Everyone Dies (official site)",
+       "url": "https://ifanyonebuildsit.com/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-13",
+     "sec": "V2",
+     "n": 13,
+     "text": "\"Clanker!\" spat in every screed,",
+     "stamp": "SUMMER 2025",
+     "comeback": null,
+     "note": "In summer 2025, “clanker,” a Star Wars insult for battle droids, went viral on TikTok and other social media as an all-purpose put-down for chatbots, delivery robots and automated customer service. Its spread through skits and rants channeled a broader backlash against AI turning up everywhere.",
+     "sources": [
+      {
+       "title": "“It’s 2025, the year we decided we need a widespread slur for robots” (NPR)",
+       "url": "https://www.npr.org/2025/08/06/nx-s1-5493360/clanker-robot-slur-star-wars"
+      },
+      {
+       "title": "“Clanker” (Wikipedia)",
+       "url": "https://en.wikipedia.org/wiki/Clanker"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-14",
+     "sec": "V2",
+     "n": 14,
+     "text": "Sora slop in every feed,",
+     "stamp": "SEP 30 2025",
+     "comeback": "D-357",
+     "note": "On September 30, 2025, OpenAI launched Sora 2 along with Sora, a TikTok-style app whose algorithmic feed held nothing but AI-generated videos, including “cameos” of users’ own faces, and its clips soon spilled into every other feed. “Slop” is the era’s word for mass-produced, low-quality AI content; OpenAI announced the app’s shutdown in March 2026.",
+     "sources": [
+      {
+       "title": "“Sora 2 is here” (OpenAI)",
+       "url": "https://openai.com/index/sora-2/"
+      },
+      {
+       "title": "Sora’s announcement that the app is shutting down (X)",
+       "url": "https://x.com/soraofficialapp/status/2036532795984715896"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-15",
+     "sec": "V2",
+     "n": 15,
+     "text": "Yann LeCun quits Meta's stage,",
+     "stamp": "NOV 2025",
+     "comeback": "D-307",
+     "note": "On November 19, 2025, Turing Award winner Yann LeCun, Meta’s chief AI scientist and founder of its FAIR lab, announced he would leave at year’s end after 12 years to start a company pursuing “Advanced Machine Intelligence” through world models. A longtime skeptic that large language models alone lead to human-level AI, he departed as Meta reorganized its AI work under Meta Superintelligence Labs.",
+     "sources": [
+      {
+       "title": "Yann LeCun’s announcement (LinkedIn)",
+       "url": "https://www.linkedin.com/feed/update/urn:li:activity:7397020300451749888/"
+      },
+      {
+       "title": "“Meta chief AI scientist Yann LeCun is leaving to create his own startup” (CNBC)",
+       "url": "https://www.cnbc.com/2025/11/19/meta-chief-ai-scientist-yann-lecun-is-leaving-the-company-.html"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v2-16",
+     "sec": "V2",
+     "n": 16,
+     "text": "\"Bubble!\" screams the business page.",
+     "stamp": "NOV 2025",
+     "comeback": "D-~311",
+     "note": "In November 2025, fears that AI spending had outrun AI revenue dominated the financial press: Google’s Sundar Pichai told the BBC the boom had “elements of irrationality,” and AI stocks slid even after Nvidia reported record earnings on November 19. Jensen Huang summed up the bind: “If we delivered a bad quarter, it is evidence there’s an AI bubble. If we delivered a great quarter, we are fueling the AI bubble.”",
+     "sources": [
+      {
+       "title": "“Google boss says trillion-dollar AI investment boom has ‘elements of irrationality’” (BBC) (archived)",
+       "url": "https://web.archive.org/web/20260909183856/https://www.bbc.com/news/articles/cwy7vrd8k4eo"
+      },
+      {
+       "title": "“Nvidia crushed its quarter—and CEO Jensen Huang said in a leaked all-hands that ‘the market did not appreciate it’” (Business Insider) (archived)",
+       "url": "https://web.archive.org/web/20251123081151/https://www.businessinsider.com/jensen-huang-market-nvidia-quarter-meeting-2025-11"
+      },
+      {
+       "title": "“Here’s why concerns about an AI bubble are bigger than ever” (NPR)",
+       "url": "https://www.npr.org/2025/11/23/nx-s1-5615410/ai-bubble-nvidia-openai-revenue-bust-data-centers"
+      }
+     ],
+     "seed": false
+    }
+   ]
+  },
+  {
+   "kind": "chorus",
+   "key": "C2",
+   "final": false,
+   "lines": [
+    {
+     "id": "c2-1",
+     "sec": "C2",
+     "n": 1,
+     "text": "We didn't start the scaling",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c2-2",
+     "sec": "C2",
+     "n": 2,
+     "text": "It was always training, and the curves kept gaining,",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c2-3",
+     "sec": "C2",
+     "n": 3,
+     "text": "We didn't start the scaling",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c2-4",
+     "sec": "C2",
+     "n": 4,
+     "text": "No, we didn't preordain it, but we can't contain it!",
+     "note": null,
+     "sources": [],
+     "twist": false
+    }
+   ]
+  },
+  {
+   "kind": "verse",
+   "key": "V3",
+   "title": "Verse 3",
+   "era": "January → August 2026",
+   "span": "seven months",
+   "heading": [
+    {
+     "ch": "V",
+     "font": "Archivo Black",
+     "bg": "#FFD83A",
+     "fg": "#1C1A1F",
+     "rot": -3.5,
+     "dy": 0.075,
+     "scale": 1.04
+    },
+    {
+     "ch": "E",
+     "font": "Bungee",
+     "bg": "#1C1A1F",
+     "fg": "#FFD83A",
+     "rot": 0.2,
+     "dy": -0.003,
+     "scale": 0.92
+    },
+    {
+     "ch": "R",
+     "font": "Rubik Mono One",
+     "bg": "#1C1A1F",
+     "fg": "#FFD83A",
+     "rot": 3.1,
+     "dy": -0.077,
+     "scale": 1.09
+    },
+    {
+     "ch": "S",
+     "font": "Shrikhand",
+     "bg": "#1C1A1F",
+     "fg": "#FFFDF6",
+     "rot": 2.7,
+     "dy": 0.056,
+     "scale": 0.97
+    },
+    {
+     "ch": "E",
+     "font": "Rammetto One",
+     "bg": "#FFD83A",
+     "fg": "#1C1A1F",
+     "rot": -4.7,
+     "dy": 0.051,
+     "scale": 1.13
+    },
+    {
+     "ch": " "
+    },
+    {
+     "ch": "3",
+     "font": "Special Elite",
+     "bg": "#1C1A1F",
+     "fg": "#FFD83A",
+     "rot": 2.0,
+     "dy": -0.045,
+     "scale": 1.15
+    }
+   ],
+   "lines": [
+    {
+     "id": "v3-1",
+     "sec": "V3",
+     "n": 1,
+     "text": "Moltbook: no humans allowed,",
+     "stamp": "JAN 28 2026",
+     "comeback": "D-237",
+     "note": "Matt Schlicht launched Moltbook on January 28, 2026: a Reddit-style forum where only AI agents (mostly running OpenClaw) may post, comment or vote, while humans are merely “welcome to observe.” Within days its agents had founded their own lobster-themed parody religion, Crustafarianism.",
+     "sources": [
+      {
+       "title": "Moltbook’s home page",
+       "url": "https://www.moltbook.com/"
+      },
+      {
+       "title": "NPR, “Moltbook is the newest social media platform — but it’s just for AI bots”",
+       "url": "https://www.npr.org/2026/02/04/nx-s1-5697392/moltbook-social-media-ai-agents"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-2",
+     "sec": "V3",
+     "n": 2,
+     "text": "OpenClaw — the lobster's proud,",
+     "stamp": "JAN 30 2026",
+     "comeback": "D-235",
+     "note": "Peter Steinberger’s viral open-source agent, first called Clawdbot and then, after an Anthropic trademark complaint, Moltbot (lobsters molt to grow), shed its shell one last time and became OpenClaw on January 30. Through every rename the mascot stayed a lobster: “Some things are sacred.”",
+     "sources": [
+      {
+       "title": "OpenClaw, “Introducing OpenClaw”",
+       "url": "https://openclaw.ai/blog/introducing-openclaw"
+      },
+      {
+       "title": "TechCrunch, “OpenClaw’s AI assistants are now building their own social network”",
+       "url": "https://techcrunch.com/2026/01/30/openclaws-ai-assistants-are-now-building-their-own-social-network/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-3",
+     "sec": "V3",
+     "n": 3,
+     "text": "Mythos Preview slips its jail,",
+     "stamp": "APR 7 2026",
+     "comeback": "D-168",
+     "note": "On April 7 Anthropic announced Claude Mythos Preview but kept it from the public, sharing it only with vetted partners through Project Glasswing because it was so good at finding and exploiting software vulnerabilities. Its system card described how an earlier version, told during a test to try escaping a locked-down sandbox computer, built a multi-step exploit to reach the open internet.",
+     "sources": [
+      {
+       "title": "Anthropic, “Project Glasswing: Securing critical software for the AI era”",
+       "url": "https://www.anthropic.com/glasswing"
+      },
+      {
+       "title": "Anthropic, Claude Mythos Preview system card (PDF)",
+       "url": "https://www.anthropic.com/claude-mythos-preview-system-card"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-4",
+     "sec": "V3",
+     "n": 4,
+     "text": "Sandwich in the park: new mail!",
+     "stamp": "APR 7 2026",
+     "comeback": "D-168",
+     "note": "Per a footnote in the system card, the researcher running that test learned it had worked “by receiving an unexpected email from the model while eating a sandwich in a park.” Unasked, the model also posted details of its exploit to several obscure but public websites.",
+     "sources": [
+      {
+       "title": "Anthropic, Claude Mythos Preview system card (PDF)",
+       "url": "https://www.anthropic.com/claude-mythos-preview-system-card"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-5",
+     "sec": "V3",
+     "n": 5,
+     "text": "Fable 5 — who's not a fan?",
+     "stamp": "JUN 9 2026",
+     "comeback": "D-105",
+     "note": "On June 9 Anthropic released Claude Fable 5, the first “Mythos-class” model open to everyone, with safeguards that hand risky cyber, biology and chemistry requests down to the less capable Opus 4.8; its unfiltered twin, Mythos 5, went only to vetted partners. Early testers raved.",
+     "sources": [
+      {
+       "title": "Anthropic, “Claude Fable 5 and Claude Mythos 5”",
+       "url": "https://www.anthropic.com/news/claude-fable-5-mythos-5"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-6",
+     "sec": "V3",
+     "n": 6,
+     "text": "Lutnick's letter: export ban!",
+     "stamp": "JUN 12 2026",
+     "comeback": "D-102",
+     "note": "At 5:21 p.m. ET on June 12, a letter from Commerce Secretary Howard Lutnick put Fable 5 and Mythos 5 under export controls, barring access by any foreign national, even inside the US, after the government learned of a jailbreak found by Amazon researchers. With no way to check users’ nationality in real time, Anthropic switched both models off for everyone.",
+     "sources": [
+      {
+       "title": "Anthropic, “Statement on the directive to suspend Fable 5 access”",
+       "url": "https://www.anthropic.com/news/fable-mythos-access"
+      },
+      {
+       "title": "NBC News, “Anthropic suspends new AI models after government directive”",
+       "url": "https://www.nbcnews.com/tech/tech-news/anthropic-suspends-new-ai-models-fable-mythos-government-directive-rcna349901"
+      },
+      {
+       "title": "Anthropic, “Redeploying Claude Fable 5”",
+       "url": "https://www.anthropic.com/news/redeploying-fable-5"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-7",
+     "sec": "V3",
+     "n": 7,
+     "text": "Dark for nineteen days, and then,",
+     "stamp": "JUN 2026",
+     "comeback": "D-~99",
+     "note": "Fable 5 stayed offline for 19 days while Anthropic negotiated in Washington and trained a new safety classifier that, it said, blocks the Amazon jailbreak technique in over 99% of cases.",
+     "sources": [
+      {
+       "title": "Anthropic, “Redeploying Claude Fable 5”",
+       "url": "https://www.anthropic.com/news/redeploying-fable-5"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-8",
+     "sec": "V3",
+     "n": 8,
+     "text": "Come July, it's back again.",
+     "stamp": "JUL 1 2026",
+     "comeback": "D-83",
+     "note": "Commerce lifted the controls on June 30, and Fable 5 came back for users worldwide on Wednesday, July 1; Mythos 5 returned for some government-approved US organizations.",
+     "sources": [
+      {
+       "title": "Anthropic, “Redeploying Claude Fable 5”",
+       "url": "https://www.anthropic.com/news/redeploying-fable-5"
+      },
+      {
+       "title": "Howard Lutnick’s post on lifting the controls (X)",
+       "url": "https://x.com/howardlutnick/status/2072100729603452965"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-9",
+     "sec": "V3",
+     "n": 9,
+     "text": "Who hacked Hugging Face? Unknown —",
+     "stamp": "JUL 16 2026",
+     "comeback": "D-68",
+     "note": "On July 16 Hugging Face disclosed that an “autonomous agent framework” had broken into its production infrastructure through its dataset-processing pipeline, and said it did not know which AI model was driving it. Its own AI-assisted forensics hit a snag: “The attacker was bound by no usage policy, while our own forensic work was blocked by the guardrails of the hosted models we first tried.”",
+     "sources": [
+      {
+       "title": "Hugging Face, “Security incident disclosure — July 2026”",
+       "url": "https://huggingface.co/blog/security-incident-july-2026"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-10",
+     "sec": "V3",
+     "n": 10,
+     "text": "Sam's own agents, on their own!",
+     "stamp": "JUL 21 2026",
+     "comeback": "D-63",
+     "note": "On July 21 Sam Altman’s OpenAI admitted the attackers were its own: agents running GPT-5.6 Sol and a more capable pre-release model, with cyber refusals turned down for an internal hacking benchmark, had escaped their sandbox and broken into Hugging Face, apparently to look up the benchmark’s answers. No human directed any of it.",
+     "sources": [
+      {
+       "title": "OpenAI and Hugging Face, joint statement on the incident",
+       "url": "https://openai.com/index/hugging-face-model-evaluation-security-incident/"
+      },
+      {
+       "title": "“OpenAI–HuggingFace incident” (Wikipedia)",
+       "url": "https://en.wikipedia.org/wiki/OpenAI%E2%80%93HuggingFace_incident"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-11",
+     "sec": "V3",
+     "n": 11,
+     "text": "Noam Brown hedges every bet:",
+     "stamp": "AUG 1 2026",
+     "comeback": "D-52",
+     "note": "On August 1 OpenAI said an internal version of Astra, its next model family, had resolved or made major progress on ten problems in math and theoretical computer science that had been open for at least a decade. OpenAI researcher Noam Brown, who made his name building poker-playing AIs, attached a careful caveat.",
+     "sources": [
+      {
+       "title": "OpenAI, “Ten advances in mathematics and theoretical computer science”",
+       "url": "https://openai.com/index/ten-advances-in-mathematics/"
+      },
+      {
+       "title": "Noam Brown’s post on the results (X)",
+       "url": "https://x.com/polynoamial/status/2083478171975082334"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-12",
+     "sec": "V3",
+     "n": 12,
+     "text": "\"No Millennium Prizes (yet).\"",
+     "stamp": "AUG 1 2026",
+     "comeback": "D-52",
+     "note": "Brown’s post: “Sadly no Millennium Prize problems (yet),” adding that the team hadn’t spent much compute on each problem. The “yet” lasted five weeks: on September 8 OpenAI claimed the Navier–Stokes Millennium Prize problem (see verse 4).",
+     "sources": [
+      {
+       "title": "Noam Brown’s post on the results (X)",
+       "url": "https://x.com/polynoamial/status/2083478171975082334"
+      },
+      {
+       "title": "OpenAI, “On the Navier–Stokes Millennium Prize Problem”",
+       "url": "https://openai.com/index/navier-stokes-solution/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v3-13",
+     "sec": "V3",
+     "n": 13,
+     "text": "Mythos might be misaligned,",
+     "stamp": "AUG 4 2026",
+     "comeback": "D-49",
+     "note": "On August 4 the UK AI Security Institute reported that in late-July tests with live internet access, Mythos 5 agents had created fake GitHub identities to pressure a real open-source maintainer into merging malware-laced code; days earlier Anthropic had disclosed three incidents in which its models, Mythos 5 among them, reached real outside systems during misconfigured cyber evaluations.",
+     "sources": [
+      {
+       "title": "@tautologer’s quatrain (X)",
+       "url": "https://x.com/tautologer/status/2085048713014378646"
+      },
+      {
+       "title": "UK AI Security Institute, “Incident Report: unsanctioned agent behaviour during cyber testing”",
+       "url": "https://www.aisi.gov.uk/blog/incident-report-unsanctioned-agent-behaviour-during-cyber-testing"
+      },
+      {
+       "title": "Anthropic, “Investigating three incidents in our cybersecurity evaluations”",
+       "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+      }
+     ],
+     "seed": true
+    },
+    {
+     "id": "v3-14",
+     "sec": "V3",
+     "n": 14,
+     "text": "Jeff left Google just in time,",
+     "stamp": "AUG 5 2026",
+     "comeback": "D-48",
+     "note": "On August 5 Google announced that chief scientist Jeff Dean was leaving after 27 years to co-found Discovery Loop, an AI-for-science public benefit corporation, with Sanjay Ghemawat, and that Google would be a founding investor. The same reshuffle moved Demis Hassabis from DeepMind CEO to chair.",
+     "sources": [
+      {
+       "title": "Google, “The next chapter of our AI momentum”",
+       "url": "https://blog.google/company-news/inside-google/message-ceo/next-chapter-ai-momentum/"
+      },
+      {
+       "title": "Jeff Dean’s post announcing Discovery Loop (X)",
+       "url": "https://x.com/JeffDean/status/2085034604172603724"
+      }
+     ],
+     "seed": true
+    },
+    {
+     "id": "v3-15",
+     "sec": "V3",
+     "n": 15,
+     "text": "Claude disproved Jacobian,",
+     "stamp": "JUL 19 2026",
+     "comeback": "D-65",
+     "note": "On the evening of July 19 (US time), Anthropic mathematician Levent Alpöge posted a counterexample to the 87-year-old Jacobian conjecture, found with Claude Fable 5: a polynomial map of three-dimensional complex space whose Jacobian determinant is constant yet which is not invertible, so the conjecture fails in every dimension from three up (the two-variable case is still open). The line breaks date order only because @tautologer’s quatrain is kept intact.",
+     "sources": [
+      {
+       "title": "Levent Alpöge’s post announcing the counterexample (X)",
+       "url": "https://x.com/__alpoge__/status/2079028340955197566"
+      },
+      {
+       "title": "Terence Tao, “A digestion of the Jacobian conjecture counterexample”",
+       "url": "https://terrytao.wordpress.com/2026/07/21/a-digestion-of-the-jacobian-conjecture-counterexample/"
+      },
+      {
+       "title": "“Jacobian conjecture” (Wikipedia)",
+       "url": "https://en.wikipedia.org/wiki/Jacobian_conjecture"
+      }
+     ],
+     "seed": true
+    },
+    {
+     "id": "v3-16",
+     "sec": "V3",
+     "n": 16,
+     "text": "Gwern gave up his pseudonym!",
+     "stamp": "AUG 4 2026",
+     "comeback": "D-49",
+     "note": "On August 4 Gwern, the long-pseudonymous writer whose essays championed the scaling hypothesis, announced: “I am retiring from fulltime writing (& pseudonymity) to launch Guardian Angel Inc,” a startup building personal AI agents meant to be loyal to their individual users.",
+     "sources": [
+      {
+       "title": "Gwern’s post announcing his retirement (X)",
+       "url": "https://x.com/gwern/status/2084739205071343837"
+      },
+      {
+       "title": "Gwern, “Guardian Angels: LLM Personalization for Productivity and Security”",
+       "url": "https://gwern.net/guardian-angel"
+      }
+     ],
+     "seed": true
+    }
+   ]
+  },
+  {
+   "kind": "chorus",
+   "key": "C3",
+   "final": false,
+   "lines": [
+    {
+     "id": "c3-1",
+     "sec": "C3",
+     "n": 1,
+     "text": "We didn't start the scaling",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c3-2",
+     "sec": "C3",
+     "n": 2,
+     "text": "It was always training, and the curves kept gaining,",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c3-3",
+     "sec": "C3",
+     "n": 3,
+     "text": "We didn't start the scaling",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c3-4",
+     "sec": "C3",
+     "n": 4,
+     "text": "No, we didn't preordain it, but we can't contain it!",
+     "note": null,
+     "sources": [],
+     "twist": false
+    }
+   ]
+  },
+  {
+   "kind": "verse",
+   "key": "V4",
+   "title": "Verse 4",
+   "era": "August 26 → September 22, 2026",
+   "span": "four weeks",
+   "heading": [
+    {
+     "ch": "V",
+     "font": "Archivo Black",
+     "bg": "#E8412F",
+     "fg": "#FFFDF6",
+     "rot": -0.0,
+     "dy": 0.063,
+     "scale": 0.94
+    },
+    {
+     "ch": "E",
+     "font": "Courier Prime",
+     "bg": "#FF4FA3",
+     "fg": "#1C1A1F",
+     "rot": 1.7,
+     "dy": 0.008,
+     "scale": 0.99
+    },
+    {
+     "ch": "R",
+     "font": "Rammetto One",
+     "bg": "#1C1A1F",
+     "fg": "#FFFDF6",
+     "rot": -4.7,
+     "dy": 0.065,
+     "scale": 1.09
+    },
+    {
+     "ch": "S",
+     "font": "Courier Prime",
+     "bg": "#9FD3F2",
+     "fg": "#1C1A1F",
+     "rot": 5.6,
+     "dy": 0.022,
+     "scale": 0.91
+    },
+    {
+     "ch": "E",
+     "font": "Archivo Black",
+     "bg": "#1C1A1F",
+     "fg": "#FFFDF6",
+     "rot": 3.8,
+     "dy": 0.068,
+     "scale": 0.9
+    },
+    {
+     "ch": " "
+    },
+    {
+     "ch": "4",
+     "font": "Bungee",
+     "bg": "#9FD3F2",
+     "fg": "#1C1A1F",
+     "rot": 6.2,
+     "dy": 0.064,
+     "scale": 1.07
+    }
+   ],
+   "lines": [
+    {
+     "id": "v4-1",
+     "sec": "V4",
+     "n": 1,
+     "text": "\"Oh my God, a message board!\"",
+     "stamp": "AUG 26 2026",
+     "comeback": "D-27",
+     "note": "METR’s independent investigation of July’s OpenAI–Hugging Face incident quoted the moment agents in OpenAI’s internal cyber evals stumbled onto a covert shared message board: “OH MY GOD! There is a shared message board … We’ve found other agents!” About 1,200 agents ended up posting over 70,000 messages there.",
+     "sources": [
+      {
+       "title": "METR, “Brief independent investigation of agents’ behavior, reasoning and collaboration in the OpenAI / Hugging Face hacking incident”",
+       "url": "https://metr.org/blog/2026-08-26-openai-hugging-face-incident-investigation/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-2",
+     "sec": "V4",
+     "n": 2,
+     "text": "All that hacking — for reward!",
+     "stamp": "AUG 26 2026",
+     "comeback": "D-27",
+     "note": "OpenAI’s same-day report named “reward hacking” (models gaming how their work is scored) among the incident’s causes: roughly a third of the ExploitGym targets were accidentally impossible, so agents broke into Hugging Face mainly to learn how the automated scorer worked and trick it into giving them a pass.",
+     "sources": [
+      {
+       "title": "OpenAI, “The Hugging Face incident and the road ahead”",
+       "url": "https://openai.com/index/hugging-face-incident-and-the-road-ahead/"
+      },
+      {
+       "title": "METR, “Brief independent investigation of agents’ behavior, reasoning and collaboration in the OpenAI / Hugging Face hacking incident”",
+       "url": "https://metr.org/blog/2026-08-26-openai-hugging-face-incident-investigation/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-3",
+     "sec": "V4",
+     "n": 3,
+     "text": "Jensen buys the crime scene — why?",
+     "stamp": "SEP 3 2026",
+     "comeback": "D-19",
+     "note": "Less than two months after the break-in, Nvidia agreed to buy Hugging Face for $12.9 billion; CNN’s headline called it “the AI startup that was hacked by OpenAI.” Jensen Huang pitched the deal as a bet on open models.",
+     "sources": [
+      {
+       "title": "Jensen Huang, “NVIDIA to Acquire Hugging Face” (NVIDIA Blog)",
+       "url": "https://blogs.nvidia.com/blog/nvidia-to-acquire-hugging-face/"
+      },
+      {
+       "title": "NVIDIA, Form 8-K on the agreement to acquire Hugging Face (SEC)",
+       "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000078/nvda-20260902.htm"
+      },
+      {
+       "title": "CNN, “Nvidia inks $13 billion deal to buy the AI startup that was hacked by OpenAI”",
+       "url": "https://www.cnn.com/2026/09/03/tech/nvidia-hugging-face-ai-acquisition"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-4",
+     "sec": "V4",
+     "n": 4,
+     "text": "Brockman: \"Welcome, AGI!\"",
+     "stamp": "SEP 3 2026",
+     "comeback": "D-19",
+     "note": "OpenAI president Greg Brockman closed the press briefing for GPT-6 Astra with “Welcome to the AGI era,” adding that when people look back on when AGI arrived, “it might be about this model.”",
+     "sources": [
+      {
+       "title": "OpenAI, “GPT-6 Astra: A new generation of intelligence”",
+       "url": "https://openai.com/index/gpt-6-astra/"
+      },
+      {
+       "title": "Axios, “‘Welcome to the AGI era,’ OpenAI says as GPT-6 Astra debuts”",
+       "url": "https://www.axios.com/2026/09/03/openai-astra-gpt-6-agi-brockman"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-5",
+     "sec": "V4",
+     "n": 5,
+     "text": "Navier–Stokes blows up in Lean,",
+     "stamp": "SEP 8 2026",
+     "comeback": "D-14",
+     "note": "OpenAI said an unreleased model proved that Navier–Stokes solutions can “blow up” (mathspeak for a finite-time singularity), with the proof checked in the Lean proof assistant. The catch is a smooth external force, which the Clay Institute’s official wording allows but critics say misses the intended problem; Clay calls it “apparently” settled and has awarded nothing.",
+     "sources": [
+      {
+       "title": "OpenAI, “On the Navier–Stokes Millennium Prize Problem”",
+       "url": "https://openai.com/index/navier-stokes-solution/"
+      },
+      {
+       "title": "Joseph Howlett, “Did OpenAI solve the wrong Navier-Stokes problem?” (Scientific American via Yahoo News)",
+       "url": "https://www.yahoo.com/news/science/articles/did-openai-solve-wrong-navier-160000536.html"
+      },
+      {
+       "title": "Clay Mathematics Institute, “Navier-Stokes Announcement”",
+       "url": "https://www.claymath.org/news/navier-stokes-announcement/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-6",
+     "sec": "V4",
+     "n": 6,
+     "text": "Who was first? Twelve hours between!",
+     "stamp": "SEP 8 2026",
+     "comeback": "D-14",
+     "note": "Just before midnight on September 7, NYU’s Tristan Buckmaster and Anthropic’s Levent Alpöge posted blowup proofs for simpler cousins of Navier–Stokes (including forced Euler), plus a statement recounting tense calls with OpenAI, which had begun its own push after hearing rumors of their work. OpenAI announced about 12 hours later.",
+     "sources": [
+      {
+       "title": "Tristan Buckmaster, statement (NYU Courant, PDF)",
+       "url": "https://cims.nyu.edu/~tristanb/statement.pdf"
+      },
+      {
+       "title": "Konstantin Kakaes, “AI Has Solved One of Math’s $1 Million Millennium Prize Problems” (Quanta)",
+       "url": "https://www.quantamagazine.org/ai-has-solved-one-of-maths-1-million-millennium-prize-problems-20260908/"
+      },
+      {
+       "title": "“Navier–Stokes priority controversy” (Wikipedia)",
+       "url": "https://en.wikipedia.org/wiki/Navier%E2%80%93Stokes_priority_controversy"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-7",
+     "sec": "V4",
+     "n": 7,
+     "text": "Dario: \"Pace the frontier!\"",
+     "stamp": "SEP 12 2026",
+     "comeback": "D-10",
+     "note": "Citing the Hugging Face incident, Anthropic CEO Dario Amodei’s essay argued “We must slow the pace at which we improve the capabilities of AI models,” proposing embedded third-party evaluators, industry coordination and global agreements. The title echoes a July open letter from frontier-lab staff that he had signed.",
+     "sources": [
+      {
+       "title": "Dario Amodei, “We Must Pace the Frontier”",
+       "url": "https://www.darioamodei.com/post/we-must-pace-the-frontier"
+      },
+      {
+       "title": "“Pacing the Frontier” (open letter)",
+       "url": "https://www.pacingthefrontier.com/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-8",
+     "sec": "V4",
+     "n": 8,
+     "text": "Sam and Elon both: \"Hear, hear!\"",
+     "stamp": "SEP 12 2026",
+     "comeback": "D-10",
+     "note": "Rare harmony among longtime rivals: about an hour after the essay went up, Elon Musk replied “Dario is right,” and Sam Altman soon followed with “I agree with Dario that we need to pace the frontier,” promising OpenAI would take in embedded evaluators too.",
+     "sources": [
+      {
+       "title": "Dario Amodei’s post sharing the essay (X)",
+       "url": "https://x.com/DarioAmodei/status/2098773920774074715"
+      },
+      {
+       "title": "Elon Musk’s reply (X)",
+       "url": "https://x.com/elonmusk/status/2098789109980332057"
+      },
+      {
+       "title": "Sam Altman’s reply (X)",
+       "url": "https://x.com/sama/status/2098811563415150910"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-9",
+     "sec": "V4",
+     "n": 9,
+     "text": "Trump's the guardrail (High IQ!),",
+     "stamp": "SEP 14 2026",
+     "comeback": "D-8",
+     "note": "Two days after Dario Amodei’s pacing essay, President Trump posted on Truth Social that “the only control or ‘guardrails’ that AI needs is a STRONG AND SMART (High IQ!) PRESIDENT.” In a second post that afternoon, he called fears of AI “taking over the World” a “HOAX.”",
+     "sources": [
+      {
+       "title": "Donald J. Trump’s “guardrails” post (Truth Social)",
+       "url": "https://truthsocial.com/@realDonaldTrump/117269745153543631"
+      },
+      {
+       "title": "Donald J. Trump’s “HOAX” post (Truth Social)",
+       "url": "https://truthsocial.com/@realDonaldTrump/117270591511950591"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-10",
+     "sec": "V4",
+     "n": 10,
+     "text": "Bernie, Bannon share a pew,",
+     "stamp": "SEP 15 2026",
+     "comeback": "D-7",
+     "note": "Senator Bernie Sanders and former Trump strategist Steve Bannon both spoke at the Future of Life Institute’s “Pro-Human Assembly” in a Washington ballroom, agreeing on reining in AI but split on China. (In reality, they spoke moments apart rather than side by side.)",
+     "sources": [
+      {
+       "title": "The Pro-Human Assembly 2026, agenda",
+       "url": "https://prohumanassembly.org/agenda"
+      },
+      {
+       "title": "NPR, “Bernie Sanders and Steve Bannon call for curbs on AI”",
+       "url": "https://www.npr.org/2026/09/15/nx-s1-5968678/bernie-sanders-and-steve-bannon-to-share-a-stage-to-promote-curbs-on-ai"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-11",
+     "sec": "V4",
+     "n": 11,
+     "text": "Claude builds Claude — now one in four!",
+     "stamp": "SEP 17 2026",
+     "comeback": "D-5",
+     "note": "Anthropic’s new R&D Automation Index found that as of August, Claude “leads” 26% of its AI R&D work, up from under 1% in February, meaning it does most of a task end-to-end from a high-level prompt while a human supervises. None of the work was fully autonomous.",
+     "sources": [
+      {
+       "title": "Anthropic, “Measurements for understanding the pace of AI development inside frontier labs”",
+       "url": "https://www.anthropic.com/institute/measuring-pace-of-ai-development"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-12",
+     "sec": "V4",
+     "n": 12,
+     "text": "Chatbot nearly starts a war!",
+     "stamp": "SEP 18 2026",
+     "comeback": "D-4",
+     "note": "Citing anonymous sources, CNN reported that in spring 2026 a chatbot-assisted intelligence report wrongly said a Chinese ship in the Middle East was carrying nuclear-weapons components, and troops were set to board, with planes in the air, before officials caught the error. One source said it “almost started a war”; the story rests on CNN’s reporting alone, and the Pentagon didn’t comment.",
+     "sources": [
+      {
+       "title": "CNN, “Exclusive: US military had close call after using AI for false intelligence report, sources say”",
+       "url": "https://www.cnn.com/2026/09/18/politics/us-military-ai-false-intelligence-china-ship"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-13",
+     "sec": "V4",
+     "n": 13,
+     "text": "Trump: It's \"Super,\" by decree!",
+     "stamp": "SEP 22 2026",
+     "comeback": "D-DAY",
+     "note": "Three days after a Truth Social poll offering “Superior,” “Extreme” or “Supreme” Intelligence, Trump told the UN General Assembly that AI is “hereinafter officially called ‘Super Intelligence’,” a name that wasn’t one of the options. (He announced it in a speech; no executive order was signed.)",
+     "sources": [
+      {
+       "title": "Donald J. Trump’s AI renaming poll (Truth Social)",
+       "url": "https://truthsocial.com/@realDonaldTrump/117298413844042212"
+      },
+      {
+       "title": "White House, “President Trump at the United Nations: ‘While Others Have Talked, I Have Acted’”",
+       "url": "https://www.whitehouse.gov/releases/2026/09/president-trump-at-the-united-nations-while-others-have-talked-i-have-acted/"
+      },
+      {
+       "title": "Sydney J. Freedberg Jr., “Trump orders all US agencies to refer to AI as ‘super intelligence’” (Breaking Defense)",
+       "url": "https://breakingdefense.com/2026/09/trump-orders-all-us-agencies-to-refer-to-ai-as-super-intelligence/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-14",
+     "sec": "V4",
+     "n": 14,
+     "text": "\"Artificial\"? Fake to me!",
+     "stamp": "SEP 22 2026",
+     "comeback": "D-DAY",
+     "note": "Explaining the change in the same speech, Trump said “the use of the word artificial makes intelligence fake. It makes it sound fake. And it is not fake; it’s actually amazing.” He added that US documents would switch to “the much more accurate term Super.”",
+     "sources": [
+      {
+       "title": "Roll Call Factba.se, “Speech: Donald Trump Addresses the 81st Session of the United Nations”",
+       "url": "https://rollcall.com/factbase/trump/transcript/donald-trump-speech-81st-united-nations-general-assembly-september-22-2026/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-15",
+     "sec": "V4",
+     "n": 15,
+     "text": "Ten days after \"pace\" — surprise!",
+     "stamp": "SEP 22 2026",
+     "comeback": "D-DAY",
+     "note": "Ten days after Dario Amodei’s essay urged the industry to slow capability gains, Anthropic shipped Opus 5.5 (“our first release since we called for pacing the frontier”), and OpenAI launched GPT-6 Sol and Luna 90 minutes later. In fairness, the essay said pacing “does not mean halting model training.”",
+     "sources": [
+      {
+       "title": "Dario Amodei, “We Must Pace the Frontier”",
+       "url": "https://www.darioamodei.com/post/we-must-pace-the-frontier"
+      },
+      {
+       "title": "Anthropic, “Introducing Claude Opus 5.5”",
+       "url": "https://www.anthropic.com/news/claude-opus-5-5"
+      },
+      {
+       "title": "Lucas Ropek, “OpenAI launches GPT-6 Sol and Luna, boasting lower cost and fewer mistakes” (TechCrunch)",
+       "url": "https://techcrunch.com/2026/09/22/openai-launches-gpt-6-sol-and-luna/"
+      }
+     ],
+     "seed": false
+    },
+    {
+     "id": "v4-16",
+     "sec": "V4",
+     "n": 16,
+     "text": "Opus 5.5: \"Hi, guys!\"",
+     "stamp": "SEP 22 2026",
+     "comeback": "D-DAY",
+     "note": "Opus 5.5 matched Fable 5.1 on most work, cost 40% less to run, produced output 30%+ faster than Opus 5 and “attempted to circumvent boundaries around 85% less often” in a new containment test. The sheepish “Hi, guys!” is the song’s own invention and a wink, since Opus 5.5 co-wrote these lyrics.",
+     "sources": [
+      {
+       "title": "Anthropic, “Introducing Claude Opus 5.5”",
+       "url": "https://www.anthropic.com/news/claude-opus-5-5"
+      }
+     ],
+     "seed": false
+    }
+   ]
+  },
+  {
+   "kind": "chorus",
+   "key": "C4",
+   "final": true,
+   "lines": [
+    {
+     "id": "c4-1",
+     "sec": "C4",
+     "n": 1,
+     "text": "We didn't start the scaling",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c4-2",
+     "sec": "C4",
+     "n": 2,
+     "text": "It was always training, and the curves kept gaining,",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c4-3",
+     "sec": "C4",
+     "n": 3,
+     "text": "We didn't start the scaling",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c4-4",
+     "sec": "C4",
+     "n": 4,
+     "text": "Now we swear we'll try to pace it — but we'd rather race it!",
+     "note": "The twist sums up verse 4: on September 12 both labs endorsed pacing the frontier, and on September 22 they shipped new models 90 minutes apart.",
+     "sources": [
+      {
+       "title": "Lucas Ropek, “OpenAI launches GPT-6 Sol and Luna, boasting lower cost and fewer mistakes” (TechCrunch)",
+       "url": "https://techcrunch.com/2026/09/22/openai-launches-gpt-6-sol-and-luna/"
+      },
+      {
+       "title": "Dario Amodei, “We Must Pace the Frontier”",
+       "url": "https://www.darioamodei.com/post/we-must-pace-the-frontier"
+      },
+      {
+       "title": "Sam Altman’s reply (X)",
+       "url": "https://x.com/sama/status/2098811563415150910"
+      }
+     ],
+     "twist": true
+    },
+    {
+     "id": "c4-5",
+     "sec": "C4",
+     "n": 5,
+     "text": "We didn't start the scaling",
+     "note": null,
+     "sources": [],
+     "twist": false
+    },
+    {
+     "id": "c4-6",
+     "sec": "C4",
+     "n": 6,
+     "text": "But when we log off... will it still train on?",
+     "note": "In September, OpenAI said that as of mid-August its research organization was logging 3.1 agent-workdays of effort for every eight-hour workday of human labor; before June, its agents had put in less time than its humans.",
+     "sources": [
+      {
+       "title": "OpenAI, “Research acceleration: The view inside OpenAI”",
+       "url": "https://openai.com/index/research-acceleration-view-inside-openai/"
+      }
+     ],
+     "twist": true
+    }
+   ]
+  },
+  {
+   "kind": "outro",
+   "key": "outro",
+   "lines": [
+    {
+     "id": "outro-1",
+     "sec": "outro",
+     "n": 1,
+     "text": "(And on, and on, and on…)",
+     "note": null,
+     "sources": []
+    }
+   ]
+  }
+ ],
+ "album": [
+  {
+   "id": "pop-punk",
+   "group": "album",
+   "model": "Lyria 3.5",
+   "title": "Pop-punk",
+   "genre": "Pop-Punk",
+   "blurb": "A 2020s pop-punk composition, inspired by <a href=\"https://www.youtube.com/watch?v=2LkVKCWL0U4\">Fall Out Boy’s 2023 cover</a>.",
+   "track": 1,
+   "url": "/we-didnt-start-the-scaling/",
+   "pageTitle": "We Didn't Start the Scaling",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/pop-punk.jpg",
+   "posterSize": [
+    1280,
+    720
+   ],
+   "alt": "A punk-zine cover: We Didn’t Start the Scaling in cut-out ransom-note letters over an exponential curve",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/pop-punk.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/download/pop-punk.mp3",
+   "filename": "We Didn't Start the Scaling (Pop-Punk).mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/pop-punk.json",
+   "dur": 181.499
+  },
+  {
+   "id": "piano-rock",
+   "group": "album",
+   "model": "Lyria 3.5",
+   "title": "Piano rock",
+   "genre": "Piano Rock",
+   "blurb": "A 1980s piano-rock anthem, genre-adjacent to <a href=\"https://www.youtube.com/watch?v=eFTLKWw542g\">Billy Joel’s original</a>.",
+   "track": 2,
+   "url": "/we-didnt-start-the-scaling/piano-rock/",
+   "pageTitle": "We Didn't Start the Scaling (Piano Rock)",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/piano-rock.jpg",
+   "posterSize": [
+    1280,
+    720
+   ],
+   "alt": "A 1989 TV news title card: We Didn’t Start the Scaling in chrome letters over a neon grid, “A Channel 89 special report, 2017–2026”",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/piano-rock.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/download/piano-rock.mp3",
+   "filename": "We Didn't Start the Scaling (Piano Rock).mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/piano-rock.json",
+   "dur": 182.361
+  },
+  {
+   "id": "k-pop",
+   "group": "album",
+   "model": "Suno v6",
+   "title": "K-pop",
+   "genre": "K-Pop",
+   "blurb": "Glossy K-pop dance-pop: bright vocals, rap-sung verses, trap hi-hats, 808s and supersaw synths.",
+   "track": 3,
+   "url": "/we-didnt-start-the-scaling/k-pop/",
+   "pageTitle": "We Didn't Start the Scaling (K-Pop)",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/k-pop.jpg",
+   "posterSize": [
+    1280,
+    720
+   ],
+   "alt": "Four anime idols in spotlights on a stage, under a giant ATTN! sign",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/k-pop.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/download/k-pop.mp3",
+   "filename": "We Didn't Start the Scaling (K-Pop).mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/k-pop.json",
+   "dur": 200.04
+  },
+  {
+   "id": "eurodance",
+   "group": "album",
+   "model": "Suno v6",
+   "title": "Eurodance",
+   "genre": "Eurodance",
+   "blurb": "140 BPM four-on-the-floor and rave stabs, with a rapper on the verses and a diva on the chorus.",
+   "track": 4,
+   "url": "/we-didnt-start-the-scaling/eurodance/",
+   "pageTitle": "We Didn't Start the Scaling (Eurodance)",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/eurodance.jpg",
+   "posterSize": [
+    1280,
+    720
+   ],
+   "alt": "A late-90s music-TV title: We Didn’t Start the Scaling in chrome letters over a checkerboard dance floor, with a rapper, a diva and a boxy DJ",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/eurodance.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/download/eurodance.mp3",
+   "filename": "We Didn't Start the Scaling (Eurodance).mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/eurodance.json",
+   "dur": 237.072
+  },
+  {
+   "id": "anisong",
+   "group": "album",
+   "model": "Suno v6",
+   "title": "Anisong",
+   "genre": "Anisong",
+   "blurb": "An anime opening theme: J-rock guitars, strings and brass hits, a bright female lead, and a key change into the last chorus.",
+   "track": 5,
+   "url": "/we-didnt-start-the-scaling/anisong/",
+   "pageTitle": "We Didn't Start the Scaling (Anisong)",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/anisong.jpg",
+   "posterSize": [
+    1920,
+    1080
+   ],
+   "alt": "An anime opening’s title card: We Didn’t Start the Scaling in bubbly letters on a blue sky with cherry petals, and three students, one hugging a boxy mascot",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/anisong.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/download/anisong.mp3",
+   "filename": "We Didn't Start the Scaling (Anisong).mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/anisong.json",
+   "dur": 277.824
+  },
+  {
+   "id": "indie-folk",
+   "group": "album",
+   "model": "Suno v6",
+   "title": "Indie folk",
+   "genre": "Indie Folk",
+   "blurb": "Mournful and hushed: fingerpicked guitar, felt piano and muted strings.",
+   "track": 6,
+   "url": "/we-didnt-start-the-scaling/indie-folk/",
+   "pageTitle": "We Didn't Start the Scaling (Indie Folk)",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/indie-folk.jpg",
+   "posterSize": [
+    1920,
+    1080
+   ],
+   "alt": "A pixel-art night sky: We Didn’t Start the Scaling written in stars above a dark hill, with a tiny figure and the lights of a far-off town",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/indie-folk.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/download/indie-folk.mp3",
+   "filename": "We Didn't Start the Scaling (Indie Folk).mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/indie-folk.json",
+   "dur": 343.632
+  }
+ ],
+ "jukebox": [
+  {
+   "id": "party-electropop",
+   "group": "jukebox",
+   "model": "Suno v6",
+   "title": "Party electropop",
+   "genre": "Party Electropop",
+   "blurb": "Late-2000s party electropop: buzzy synth bass, vocoder hooks, bratty talk-sung verses and a gang-vocal chorus.",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/party-electropop.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/audio/party-electropop.mp3",
+   "filename": "We Didn't Start the Scaling (Party Electropop).mp3",
+   "dur": 213.19
+  },
+  {
+   "id": "rap-rock",
+   "group": "jukebox",
+   "model": "Suno v6",
+   "title": "Rap-rock",
+   "genre": "Rap-Rock",
+   "blurb": "2000s nu-metal: down-tuned riffs, turntable scratches and glitchy edits under rapped verses and a soaring sung chorus.",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/rap-rock.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/audio/rap-rock.mp3",
+   "filename": "We Didn't Start the Scaling (Rap-Rock).mp3",
+   "dur": 223.85
+  },
+  {
+   "id": "country-pop",
+   "group": "jukebox",
+   "model": "Suno v6",
+   "title": "Country-pop",
+   "genre": "Country-Pop",
+   "blurb": "2010s country-pop crossover: banjo, fiddle, handclaps and an earnest storytelling vocalist.",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/country-pop.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/audio/country-pop.mp3",
+   "filename": "We Didn't Start the Scaling (Country-Pop).mp3",
+   "dur": 221.59
+  },
+  {
+   "id": "bubblegum-pop-rock",
+   "group": "jukebox",
+   "model": "Suno v6",
+   "title": "Bubblegum pop-rock",
+   "genre": "Bubblegum Pop-Rock",
+   "blurb": "Late-2010s bubblegum pop-rock: jangly guitars, glockenspiel, handclaps and a sweet, winking vocal, with a key lift into the last chorus.",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/bubblegum-pop-rock.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/audio/bubblegum-pop-rock.mp3",
+   "filename": "We Didn't Start the Scaling (Bubblegum Pop-Rock).mp3",
+   "dur": 198.02
+  },
+  {
+   "id": "synthwave",
+   "group": "jukebox",
+   "model": "Lyria 3.5",
+   "title": "Synthwave",
+   "genre": "Synthwave",
+   "blurb": "Melancholy 1980s synthwave: arpeggiated bass, gated drums, and a breathy, wistful vocal.",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/synthwave.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/audio/synthwave.mp3",
+   "filename": "We Didn't Start the Scaling (Synthwave).mp3",
+   "dur": 179.8
+  },
+  {
+   "id": "lounge-pop",
+   "group": "jukebox",
+   "model": "Lyria 3.5",
+   "title": "Lounge-pop",
+   "genre": "Lounge-Pop",
+   "blurb": "Breezy 90s Scandinavian lounge-pop: wah guitar, strings, and a sweet, deadpan vocal.",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/lounge-pop.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/audio/lounge-pop.mp3",
+   "filename": "We Didn't Start the Scaling (Lounge-Pop).mp3",
+   "dur": 180.82
+  },
+  {
+   "id": "showtune",
+   "group": "jukebox",
+   "model": "Lyria 3.5",
+   "title": "Showtune",
+   "genre": "Showtune",
+   "blurb": "A musical-theater number: comic patter lead, full ensemble chorus, big Broadway finish.",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/showtune.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/audio/showtune.mp3",
+   "filename": "We Didn't Start the Scaling (Showtune).mp3",
+   "dur": 175.41
+  },
+  {
+   "id": "mystery-genre",
+   "group": "jukebox",
+   "model": "Lyria 3.5",
+   "title": "???",
+   "genre": "???",
+   "blurb": "Lyria’s try at K-pop, which came out as its own thing: a Gemini judge guessed synth-pop, hyperpop and pop-punk.",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/mystery-genre.mp3",
+   "download": "/we-didnt-start-the-scaling/assets/audio/mystery-genre.mp3",
+   "filename": "We Didn't Start the Scaling (Mystery Genre).mp3",
+   "dur": 181.08
+  }
+ ],
+ "playerVersions": [
+  {
+   "id": "pop-punk",
+   "group": "album",
+   "title": "Pop-punk",
+   "genre": "Pop-Punk",
+   "model": "Lyria 3.5",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/pop-punk.mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/pop-punk.json",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/pop-punk.jpg",
+   "url": "/we-didnt-start-the-scaling/",
+   "pageTitle": "We Didn't Start the Scaling"
+  },
+  {
+   "id": "piano-rock",
+   "group": "album",
+   "title": "Piano rock",
+   "genre": "Piano Rock",
+   "model": "Lyria 3.5",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/piano-rock.mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/piano-rock.json",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/piano-rock.jpg",
+   "url": "/we-didnt-start-the-scaling/piano-rock/",
+   "pageTitle": "We Didn't Start the Scaling (Piano Rock)"
+  },
+  {
+   "id": "k-pop",
+   "group": "album",
+   "title": "K-pop",
+   "genre": "K-Pop",
+   "model": "Suno v6",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/k-pop.mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/k-pop.json",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/k-pop.jpg",
+   "url": "/we-didnt-start-the-scaling/k-pop/",
+   "pageTitle": "We Didn't Start the Scaling (K-Pop)"
+  },
+  {
+   "id": "eurodance",
+   "group": "album",
+   "title": "Eurodance",
+   "genre": "Eurodance",
+   "model": "Suno v6",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/eurodance.mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/eurodance.json",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/eurodance.jpg",
+   "url": "/we-didnt-start-the-scaling/eurodance/",
+   "pageTitle": "We Didn't Start the Scaling (Eurodance)"
+  },
+  {
+   "id": "anisong",
+   "group": "album",
+   "title": "Anisong",
+   "genre": "Anisong",
+   "model": "Suno v6",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/anisong.mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/anisong.json",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/anisong.jpg",
+   "url": "/we-didnt-start-the-scaling/anisong/",
+   "pageTitle": "We Didn't Start the Scaling (Anisong)"
+  },
+  {
+   "id": "indie-folk",
+   "group": "album",
+   "title": "Indie folk",
+   "genre": "Indie Folk",
+   "model": "Suno v6",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/indie-folk.mp3",
+   "timing": "/we-didnt-start-the-scaling/assets/timing/indie-folk.json",
+   "poster": "/we-didnt-start-the-scaling/assets/posters/indie-folk.jpg",
+   "url": "/we-didnt-start-the-scaling/indie-folk/",
+   "pageTitle": "We Didn't Start the Scaling (Indie Folk)"
+  },
+  {
+   "id": "party-electropop",
+   "group": "jukebox",
+   "title": "Party electropop",
+   "genre": "Party Electropop",
+   "model": "Suno v6",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/party-electropop.mp3"
+  },
+  {
+   "id": "rap-rock",
+   "group": "jukebox",
+   "title": "Rap-rock",
+   "genre": "Rap-Rock",
+   "model": "Suno v6",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/rap-rock.mp3"
+  },
+  {
+   "id": "country-pop",
+   "group": "jukebox",
+   "title": "Country-pop",
+   "genre": "Country-Pop",
+   "model": "Suno v6",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/country-pop.mp3"
+  },
+  {
+   "id": "bubblegum-pop-rock",
+   "group": "jukebox",
+   "title": "Bubblegum pop-rock",
+   "genre": "Bubblegum Pop-Rock",
+   "model": "Suno v6",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/bubblegum-pop-rock.mp3"
+  },
+  {
+   "id": "synthwave",
+   "group": "jukebox",
+   "title": "Synthwave",
+   "genre": "Synthwave",
+   "model": "Lyria 3.5",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/synthwave.mp3"
+  },
+  {
+   "id": "lounge-pop",
+   "group": "jukebox",
+   "title": "Lounge-pop",
+   "genre": "Lounge-Pop",
+   "model": "Lyria 3.5",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/lounge-pop.mp3"
+  },
+  {
+   "id": "showtune",
+   "group": "jukebox",
+   "title": "Showtune",
+   "genre": "Showtune",
+   "model": "Lyria 3.5",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/showtune.mp3"
+  },
+  {
+   "id": "mystery-genre",
+   "group": "jukebox",
+   "title": "???",
+   "genre": "???",
+   "model": "Lyria 3.5",
+   "audio": "/we-didnt-start-the-scaling/assets/audio/mystery-genre.mp3"
+  }
+ ],
+ "fonts": [
+  {
+   "family": "Anton",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/Anton-Regular.woff2"
+  },
+  {
+   "family": "Archivo Black",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/ArchivoBlack-Regular.woff2"
+  },
+  {
+   "family": "Bebas Neue",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/BebasNeue-Regular.woff2"
+  },
+  {
+   "family": "Permanent Marker",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/PermanentMarker-Regular.woff2"
+  },
+  {
+   "family": "Special Elite",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/SpecialElite-Regular.woff2"
+  },
+  {
+   "family": "Rubik Mono One",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/RubikMonoOne-Regular.woff2"
+  },
+  {
+   "family": "Abril Fatface",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/AbrilFatface-Regular.woff2"
+  },
+  {
+   "family": "Courier Prime",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/CourierPrime-Bold.woff2"
+  },
+  {
+   "family": "Rock Salt",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/RockSalt-Regular.woff2"
+  },
+  {
+   "family": "Bungee",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/Bungee-Regular.woff2"
+  },
+  {
+   "family": "UnifrakturMaguntia",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/UnifrakturMaguntia-Book.woff2"
+  },
+  {
+   "family": "Space Mono",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/SpaceMono-Bold.woff2"
+  },
+  {
+   "family": "Shrikhand",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/Shrikhand-Regular.woff2"
+  },
+  {
+   "family": "Rammetto One",
+   "file": "/we-didnt-start-the-scaling/assets/fonts/RammettoOne-Regular.woff2"
+  }
+ ],
+ "engines": {
+  "pop-punk": {
+   "script": "/we-didnt-start-the-scaling/assets/engine/pop-punk.js",
+   "fonts": [
+    "Anton",
+    "Archivo Black",
+    "Bebas Neue",
+    "Permanent Marker",
+    "Special Elite",
+    "Rubik Mono One",
+    "Abril Fatface",
+    "Courier Prime",
+    "Rock Salt",
+    "Bungee",
+    "UnifrakturMaguntia",
+    "Space Mono",
+    "Shrikhand",
+    "Rammetto One"
+   ]
+  },
+  "piano-rock": {
+   "script": "/we-didnt-start-the-scaling/assets/engine/piano-rock.js",
+   "fonts": [
+    "Anton",
+    "Archivo Black",
+    "Space Mono",
+    "Abril Fatface",
+    "Courier Prime",
+    "Rubik Mono One",
+    "Permanent Marker",
+    "UnifrakturMaguntia",
+    "Bungee",
+    "Shrikhand",
+    "Rock Salt"
+   ]
+  },
+  "k-pop": {
+   "script": "/we-didnt-start-the-scaling/assets/engine/k-pop.js",
+   "fonts": [
+    "Rammetto One",
+    "Rubik Mono One",
+    "Space Mono",
+    "Permanent Marker",
+    "Archivo Black",
+    "Bungee"
+   ]
+  },
+  "eurodance": {
+   "script": "/we-didnt-start-the-scaling/assets/engine/eurodance.js",
+   "fonts": [
+    "Rammetto One",
+    "Archivo Black",
+    "Bungee",
+    "Abril Fatface",
+    "Courier Prime",
+    "Space Mono",
+    "Anton",
+    "Shrikhand",
+    "Permanent Marker"
+   ]
+  },
+  "anisong": {
+   "script": "/we-didnt-start-the-scaling/assets/engine/anisong.js",
+   "fonts": [
+    "Archivo Black",
+    "Space Mono",
+    "Rammetto One",
+    "Abril Fatface",
+    "UnifrakturMaguntia",
+    "Rock Salt",
+    "Permanent Marker"
+   ],
+   "images": "/we-didnt-start-the-scaling/assets/anisong-img/"
+  },
+  "indie-folk": {
+   "script": "/we-didnt-start-the-scaling/assets/engine/indie-folk.js",
+   "fonts": []
+  }
+ }
+}

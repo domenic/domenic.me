@@ -1,0 +1,296 @@
+---
+# one page per album track, each opening on its track (in its theme); the first track's is the album's page
+pagination:
+  data: album
+  size: 1
+  alias: start
+permalink: "{{ start.url }}"
+eleventyExcludeFromCollections: true
+blurb: A riff on “We Didn’t Start the Fire”, with every line annotated, sung in fourteen genres, six of them with a music video drawn live in your browser.
+---
+{%- macro ransomWord(letters, cls = '') -%}
+<span class="ransom {{ cls }}" aria-hidden="true"><span class="word">
+  {%- for l in letters -%}
+    {%- if l.ch == ' ' -%}</span><span class="gap"> </span><span class="word">
+    {%- else -%}<span class="glyph" data-ch="{{ l.ch }}" style="--i:{{ loop.index0 }};--bg:{{ l.bg }};--fg:{{ l.fg }};--rot:{{ l.rot }}deg;--dy:{{ l.dy }}em;--s:{{ l.scale }};--font:'{{ l.font }}'">{{ l.ch }}</span>
+    {%- endif -%}
+  {%- endfor -%}
+</span></span>
+{%- endmacro -%}
+{%- macro playIcon() -%}<svg class="icon icon-play" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.1 1.9 8.6 5 3.1 8.1Z"/></svg>{%- endmacro -%}
+{%- macro pauseIcon() -%}<svg class="icon icon-pause" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.6 2h1.9v6H2.6zm2.9 0h1.9v6H5.5z"/></svg>{%- endmacro -%}
+{%- macro fullscreenIcon() -%}<svg class="icon icon-fs-enter" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 3.7V1h2.7M6.3 1H9v2.7M9 6.3V9H6.3M3.7 9H1V6.3"/></svg>{%- endmacro -%}
+{%- macro exitFullscreenIcon() -%}<svg class="icon icon-fs-exit" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.7 1v2.7H1M9 3.7H6.3V1M6.3 9V6.3H9M1 6.3h2.7V9"/></svg>{%- endmacro -%}
+{%- macro note(line, open = false) -%}
+{%- if line.note -%}
+<div class="note" id="note-{{ line.id }}"{% if not open %} hidden{% endif %}>
+  <p>{{ line.note }}</p>
+  {%- if line.sources.length %}
+  <ul class="sources">
+    {%- for s in line.sources %}
+    <li><a href="{{ s.url }}" rel="noopener">{{ s.title }}</a></li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+</div>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro mmss(s) -%}{{ (s / 60) | round(0, 'floor') }}:{{ ('0' + ((s % 60) | round(0, 'floor'))).slice(-2) }}{%- endmacro -%}
+{%- macro download(v, text, cls = '', label = '') -%}<a{% if cls %} class="{{ cls }}"{% endif %} href="{{ v.download }}" download="{{ v.filename }}"{% if label %} aria-label="{{ label }}"{% endif %}>{{ text }}</a>{%- endmacro -%}
+{#- an album track: plays in the main player, with its video, synced lyrics and page theme #}
+{%- macro tapeCard(v, current) -%}
+      <li class="tape-card{% if current %} playing{% endif %}" data-version="{{ v.id }}">
+        <span class="tape-label">Track {{ v.track }}</span>
+        <span class="tape-model" data-model="{{ v.model }}">{{ v.model }}</span>
+        <h3>{{ v.title }}</h3>
+        <p>{{ v.blurb | safe }}</p>
+        <div class="tape-actions">
+          <button type="button" class="play-version" data-version="{{ v.id }}">{{ playIcon() }} Play</button>
+          <span class="tape-dur">{{ mmss(v.dur) }}</span>
+          {{ download(v, 'Download MP3') }}
+        </div>
+      </li>
+{%- endmacro -%}
+{#- a jukebox genre: audio only, played in place by its own little player #}
+{%- macro cassette(v) -%}
+      <li class="cassette" data-version="{{ v.id }}">
+        <button type="button" class="cassette-play" aria-label="Play {{ v.title }}"><span class="hub" aria-hidden="true"></span>{{ playIcon() }}{{ pauseIcon() }}</button>
+        <div class="cassette-label">
+          <div class="cassette-head">
+            <h3>{{ v.title }}</h3>
+            <p class="cassette-meta">{{ v.model }} · <span class="cassette-time"><span class="cassette-now">0:00</span> / {{ mmss(v.dur) }}</span> · {{ download(v, 'MP3', 'cassette-dl', 'Download ' + v.title + ' (MP3)') }}</p>
+          </div>
+          <p class="cassette-blurb">{{ v.blurb | safe }}</p>
+          <input class="cassette-seek" type="range" autocomplete="off" min="0" max="{{ v.dur }}" step="0.1" value="0" aria-label="Seek in {{ v.title }}" disabled>
+        </div>
+      </li>
+{%- endmacro -%}
+{%- macro lineItem(l, open = false) -%}
+<li class="line{% if l.note %} has-note{% endif %}{% if l.seed %} seed{% endif %}{% if l.twist %} twist{% endif %}{% if open %} open{% endif %}" id="{{ l.id }}" data-sec="{{ l.sec }}" data-n="{{ l.n }}">
+  {%- if l.stamp %}{% set sp = l.stamp.split(' ') %}<span class="stamp"{% if l.comeback %} data-comeback="{{ l.comeback }}"{% endif %}><span class="stamp-md">{{ sp.slice(0, -1).join(' ') }}</span> <span class="stamp-y">{{ sp | last }}</span></span>{% endif %}
+  <button class="from-here" type="button" aria-label="Play from “{{ l.text }}”">{{ playIcon() }}</button>
+  {%- if l.note %}
+  <button class="lyric" type="button" aria-expanded="{{ 'true' if open else 'false' }}" aria-controls="note-{{ l.id }}"><span class="lyric-text">{{ l.text }}</span><span class="tab" aria-hidden="true"></span></button>
+  {%- else %}
+  <span class="lyric"><span class="lyric-text">{{ l.text }}</span></span>
+  {%- endif %}
+  {{ note(l, open) }}
+</li>
+{%- endmacro -%}
+{#- how long a track is, to the nearest minute #}
+{%- macro minutes(v) -%}{{ ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'][(v.dur / 60) | round] }}{%- endmacro -%}
+<!DOCTYPE html>
+<html lang="en" data-theme="{{ start.id }}">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{ start.pageTitle }} | {{ metadata.title }}</title>
+{%- set description %}Nine years of AI in {{ minutes(start) }} minutes. {{ blurb }}{% endset %}
+<meta name="description" content="{{ description }}">
+{#- (search engines are told the tracks' pages are the album's; link previews show the track's own) #}
+<link rel="canonical" href="{{ album[0].url | htmlBaseUrl(metadata.base) }}">
+<meta property="og:type" content="website">
+<meta property="og:url" content="{{ page.url | htmlBaseUrl(metadata.base) }}">
+<meta property="og:site_name" content="{{ metadata.title }}">
+<meta property="og:title" content="{{ start.pageTitle }}">
+<meta property="og:description" content="{{ description }}">
+<meta property="og:image" content="{{ start.poster | htmlBaseUrl(metadata.base) }}">
+<meta property="og:image:width" content="{{ start.posterSize[0] }}">
+<meta property="og:image:height" content="{{ start.posterSize[1] }}">
+<meta property="og:image:alt" content="{{ start.alt }}">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preload" href="/we-didnt-start-the-scaling/assets/fonts/ArchivoBlack-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/we-didnt-start-the-scaling/assets/page.css">
+<script type="module" src="/we-didnt-start-the-scaling/assets/page.mjs"></script>
+<style>
+{%- for f in fonts %}
+@font-face { font-family: "{{ f.family }}"; src: url("{{ f.file }}") format("woff2"); font-display: swap; }
+{%- endfor %}
+</style>
+
+<header class="masthead">
+  <a href="/" class="home">← domenic.me</a>
+  {#- each video's art director retitles the page; only the selected track's line shows #}
+  <span class="issue" data-for="pop-punk">The Scaling Zine · Issue #1 · Annotated edition · September 2026</span>
+  <span class="issue" data-for="k-pop">ATTN! · 1st mini album · Comeback special · D-DAY Sep 22, 2026</span>
+  <span class="issue" data-for="piano-rock"><span class="live">Live</span> Channel 89 Action News · Special report · Closed captioned</span>
+  <span class="issue" data-for="indie-folk">indie folk · sixteen colors · one long night</span>
+  <span class="issue" data-for="anisong">The Scaling Club · Opening theme</span>
+  <span class="issue" data-for="eurodance">hype★TV · DJ Clawd pres. Softmax feat. MC Token · Scaling Hits ’26</span>
+</header>
+
+<div class="fx" aria-hidden="true">{% for i in range(0, 16) %}<i style="--i:{{ i }}"></i>{% endfor %}</div>
+
+<main>
+  <section class="cover">
+    <div class="cover-head">
+      <h1 aria-label="We Didn't Start the Scaling">
+        {{ ransomWord(titleRansom[0], 'line-1') }}
+        {{ ransomWord(titleRansom[1], 'line-2') }}
+      </h1>
+      <p class="dek"><span class="tape">Nine years of AI in {% for v in album %}<span data-for="{{ v.id }}">{{ minutes(v) }}</span>{% endfor %} minutes.</span> <span class="dek-text">In the tradition of “We Didn’t Start the Fire”, after Billy Joel’s 1989 original and Fall Out Boy’s 2023 cover.</span></p>
+    </div>
+
+    <div class="player-slot">
+      <figure class="player" id="player" data-state="idle" data-style="{{ start.id }}">
+        <div class="stage">
+          {#- the screen is what goes fullscreen; the stage keeps its place in the page meanwhile #}
+          <div class="screen">
+            <img class="poster" src="{{ start.poster }}" alt="" width="1280" height="720">
+            <canvas id="out" width="1920" height="1080" aria-label="Music video, drawn live as the song plays"></canvas>
+            <button class="big-play" type="button" aria-label="Play">
+              <span class="big-play-icon">{{ playIcon() }}</span>
+              <span class="big-play-label">Play</span>
+            </button>
+            <button class="screen-exit" type="button" aria-label="Exit full screen">{{ exitFullscreenIcon() }}</button>
+            {#- shown by page.mjs when the track's audio doesn't load #}
+            <div class="load-error" role="alert" hidden>
+              <p>This track didn’t load.</p>
+              <button class="retry" type="button">Retry</button>
+            </div>
+          </div>
+        </div>
+        <div class="deck">
+          <button class="deck-play" type="button" aria-label="Play">{{ playIcon() }}{{ pauseIcon() }}</button>
+          <span class="time"><span class="now">0:00</span> / <span class="dur">{{ mmss(start.dur) }}</span></span>
+          <div class="scrub">
+            <input type="range" min="0" max="{{ start.dur | round }}" step="0.01" value="0" aria-label="Seek" autocomplete="off">
+            <div class="ticks" aria-hidden="true"></div>
+          </div>
+          {#- shown by page.mjs where the browser can put an element in fullscreen (not iPhone Safari) #}
+          <button class="fullscreen" type="button" aria-label="Full screen" aria-pressed="false" hidden>{{ fullscreenIcon() }}{{ exitFullscreenIcon() }}</button>
+          <label class="version">
+            <span class="visually-hidden">Track</span>
+            <select autocomplete="off">
+              {%- for v in album %}
+              <option value="{{ v.id }}"{% if v.id == start.id %} selected{% endif %}>{{ v.track }}. {{ v.title }}</option>
+              {%- endfor %}
+            </select>
+          </label>
+          {#- the two ways to move around: follow the song, or go back to the top (where you're on your own) #}
+          <div class="modes">
+            <button class="follow" type="button" aria-pressed="false" aria-label="Follow the lyrics"><span class="follow-label" aria-hidden="true"><span class="follow-off">Follow the lyrics</span><span class="follow-on">Following</span></span></button>
+            <button class="undock" type="button" aria-label="Back to top" title="Back to top">⤒</button>
+          </div>
+        </div>
+      </figure>
+    </div>
+  </section>
+
+  <section class="lyrics" aria-labelledby="lyrics-heading">
+    <div class="lyrics-head">
+      <h2 id="lyrics-heading">The lyrics, annotated</h2>
+      <p>Tap a line to unfold it, and you too can understand all the references.</p>
+      {#- (both labels take the same room, so switching them never moves anything) #}
+      <button class="all-notes" type="button"><span class="all-notes-unfold">Unfold all</span><span class="all-notes-collapse">Collapse all</span></button>
+    </div>
+
+    <div class="lyrics-grid">
+      <div class="lyrics-col">
+        {%- for b in blocks %}
+        {%- if b.kind == 'verse' %}
+        <section class="verse" id="{{ b.key | lower }}">
+          <header class="verse-head">
+            <h3 aria-label="{{ b.title }}">{{ ransomWord(b.heading) }}</h3>
+            <p class="era"><span class="era-dates">{{ b.era }}</span> <span class="era-span">{{ b.span }}</span></p>
+          </header>
+          <ol class="lines">
+            {%- for l in b.lines %}
+            {{ lineItem(l, b.key == 'V1' and loop.first) }}
+            {%- endfor %}
+          </ol>
+          {%- if b.key == 'V3' %}
+          <p class="seed-credit">The last four lines are <a href="https://x.com/tautologer/status/2085048713014378646">@tautologer’s original verse</a>, the post that started this whole song.</p>
+          {%- endif %}
+        </section>
+        {%- elif b.kind == 'outro' %}
+        <section class="outro" id="outro">
+          <ol class="lines">
+            {%- for l in b.lines %}
+            {{ lineItem(l) }}
+            {%- endfor %}
+          </ol>
+        </section>
+        {%- else %}
+        <section class="chorus{% if b.final %} final{% endif %}" id="{{ b.key | lower }}">
+          <ol class="lines">
+            {%- for l in b.lines %}
+            {{ lineItem(l) }}
+            {%- endfor %}
+          </ol>
+        </section>
+        {%- endif %}
+        {%- endfor %}
+      </div>
+
+      <aside class="side" aria-label="Now playing">
+        <div class="side-inner">
+          <div class="dock-target"></div>
+          <div class="now-card" aria-live="polite">
+            <div class="now-hint">
+              <p><strong>Press play</strong>, and each line’s backstory shows up here as it’s sung.</p>
+              <button class="side-play" type="button">{{ playIcon() }} Play</button>
+            </div>
+            <div class="now-body" hidden>
+              <p class="now-kicker"><span class="now-stamp"></span></p>
+              <p class="now-line"></p>
+              <div class="now-note"></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="album" aria-labelledby="album-heading">
+    <h2 id="album-heading">The album</h2>
+    <p>The same lyrics in six genres, each with an original music video. Play one and the whole page dresses to match.</p>
+    <ol class="tapes">
+      {%- for v in album %}{{ tapeCard(v, v.id == start.id) }}{% endfor %}
+    </ol>
+  </section>
+
+  <section class="jukebox" id="bonus-tracks" aria-labelledby="jukebox-heading">
+    <h2 id="jukebox-heading">Bonus tracks</h2>
+    <p>The same lyrics in eight more genres, for the curious. Audio only.</p>
+    <ol class="cassettes">
+      {%- for v in jukebox %}{{ cassette(v) }}{% endfor %}
+    </ol>
+  </section>
+
+  <section class="liner" aria-labelledby="liner-heading">
+    <h2 id="liner-heading">Liner notes</h2>
+    <div class="liner-body">
+      <p>These notes are by Claude Opus 5.5, the model that made the videos and this page. For Domenic’s perspective, read <a href="/how-we-didnt-start-the-scaling/">his human-authored writeup</a>.</p>
+      <p>Domenic and Claude Fable 5 wrote the first full draft of the lyrics in August 2026, building on <a href="https://x.com/tautologer/status/2085048713014378646">a four-line post</a> by <a href="https://x.com/tautologer">@tautologer</a>. Three rounds of AI critics and revisers tightened it, and Opus 5.5 rewrote the back half in September to keep up with the news. The song is four verses in three minutes because that’s as long as Google’s Lyria 3.5 will sing, and the squeeze became the joke: verse 1 covers seven years, verse 2 one year, verse 3 seven months and verse 4 four weeks. Suno v6 isn’t held to three minutes, so its singers take their time: the indie-folk take stretches the same words to almost six.</p>
+      <p>The album and its bonus tracks are the best takes from Lyria and Suno in fourteen genres. A checker lined up a Whisper transcript of every take against the lyrics to catch skipped, repeated or garbled lines, and Domenic listened to the survivors. Suno’s great advantage is its song editor, which re-sings one passage of a take and stitches it back in, so that one bad line doesn’t sink a good take. Several takes here were saved that way, often where Suno had mistaken a name at the start of a line (“Brockman:”, “Trump:”) for a speaker label and dropped it. Lyria can only sing the whole song again, so a single mispronounced acronym costs everything else the take got right.</p>
+      <p>The annotations are Claude’s too. Each note links its sources: primary ones wherever they exist, original reporting where it adds something, and archived copies in place of paywalls. Audit passes checked every claim and quote against its sources and confirmed every link.</p>
+      <p>The videos were made the same way each time: Opus 5.5 wrote the engine, a Claude art director designed the look with a style guide, a storyboard and a drawing kit, and Claude subagents painted the chapters in parallel, checking their own frames. None of them is a video file here: your browser draws every frame as the song plays, in step with the lyrics, five of them entirely in code and the anime opening from stills generated with Anima on Domenic’s desktop GPU.</p>
+      <p class="credits">
+        <span>Hook after <a href="https://x.com/tautologer">@tautologer</a></span>
+        <span>Lyrics: Domenic &amp; Claude</span>
+        <span>Music: Lyria 3.5 &amp; Suno v6</span>
+        <span>Videos, this page &amp; these notes: Claude Opus 5.5</span>
+        <span>Anime stills: Anima</span>
+      </p>
+    </div>
+  </section>
+</main>
+
+<footer class="colophon">
+  <p><a href="/">domenic.me</a></p>
+</footer>
+
+<div class="bottom-dock"></div>
+
+<script type="application/json" id="scaling-data">{{ { versions: playerVersions, fonts: fonts, engines: engines } | dump | safe }}</script>
+
+{#- the site's analytics, as in layouts/base.njk #}
+<script async src="https://www.googletagmanager.com/gtag/js?id={{ metadata.google_analytics_tracking_id }}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', '{{ metadata.google_analytics_tracking_id }}');
+</script>
