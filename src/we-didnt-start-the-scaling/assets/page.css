@@ -356,7 +356,10 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
     .icon-pause { display: none; }
   }
   .time { font-variant-numeric: tabular-nums; min-width: 8.5ch; }
+  /* the menu's colour scheme follows the control's own colours, not the page's, or Chrome
+     highlights options with dark-scheme white text on this light background */
   .version select {
+    color-scheme: light;
     font: inherit;
     border: 2px solid var(--ink);
     background: var(--yellow);
@@ -1282,6 +1285,7 @@ button.lyric {
       text-shadow: 0 0 6px rgb(108 255 142 / 60%);
     }
     .version select {
+      color-scheme: dark;
       border: 1px solid rgb(90 94 110);
       border-radius: 3px;
       background: rgb(4 8 6);
@@ -1801,6 +1805,7 @@ button.lyric {
       clip-path: var(--notch);
     }
     .version select {
+      color-scheme: dark;
       border: var(--px) solid var(--c-dusk);
       background: var(--c-night);
       color: var(--c-cream);
@@ -2319,6 +2324,7 @@ button.lyric {
     }
     .deck-play { background: var(--toki); color: rgb(43 24 56); }
     .version select {
+      color-scheme: inherit;
       border: 3px solid var(--plum);
       border-radius: 999px;
       padding: .25rem .6rem;
@@ -2896,6 +2902,7 @@ button.lyric {
     }
     .deck-play { border-color: var(--pink-dk); background: var(--pink-dk); color: white; }
     .version select {
+      color-scheme: inherit;
       border: 2px solid var(--line);
       border-radius: 999px;
       padding: .25rem .6rem;
