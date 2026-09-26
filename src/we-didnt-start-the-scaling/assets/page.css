@@ -102,8 +102,7 @@ a { color: var(--link); text-decoration-thickness: 2px; text-underline-offset: 2
 /* ---------- masthead ---------- */
 .masthead {
   display: flex;
-  gap: 1rem;
-  justify-content: space-between;
+  gap: 1.5rem;
   align-items: center;
   padding: .45rem 1rem;
   background: var(--ink);
@@ -112,9 +111,11 @@ a { color: var(--link); text-decoration-thickness: 2px; text-underline-offset: 2
   letter-spacing: .06em;
   text-transform: uppercase;
 
-  a { color: inherit; text-decoration: none; }
-  .home:hover { text-decoration: underline; }
+  a { color: inherit; text-decoration: none; white-space: nowrap; &:hover { text-decoration: underline; } }
+  .issue { margin-inline-start: auto; }
   @media (max-width: 640px) { .issue { display: none; } }
+  /* the two links share the narrowest phones with every theme's widest lettering */
+  @media (width < 400px) { gap: .75rem; padding-inline: .75rem; a { letter-spacing: .02em; } }
 }
 
 main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
@@ -3377,7 +3378,7 @@ button.lyric {
     font: 11px/1.2 var(--win);
     letter-spacing: 0;
     text-transform: none;
-    .home {
+    a {
       padding: 4px 8px;
       background: var(--w98);
       box-shadow: var(--raised);
