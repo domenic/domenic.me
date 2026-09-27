@@ -1459,15 +1459,16 @@ function hook(t, o = {}) {
 // Clawd pops up and throws the horns, then a match labelled ATTENTION lights a fuse whose spark races off-screen right into V1.1.
 
 // The cover's layout, in cover coordinates (origin at the cover's centre; the cover is 1300 × 900 unless `paper` says otherwise).
-// src/poster.js swaps in its own to draw the page's poster, whose title has to stay clear of the Play button in the middle, and the
-// square album cover.
-//   title     the ransom-note title, one entry per line: its words (each keeps its own letters and beat), y and size. The big line
-//             gets the loud papers, is squeezed into maxW and bobs on the beat.
+// src/poster.js swaps in its own to draw the page's poster, whose title has to stay clear of the Play button in the middle, the
+// square album cover and the X profile banner.
+//   title     the ransom-note title, one entry per line: its words (each keeps its own letters and beat), y and size, and optionally
+//             the x of its centre (default 0). The big line gets the loud papers, is squeezed into maxW and bobs on the beat.
 //   block     the torn pink block slapped behind the title: its pivot and the rectangle around that pivot
 //   swoosh    the red exponential underline: its start point, width and rise
 //   band, free, advisory   the centres of the band-name strip, the FREE!* sticker and the PARENTAL ADVISORY sticker (null: none)
-//   paper, clawd   optional: the cover's centre and size on the table ([x, y, w, h], screen space before the camera; default
-//             [930, 515, 1300, 900]) and the x Clawd pops up at from the bottom edge (default 1540)
+//   paper, clawd, feet   optional: the cover's centre and size on the table ([x, y, w, h], screen space before the camera; default
+//             [930, 515, 1300, 900]), the x Clawd pops up at from the bottom edge (default 1540) and the y his feet end at (default
+//             1074, below the frame)
 let coverLayout = {
   title: [
     { words: ['WE', "DIDN'T"], y: -262, size: 124 },
@@ -1633,10 +1634,10 @@ let coverLayout = {
     const typed = Math.floor(clamp((t - at(1)) / (at(4) - at(1) - .1)) * mast.length);
     if (typed > 0) txt(mast.slice(0, typed) + (typed < mast.length && _boil % 2 ? '_' : ''), -CW / 2 + 60, -CH / 2 + 58, 36, PAL.white, { font: 'typewriter', align: 'left', maxW: CW - 260 });
     // title words, one per beat
-    for (const { words, y, size, big, maxW } of L.title) {
+    for (const { words, x: lx = 0, y, size, big, maxW } of L.title) {
       const ro = w => ({ seed: WORDS[w].seed, maxW: big ? maxW : undefined, papers: big ? LOUD : undefined, fonts: TITLE_FONTS });
       const widths = words.map(w => ransom(w, 0, 0, size, { ...ro(w), pop: 0 }));
-      let x = -(widths.reduce((a, b) => a + b, 0) + WORD_GAP * (words.length - 1)) / 2;
+      let x = lx - (widths.reduce((a, b) => a + b, 0) + WORD_GAP * (words.length - 1)) / 2;
       words.forEach((w, i) => {
         const cx = x + widths[i] / 2; x += widths[i] + WORD_GAP;
         const a = t - at(WORDS[w].beat) + .03; if (a <= 0) return;
@@ -1696,7 +1697,7 @@ let coverLayout = {
   section('intro', (p, lt, d, t, seg) => {
     hideCaption(); hideStamp();
     const G = grid(), at = G.at, end = G.s.end;
-    const [CX, CY, CW, CH] = coverLayout.paper ?? PAPER, CLAWD_X = coverLayout.clawd ?? CLAWD_X0;
+    const [CX, CY, CW, CH] = coverLayout.paper ?? PAPER, CLAWD_X = coverLayout.clawd ?? CLAWD_X0, FEET = coverLayout.feet ?? CLAWD_FEET;
 
     // --- the spark's position along the fuse (needed by the camera) ---
     const lit = t >= at(26), raceK = clamp((t - at(28)) / (end - at(28)));
@@ -1809,7 +1810,7 @@ let coverLayout = {
         sweat: t >= at(26),
       };
       if (alarm) { o.aL = .95 + passing * .4; o.aR = .95 + passing * .4; }
-      const fy = CLAWD_FEET + up * CLAWD_U;
+      const fy = FEET + up * CLAWD_U;
       ctx.save(); tracePath(rectPts(-200, -200, W + 400, H + 200)); ctx.clip();
       clawd(CLAWD_X, fy, CLAWD_U, o);
       hornsHand(CLAWD_X, fy, CLAWD_U, o, -1, alarm ? 0 : hornsK);

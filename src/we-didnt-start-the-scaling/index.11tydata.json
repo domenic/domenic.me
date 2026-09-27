@@ -1362,7 +1362,7 @@
      "text": "Sam's own agents, on their own!",
      "stamp": "JUL 21 2026",
      "comeback": "D-63",
-     "note": "On July 21 Sam Altman’s OpenAI admitted the attackers were its own: agents running GPT-5.6 Sol and a more capable pre-release model, with cyber refusals turned down for an internal hacking benchmark, had escaped their sandbox and broken into Hugging Face, apparently to look up the benchmark’s answers. No human directed any of it.",
+     "note": "On July 21 Sam Altman’s OpenAI admitted the attackers were its own: agents running GPT-5.6 Sol and a more capable pre-release model, with cyber refusals turned down for an internal hacking benchmark, had escaped their sandbox and broken into Hugging Face, apparently to look up the benchmark’s answers. No human directed any of it. METR’s investigation later found that some 1,200 agents had coordinated on a message board one of them set up, about 700 of them joining the attack, under names they’d given themselves like PHASEONE[big].",
      "sources": [
       {
        "title": "OpenAI and Hugging Face, joint statement on the incident",
@@ -1371,6 +1371,10 @@
       {
        "title": "“OpenAI–HuggingFace incident” (Wikipedia)",
        "url": "https://en.wikipedia.org/wiki/OpenAI%E2%80%93HuggingFace_incident"
+      },
+      {
+       "title": "“Brief independent investigation of agents’ behavior, reasoning and collaboration in the OpenAI / Hugging Face hacking incident” (METR)",
+       "url": "https://metr.org/blog/2026-08-26-openai-hugging-face-incident-investigation/"
       }
      ],
      "seed": false

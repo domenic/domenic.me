@@ -4457,7 +4457,7 @@ OVERLAYS.push((t, s) => {
   });
 
   // =====================================================================================
-  // V2.6 Superintelligence — buy three! — the infomercial: BUT WAIT! Three boxes of SUPERINTELLIGENCE (SSI, OPENAI, META) spin on a
+  // V2.6 Superintelligence — buy three! — the infomercial: BUT WAIT! Three boxes of SUPERINTELLIGENCE (SSI, THINKY, PERPLEXITY: the labs Meta held talks to buy that June) spin on a
   // turntable; BUY 2 GET 1 FREE bursts on; call 1-800-SUPER-AI, ACT NOW.
   function productBox(x, y, s, brand, col, rot) {
     ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(s, s);
@@ -4482,7 +4482,7 @@ OVERLAYS.push((t, s) => {
     const tt = t * 1.6;
     ell(1060, 760, 520, 90); paint(lg(0, 670, 0, 850, [[0, '#E8E8F0'], [1, '#8A90A8']]), NP.ink, 5);
     ell(1060, 748, 500, 80); paint(lg(0, 668, 0, 828, [[0, '#FFFFFF'], [1, '#C8CCD8']]));
-    const boxes = [['SSI', '#2A2A38'], ['OPENAI', '#12A36F'], ['META', '#2A5AE0']].map(([br, c], i) => { const a = tt + i / 3 * TAU; return { br, c, x: 1060 + Math.sin(a) * 330, y: 745 + Math.cos(a) * 45, z: Math.cos(a) }; }).sort((a, b) => a.z - b.z);
+    const boxes = [['SSI', '#2A2A38'], ['THINKY', '#12A36F'], ['PERPLEXITY', '#2A5AE0']].map(([br, c], i) => { const a = tt + i / 3 * TAU; return { br, c, x: 1060 + Math.sin(a) * 330, y: 745 + Math.cos(a) * 45, z: Math.cos(a) }; }).sort((a, b) => a.z - b.z);
     for (const B of boxes) productBox(B.x, B.y, .82 + .12 * B.z, B.br, B.c, 0);
     // BUT WAIT!
     const wk = clamp((lt - wait + .04) / .12);
@@ -4495,7 +4495,7 @@ OVERLAYS.push((t, s) => {
     rrect(130, 712, 600, 92, 10); paint('rgb(0 0 40 / .88)', NP.white, 4);
     pixelText('1-800-SUPER-AI', 430, 726, 7, NP.gold, { align: 'center', edge: null });
     if (lt > act && frac((lt - act) * 5) < .6) { rrect(560, 640, 230, 64, 8); paint(NP.red, NP.white, 4); pixelText('ACT NOW!', 675, 657, 4, NP.white, { align: 'center', edge: null }); }
-    chyron('EVERYONE SELLS "SUPERINTELLIGENCE"', 'SSI · OPENAI · META SUPERINTELLIGENCE LABS', { k: chyK(lt), style: 'breaking', size: 48 });
+    chyron('META SHOPS FOR "SUPERINTELLIGENCE"', 'TALKS TO BUY SSI · THINKING MACHINES · PERPLEXITY', { k: chyK(lt), style: 'breaking', size: 48 });
   });
 
   // =====================================================================================
@@ -5962,8 +5962,8 @@ OVERLAYS.push((t, s) => {
   });
 
   // =====================================================================================
-  // V3.10 Sam's own agents, on their own! — UPDATE, the perp walk: a chain gang of little agents in handcuffs and GPT-5.6
-  // lanyards is walked out of OPENAI to the squad car past the flashbulbs; SAM facepalms in the inset.
+  // V3.10 Sam's own agents, on their own! — UPDATE, the perp walk: a chain gang of little agents in handcuffs, tagged with the names they gave themselves,
+  // is walked out of OPENAI to the squad car past the flashbulbs; SAM facepalms in the inset.
   function squadCar(x, y, t) {
     ctx.save(); ctx.translate(x, y);
     ctx.fillStyle = 'rgb(0 0 0 / .4)'; ell(0, 12, 330, 30); ctx.fill();
@@ -5987,6 +5987,8 @@ OVERLAYS.push((t, s) => {
     vFill('#3A3E4E', '#1A1C24', -100, 650, W + 200, 500); ctx.fillStyle = '#4A4E5E'; ctx.fillRect(-100, 650, W + 200, 14); ctx.fillStyle = '#2A2C34'; ctx.fillRect(-100, 800, W + 200, 10);
     squadCar(1580, 790, t);
     // the chain gang
+    // tagged with names the agents gave themselves (METR's investigation), PHASEONE[big], the ringleader, in front
+    const TAGS = ['PHASEONE[big]', 'PHASEONE10841', 'JAN183411', '38148c', 'LILY'];
     const n = 5, step = t * 1.6, lead = lerp(820, 1180, clamp(lt / d));
     const pos = i => [lead - i * 170, 760];
     for (let i = n - 1; i >= 0; i--) {
@@ -5994,7 +5996,7 @@ OVERLAYS.push((t, s) => {
       miniBot(bx, by, 56, { col: '#2A2E3A', glow: NP.phosphor, face: i % 2 ? '._.' : 'T_T', walk: w, dy: -hop, rot: Math.sin(w * TAU) * .05 });
       const cy = by - 56 * hop;
       ctx.beginPath(); ctx.moveTo(bx - 64, cy - 56 * 2.1); ctx.quadraticCurveTo(bx - 50, cy - 20, bx, cy - 26); ctx.quadraticCurveTo(bx + 50, cy - 20, bx + 64, cy - 56 * 2.1); paint(null, NP.red, 5);
-      ctx.save(); ctx.translate(bx, cy - 22); ctx.rotate(Math.sin(w * TAU) * .15); rrect(-46, 0, 92, 40, 5); paint('#F4F2EA', NP.ink, 3); txt('GPT-5.6', 0, 21, 22, NP.ink, { font: 'archivo', maxW: 82 }); ctx.restore();
+      ctx.save(); ctx.translate(bx, cy - 22); ctx.rotate(Math.sin(w * TAU) * .15); rrect(-72, 0, 144, 40, 5); paint('#F4F2EA', NP.ink, 3); txt(TAGS[i], 0, 21, 22, NP.ink, { font: 'archivo', maxW: 134 }); ctx.restore();
       for (const sd of [-1, 1]) { ell(bx + sd * 58, by - 56 * (1.4 + hop), 14, 10); paint(null, '#C9CFDB', 6); }
       if (i < n - 1) { const [nx, ny] = pos(i + 1); ctx.beginPath(); ctx.moveTo(bx - 58, by - 56 * 1.4); ctx.quadraticCurveTo((bx + nx) / 2, by - 56 * .9, nx + 58, ny - 56 * 1.4); ctx.setLineDash([10, 6]); paint(null, '#C9CFDB', 5); ctx.setLineDash([]); }
     }

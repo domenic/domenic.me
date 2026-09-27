@@ -5914,8 +5914,8 @@ OVERLAYS.push((t, s) => {
   });
 
   // =====================================================================================
-  // V3.10 Sam's own agents, on their own! — the line-up: the trench coat flies off, and it's three OpenAI agents stacked up, wearing GPT-5.6
-  // lanyards; SAM facepalms in the picture-in-picture; the agents hop down and scatter on their own.
+  // V3.10 Sam's own agents, on their own! — the line-up: the trench coat flies off, and it's three OpenAI agents stacked up, wearing lanyards with the names they gave themselves
+  // (PHASEONE[big] on top); SAM facepalms in the picture-in-picture; the agents hop down and scatter on their own.
   line('V3', 10, (p, lt, d, t) => {
     const b0 = bt(t, lt, 0), b1 = bt(t, lt, 1), b2 = bt(t, lt, 2), b3 = bt(t, lt, 3), off = clamp((lt - b0) / .45), bb = bpOf(t);
     setLight({ rim: EP.white, rimK: .6 });
@@ -5933,7 +5933,9 @@ OVERLAYS.push((t, s) => {
       // the staff lanyard, hung below the screen
       ctx.save(); ctx.translate(x, y); ctx.scale(gs, gs); ctx.rotate(scat > 0 ? [-1, 0, 1][i] * .1 : 0);
       ctx.strokeStyle = EP.cyan; ctx.lineWidth = .1; ctx.beginPath(); ctx.moveTo(-.75, -1.45); ctx.lineTo(0, -1.05); ctx.lineTo(.75, -1.45); ctx.stroke();
-      rrect(-.5, -1.12, 1.0, .5, .06); paint('#FFFFFF', EP.line, .05); ptext('GPT-5.6', 0, -.86, .24, { font: 'archivo', fill: EP.line, maxW: .86 });
+      rrect(-1.25, -1.16, 2.5, .6, .06); paint('#FFFFFF', EP.line, .05);
+      // (the name set at its size in pixels: Firefox places a sub-pixel font's text in whole pixels, which scaled up pushed it off the board)
+      ctx.scale(1 / gs, 1 / gs); ptext(['LILY', 'JAN183411', 'PHASEONE[big]'][i], 0, -.86 * gs, .34 * gs, { font: 'archivo', fill: EP.line, maxW: 2.3 * gs });
       ctx.restore();
     }
     trenchCoat(cx, 905, 44 * .9, { open: off });

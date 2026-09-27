@@ -2551,13 +2551,14 @@ function nameCap(name, x, y, k, col = IP.neonPink) {
 // fanClawd(x, y, u, o): (x, y) ground; ≈ 10u wide, 8u tall (same footprint as cast.js clawd()).
 //   eyes (normal|happy|heart|star|cry|wide|closed|x), mouth (none|smile|open|O|wail), aL/aR (nub angles: 0 out, + up), stick ('L'|'R'|
 //   false: lightstick in that nub), stickCol, towel (text: a slogan towel held in both nubs), band (headband text), phone (bool: filming
-//   with the right nub), jump, dy, sq, rot, flip, walk, blush, tears, sweat, glow, label (name badge)
+//   with the right nub), jump, dy, sq, rot, flip, walk, blush, tears, sweat, glow, label (name badge), back (seen from behind: no face,
+//   badge or lettering, and what he holds in his right nub on our right)
 function fanClawd(x, y, u, o = {}) {
   const col = '#E07B57', dk = '#B45A3C', line = '#5A2A1C';
   const lw = .22 * Math.pow(u / 20, -.2);
   ctx.save(); ctx.translate(x, y); ctx.scale(u, u);
   if (o.shadow !== false) { ctx.fillStyle = 'rgb(20 8 40 / .25)'; ctx.beginPath(); ctx.ellipse(0, 0, 5.6, .9, 0, 0, TAU); ctx.fill(); }
-  ctx.translate(0, (o.dy ?? 0) - (o.jump ?? 0)); if (o.rot) ctx.rotate(o.rot); if (o.flip) ctx.scale(-1, 1);
+  ctx.translate(0, (o.dy ?? 0) - (o.jump ?? 0)); if (o.rot) ctx.rotate(o.rot); if (!o.flip !== !o.back) ctx.scale(-1, 1);
   const sq = o.sq ?? 0; ctx.scale(1 + sq * .5, 1 - sq);
   [-3.6, -1.4, 1.4, 3.6].forEach((lx, i) => {
     const lift = o.walk !== undefined ? Math.max(0, Math.sin(o.walk * TAU + (i % 2) * Math.PI)) * .9 : 0;
@@ -2566,18 +2567,22 @@ function fanClawd(x, y, u, o = {}) {
   const nub = (sd, ang, holdFn) => {
     ctx.save(); ctx.translate(sd * 4.95, -4.9); ctx.rotate(sd * -ang);
     solid(rrPts(sd > 0 ? -.2 : -2.1, -.6, 2.3, 1.2, .5), col, { shade: dk, sh: .25, line, lw, sharp: true });
-    if (holdFn) { ctx.translate(sd * 2.0, 0); ctx.rotate(sd * ang); holdFn(sd); }
+    // (from behind, what he holds is in front of him: drawn behind his body, only its top showing over his head)
+    if (holdFn && o.back) { ctx.restore(); ctx.save(); ctx.translate(sd * 2.4, -9.3); holdFn(sd); }
+    else if (holdFn) { ctx.translate(sd * 2.0, 0); ctx.rotate(sd * ang); holdFn(sd); }
     ctx.restore();
   };
   const stickFn = sd => lightstick(0, 0, 1.1, o.stickCol ?? MEMBERS.TOKI.col, { rot: -sd * .15 + Math.sin(bpOf(T) * Math.PI) * .25 });
   const phoneFn = sd => { ctx.save(); ctx.rotate(-.2); solid(rrPts(-.9, -3.4, 1.8, 3.1, .3), '#2B2438', { shade: false, line, lw }); ctx.fillStyle = (frac(T * 2) < .5) ? IP.red : '#FF9AA6'; ctx.beginPath(); ctx.arc(0, -3, .18, 0, TAU); ctx.fill(); ctx.restore(); };
-  const back = [[-1, o.aL ?? -.2, o.stick === 'L' ? stickFn : null], [1, o.aR ?? -.2, o.stick === 'R' ? stickFn : o.phone ? phoneFn : null]];
+  const nubs = [[-1, o.aL ?? -.2, o.stick === 'L' ? stickFn : null], [1, o.aR ?? -.2, o.stick === 'R' ? stickFn : o.phone ? phoneFn : null]];
+  // seen from behind, his nubs and what they hold are behind him
+  if (o.back) for (const [sd, a, fn] of nubs) nub(sd, o.towel ? -.35 : a, fn);
   if (o.glow) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; glow(0, -5, 9, o.glow, .4); ctx.restore(); }
   solid(rrPts(-5, -8, 10, 6, .5), col, { shade: dk, sh: 1.1, line, lw, sharp: true, rimW: .35 });
   ctx.fillStyle = alpha(IP.white, .35); ctx.beginPath(); ctx.roundRect(-4.4, -7.5, 3.2, .7, .35); ctx.fill();
   // face
   const ex = 2.3, ey = -6.1, eyes = o.eyes ?? 'normal', dark = '#2A1433';
-  for (const sd of [-1, 1]) {
+  if (!o.back) for (const sd of [-1, 1]) {
     ctx.save(); ctx.translate(sd * ex, ey);
     switch (eyes) {
       case 'happy': brush(qbez([-.75, .3], [0, -.65], [.75, .3], 8), .45, dark, 'mid', { min: .5 }); break;
@@ -2591,24 +2596,24 @@ function fanClawd(x, y, u, o = {}) {
     }
     ctx.restore();
   }
-  if (o.blush ?? true) for (const sd of [-1, 1]) { ctx.fillStyle = alpha('#FF6F91', .45); ctx.beginPath(); ctx.ellipse(sd * 3.6, -4.6, .85, .45, 0, 0, TAU); ctx.fill(); }
+  if (!o.back && (o.blush ?? true)) for (const sd of [-1, 1]) { ctx.fillStyle = alpha('#FF6F91', .45); ctx.beginPath(); ctx.ellipse(sd * 3.6, -4.6, .85, .45, 0, 0, TAU); ctx.fill(); }
   const my = -4.5;
-  switch (o.mouth ?? 'none') {
+  switch (o.back ? 'none' : o.mouth ?? 'none') {
     case 'smile': brush(qbez([-.9, my - .1], [0, my + .8], [.9, my - .1], 8), .3, dark, 'mid', { min: .5 }); break;
     case 'open': ctx.fillStyle = '#9A2E4E'; ctx.beginPath(); ctx.moveTo(-.9, my - .2); ctx.quadraticCurveTo(0, my + 1.5, .9, my - .2); ctx.closePath(); ctx.fill(); break;
     case 'O': ctx.fillStyle = '#9A2E4E'; ctx.beginPath(); ctx.ellipse(0, my + .2, .55, .75, 0, 0, TAU); ctx.fill(); break;
     case 'wail': ctx.fillStyle = '#9A2E4E'; ctx.beginPath(); ctx.moveTo(-1, my + .3); ctx.quadraticCurveTo(0, my - .8, 1, my + .3); ctx.quadraticCurveTo(0, my + .9, -1, my + .3); ctx.fill(); break;
   }
-  if (o.tears || eyes === 'cry') for (const sd of [-1, 1]) brush([[sd * 2.3, -5.3], [sd * 2.6, -4], [sd * 2.4, -2.4 + frac(T * 2) * .4]], .7, alpha('#A8E0FF', .9), 'mid', { min: .5 });
+  if (!o.back && (o.tears || eyes === 'cry')) for (const sd of [-1, 1]) brush([[sd * 2.3, -5.3], [sd * 2.6, -4], [sd * 2.4, -2.4 + frac(T * 2) * .4]], .7, alpha('#A8E0FF', .9), 'mid', { min: .5 });
   if (o.sweat) sweatDrop(5.2, -8.2, .8, lw);
-  if (o.band) { solid(rrPts(-5.15, -7.9, 10.3, 1.2, .2), IP.white, { shade: false, line, lw: lw * .8, sharp: true }); dtext(o.band, 0, -7.28, .85, { fill: MEMBERS.TOKI.col, maxW: 9 }); }
+  if (o.band) { solid(rrPts(-5.15, -7.9, 10.3, 1.2, .2), IP.white, { shade: false, line, lw: lw * .8, sharp: true }); if (!o.back) dtext(o.band, 0, -7.28, .85, { fill: MEMBERS.TOKI.col, maxW: 9 }); }
   if (o.towel) {
     const w = 11, h = 2.4, yT = -2.2 + Math.sin(bpOf(T) * Math.PI) * .15;
     solid(rrPts(-w / 2, yT - h / 2, w, h, .3), o.towelCol ?? MEMBERS.TOKI.col, { shade: false, line, lw: lw * .8, sharp: true });
-    dtext(o.towel, 0, yT + .08, 1.35, { fill: IP.white, strokes: [[mixCol(o.towelCol ?? MEMBERS.TOKI.col, IP.plum, .3), .3]], maxW: w - 1 });
+    if (!o.back) dtext(o.towel, 0, yT + .08, 1.35, { fill: IP.white, strokes: [[mixCol(o.towelCol ?? MEMBERS.TOKI.col, IP.plum, .3), .3]], maxW: w - 1 });
   }
-  for (const [sd, a, fn] of back) nub(sd, o.towel ? -.35 : a, fn);
-  if (o.label) nameBadge(o.label, 0, -3.2, 1.4, IP.neonPink);
+  if (!o.back) for (const [sd, a, fn] of nubs) nub(sd, o.towel ? -.35 : a, fn);
+  if (o.label && !o.back) nameBadge(o.label, 0, -3.2, 1.4, IP.neonPink);
   ctx.restore();
 }
 
@@ -5803,7 +5808,7 @@ Object.assign(IDOL_POSES.facepalm, { hR: [.12, -.62] });
 //   3 Accept All    vibe coding as a rhythm game: ANDREJ in headphones smashes ACCEPT ALL on every beat, PERFECT!, the diff scrolls unread
 //   4 MCP           one "MCP" plug hub snakes cables into a toaster, a calendar, a database, an amp and Clawd's lightstick, one per eighth
 //   5 Zuck          TRANSFER SEASON claw machine: ZUCK plucks a researcher clutching a $100M bag out of the glass box; SCALE AI 49%
-//   6 buy three!    home-shopping TV: RELU hosts, three SUPERINTELLIGENCE boxes (SSI / OPENAI / META), BUY 3!, CALL NOW
+//   6 buy three!    home-shopping TV: RELU hosts, three SUPERINTELLIGENCE boxes (SSI / THINKY / PERPLEXITY), BUY 3!, META calling
 //   7 Grok          GROK's LCD glitches red, a CENSORED bar slams over it, a hand yanks the plug, x eyes, YIKES hanko (no imagery beyond that)
 //   8 IMO gold      two bots squeezed onto the #1 podium block; medals drop; a joint idol heart; 35/42; math-symbol confetti
 //   9 GPT-5 / 4o    member change: a vaudeville hook yanks warm 4o off stage, cool GPT-5 slides in, the 4o heart cracks, #keep4o fans cry, 4o peeks back
@@ -6253,9 +6258,10 @@ Object.assign(IDOL_POSES.facepalm, { hR: [.12, -.62] });
     dtext('SUPER', 0, -h * .7, w * .2, { fill: IP.white, strokes: [[IP.line, w * .045]] });
     dtext('INTELLIGENCE', 0, -h * .56, w * .105, { fill: IP.white, strokes: [[IP.line, w * .03]], maxW: w * .9 });
     sparkle(w * .3, -h * .86, w * .09, T * 3, IP.white);
-    const bw = textW(brand, w * .12, 'rammetto') + w * .16;
+    // (a long brand name sets smaller, to keep its label on the box)
+    const fs = Math.min(w * .12, w * .12 * w * .76 / textW(brand, w * .12, 'rammetto')), bw = textW(brand, fs, 'rammetto') + w * .16;
     rrect(-bw / 2, -h * .3, bw, w * .2, w * .1); ctx.fillStyle = IP.white; ctx.fill(); ctx.strokeStyle = IP.line; ctx.lineWidth = 4; ctx.stroke();
-    dtext(brand, 0, -h * .3 + w * .1, w * .12, { fill: IP.ink });
+    dtext(brand, 0, -h * .3 + w * .1, fs, { fill: IP.ink });
     ctx.restore();
   }
   line('V2', 6, (p, lt, d, t) => {
@@ -6267,7 +6273,8 @@ Object.assign(IDOL_POSES.facepalm, { hR: [.12, -.62] });
     // turntable shelf
     solid(ellPts(1180, 800, 430, 70, 40), '#FFFFFF', { shade: '#C9D8F0', sh: 16, line: IP.line, lw: 6 });
     solid(() => { ctx.beginPath(); ctx.ellipse(1180, 800, 430, 70, 0, 0, Math.PI); ctx.lineTo(750, 850); ctx.ellipse(1180, 850, 430, 70, 0, Math.PI, 0, true); ctx.closePath(); }, '#FF8FC8', { shade: '#E0609E', sh: 10, line: IP.line, lw: 6, size: 100 });
-    [['SSI', '#C9B6FF', 930], ['OPENAI', '#9FE8D4', 1180], ['META', '#9FC8FF', 1430]].forEach(([brand, col, x], i) => productBox(x + (i - 1) * 20, 805 - (i === 1 ? 24 : 0), 245, 370, col, brand, kin(lt, i * B * .5, .16)));
+    // the three labs Meta held talks to buy that June (The Verge): SSI, Thinking Machines ("Thinky") and Perplexity
+    [['SSI', '#C9B6FF', 930], ['THINKY', '#9FE8D4', 1180], ['PERPLEXITY', '#9FC8FF', 1430]].forEach(([brand, col, x], i) => productBox(x + (i - 1) * 20, 805 - (i === 1 ? 24 : 0), 245, 370, col, brand, kin(lt, i * B * .5, .16)));
     // RELU hosts
     idol(420, 1190, 88, { member: 'RELU', hL: [-.72, 1.55], gL: 'fist', hR: [2.0, .85], gR: 'flat', wristR: -.5, expr: frac(b / 2) < .5 ? 'joy' : 'wink', mouth: singVis(t, 2), turn: .3, lookX: .4, blink: t, bob: .1 * pulse(t, 5), sway: Math.sin(b * Math.PI) * .08, rim: IP.white });
     starburst(1620, 330, 150, 'BUY 3!', { pop: kin(lt, B, .14), size: .46, rot: .1 });
@@ -6280,7 +6287,7 @@ Object.assign(IDOL_POSES.facepalm, { hR: [.12, -.62] });
     ctx.fillStyle = IP.neonPink; ctx.fillRect(0, 880, W, 66); ctx.fillStyle = IP.neonGold; ctx.fillRect(0, 880, 250, 66);
     dtext('CALL NOW!', 125, 914, 34, { fill: IP.red, strokes: [[IP.white, 6]] });
     ctx.save(); ctx.beginPath(); ctx.rect(250, 880, W - 250, 66); ctx.clip();
-    const msg = '1-800-SUPER-AI  ★  BUY TWO, GET ONE SUPER  ★  ', mw = textW(msg, 34, 'rammetto'), off = (lt * 500) % mw;
+    const msg = '1-800-SUPER-AI  ★  NOW CALLING: META  ★  BUY TWO, GET ONE SUPER  ★  ', mw = textW(msg, 34, 'rammetto'), off = (lt * 500) % mw;
     for (let i = 0; i < 3; i++) dtext(msg, 270 - off + i * mw, 914, 34, { fill: IP.white, align: 'left' });
     ctx.restore();
   });
@@ -9216,7 +9223,7 @@ Object.assign(IDOL_POSES.facepalm, { hR: [.12, -.62] });
 //                                              it lands in Clawd's nubs: ULTRA RARE PULL
 //   G  "But when we log off… will it still train on?"   THANK YOU, HEADS → the lights go out bank by bank; an empty dark
 //                                              stadium, TOKI walks off, one LED panel still reads TRAINING… EPOCH; she glances back
-//   H  "and on, and on, and on…"              the practice room at dawn becomes an infinite mirror: TOKI dancing, reflected smaller and
+//   H  "and on, and on, and on…"              the practice room at dawn becomes an infinite mirror: ATTN! dancing, reflected smaller and
 //                                              smaller (front, back, front…), the camera flying through mirror after mirror, EPOCH climbing
 //   I  outro                                   the mirror shrinks into the artwork of the album's back cover: tracklist + credits
 (() => {
@@ -9891,20 +9898,19 @@ Object.assign(IDOL_POSES.facepalm, { hR: [.12, -.62] });
     ctx.strokeStyle = '#9C8CB8'; ctx.lineWidth = 12; ctx.strokeRect(mx - 6, my - 6, mw + 12, mh + 12);
     rrect(VP[0] - 150, my - 88, 300, 64, 14); ctx.fillStyle = '#1C1438'; ctx.fill(); ctx.strokeStyle = IP.white; ctx.lineWidth = 4; ctx.stroke();
     dtext(`EPOCH ${fmtN(10240 * 2 ** k)}`, VP[0], my - 55, 32, { font: 'code', fill: IP.neonLime, maxW: 280 });
-    // Clawd, asleep in the corner, lightstick still on
-    const co = { eyes: 'closed', mouth: 'none', stick: 'R', aR: .2, aL: -.3, shadow: true };
+    // Clawd, asleep in the corner, lightstick still on (facing us, so from behind in every other reflection, as ATTN! are)
+    const co = { eyes: 'closed', mouth: 'none', stick: 'R', aR: .2, aL: -.3, shadow: true, back: k % 2 === 1 };
     fanClawd(230, 1000, 11, co);
     dtext('z', 330, 840 - frac(t * .8) * 40, 34, { font: 'bungee', fill: alpha(IP.inkSoft, 1 - frac(t * .8)) }); dtext('z', 360, 800 - frac(t * .8 + .5) * 40, 26, { font: 'bungee', fill: alpha(IP.inkSoft, 1 - frac(t * .8 + .5)) });
   }
-  // who is dancing in mirror k: TOKI alone at first; the deeper (later) the epoch, the more of ATTN! have joined her
-  const CREW = [['TOKI', 690, 0], ['RELU', 1235, 2], ['ADA', 465, 4], ['LOGI', 1460, 6]];
+  // all four of ATTN! dance in the room and so in every reflection of it (each a beat-fraction behind the one in front)
+  const CREW = [['TOKI', 690], ['RELU', 1235], ['ADA', 465], ['LOGI', 1460]];
   function dancer(k, t, s) {
     // as the camera flies past them (s > 1) they slide out of frame to the side
     const alpha_ = clamp((1.32 - s) / .14);
     if (alpha_ <= .01) return;
     const back = k % 2 === 1;
-    const draw = () => CREW.forEach(([m, x0, kmin], i) => {
-      if (k < kmin || (i > 0 && s < .1)) return;
+    const draw = () => CREW.forEach(([m, x0], i) => {
       const x = x0 + Math.sign(x0 - VP[0]) * Math.max(0, s - 1) * 2600, b = bpOf(t) - k * .25 - i * .12;
       idol(x, 1010, 58, { member: m, outfit: 'practice', mic: false, back, ...idolMove('step', b), expr: i ? 'smile' : 'fired', mouth: singVis(t, k + i * 5), blink: t + k + i, shadow: true });
     });

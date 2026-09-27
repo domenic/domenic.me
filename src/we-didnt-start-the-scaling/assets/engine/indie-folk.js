@@ -4027,7 +4027,8 @@ OVERLAYS.push((t, s) => {
   // ======================================================================
   // V2.6 Superintelligence — buy three! — a late-night TV glows in a dark room: an infomercial with three boxed
   // SUPERINTELLIGENCEs on a shelf, and the dusty-red starburst "BUY 3!" pops on the first beat.
-  const BOXES = [['SAFE', C.teal, C.pine], ['META', C.dusk, C.navy], ['GENTLE', C.violet, C.wine]];
+  // the labs Meta held talks to buy that June: SSI, Thinking Machines ("Thinky") and Perplexity
+  const BOXES = [['SSI', C.teal, C.pine], ['THINKY', C.dusk, C.navy], ['PERPLEXITY', C.violet, C.wine]];
   line('V2', 6, (p, lt, d, t, s) => {
     cutIn();
     const burstT = B(s, 0) - .02;
@@ -4077,7 +4078,8 @@ OVERLAYS.push((t, s) => {
       // BUY 3! bursts in on the first beat
       const bk = clamp((lt - burstT) / .22);
       if (bk > 0) {
-        const bxc = SX0 + SW - 52, byc = SY0 + 34, R = 40 * (1 + .04 * breathe(t, 1));
+        // (clear of the boxes' labels, PERPLEXITY's the longest)
+        const bxc = SX0 + SW - 52, byc = SY0 + 29, R = 36 * (1 + .04 * breathe(t, 1));
         starburst(bxc, byc, R, easeOut(bk), { n: 16, inner: .55, rot: lt * .2, fringe: C.wine });
         if (bk > .6) ptext('BUY 3!', bxc + 1, byc - 6, C.cream, { scale: 2, align: 'center', shadow: C.wine });
         if (bk < 1) glow(bxc, byc, 70, { tab: LIT, k: 1.4 * (1 - bk) });
