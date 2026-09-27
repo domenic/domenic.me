@@ -44,7 +44,7 @@ I was captivated. Fable 5 and I jammed away, producing the first draft of "We Di
 > Gwern said "stack the compute high,"\
 > Few-shot learners multiply.
 
-I then got too ambitious. I wanted something that sounded like it was Fall Out Boy singing my lyrics. Suno refuses to do anything too close to an existing artist, so we spent a long time trying to hack together MiniMax Music, Whisper and Gemini judges, demucs stem separation, a WSL bridge to my GPU box, and eventually a from-scratch DiffSinger renderer. I wasn't happy with any of it. In the end I went back to plain Suno, abandoning the goal of sounding like FOB, and put out [something I didn't hate](https://suno.com/song/1df45a3d-ff7f-4288-8bd8-3b40583db32f). I [tweeted it out](https://x.com/domenic/status/2085186224030097859), and mostly got crickets in response.
+I then got too ambitious. I wanted something that sounded like it was Fall Out Boy singing my lyrics. Suno refuses to do anything too close to an existing artist, so we spent a long time trying to hack together MiniMax Music, Whisper and Gemini judges, demucs stem separation, a WSL bridge to my GPU box, and eventually a from-scratch DiffSinger renderer. The melody was the sticking point: even with the vocals stripped out of FOB's cover, Suno wouldn't touch it, and MiniMax couldn't sing well enough to match it. In the end I went back to plain Suno, abandoning the goal of sounding like FOB, and put out [something I didn't hate](https://suno.com/song/1df45a3d-ff7f-4288-8bd8-3b40583db32f). I [tweeted it out](https://x.com/domenic/status/2085186224030097859), and mostly got crickets in response.
 
 Oh well, I thought. Sometimes, the things I'm excited about just don't strike a chord. And I mean, it wasn't *that* good, anyway.
 
