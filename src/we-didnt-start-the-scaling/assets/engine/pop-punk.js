@@ -1192,6 +1192,56 @@ function lineAt(t) {
   return null;
 }
 
+// ---------- the words' times, for karaoke fills ----------
+// A line's `words` (from tools/word_timing.py, through make_timing.py): each word's [start, end] in centiseconds from the line's
+// start. Its words are its text split at spaces and after a hyphen or en dash inside a word, as splitWords splits it.
+const splitWords = text => String(text).split(/\s+/).filter(Boolean).flatMap(w => w.split(/(?<=[-–])(?=[A-Za-z0-9])/));
+// A line's words' times in seconds, { starts, ends }, or null if it hasn't any.
+function wordTimes(ln) {
+  if (ln._wt === undefined) {
+    ln._wt = ln.words && ln.words.length === splitWords(ln.text).length
+      ? { starts: ln.words.map(w => ln.start + w[0] / 100), ends: ln.words.map(w => ln.start + w[1] / 100) } : null;
+  }
+  return ln._wt;
+}
+// How much of `text` (a line's text as a caption draws it: its dashes tidied, say, or in capitals) is sung at t, in characters:
+// each word sung, and as much of the one being sung as its time has gone by (or, with `quick`, of that many seconds from its
+// start: captions that type each word out as it's sung). A word that isn't in the text (a trailing dash a caption drops) counts
+// for nothing. `form` turns a word into the text's form (the text's case doesn't matter). Null without the line's words' times.
+function charsSung(ln, text, t, { quick = 0, form = w => w } = {}) {
+  const w = wordTimes(ln);
+  if (!w) return null;
+  const hay = text.toLowerCase();
+  let from = 0, lit = 0;
+  splitWords(ln.text).forEach((word, i) => {
+    const needle = form(word).toLowerCase(), a = hay.indexOf(needle, from);
+    if (a < 0 || t < w.starts[i]) return;
+    from = a + needle.length;
+    const dur = quick ? Math.min(quick, w.ends[i] - w.starts[i]) : w.ends[i] - w.starts[i];
+    lit = a + needle.length * (dur > 0 ? clamp((t - w.starts[i]) / dur) : 1);
+  });
+  return lit;
+}
+// The line a karaoke caption shows at t, as { ln, on, first, last }: like lineAt, but a line with its words' times comes up as
+// the one before it finishes (its last word sung), or half a second before its own first word after a rest, so that a word held
+// into the next line's start isn't cut off; it goes when the next comes up, or `linger` seconds after its last word (`on` is
+// when it came up; `first` and `last`, when its first word starts and its last ends). A line without them is up from its start.
+let _captionLines = null;
+function captionAt(t, linger = .35) {
+  if (_captionLines?.lines !== LINES) {
+    let before = -Infinity;
+    _captionLines = { lines: LINES, list: LINES.map(ln => {
+      const w = wordTimes(ln), first = w ? w.starts[0] : ln.start, last = w ? w.ends.at(-1) : ln.end;
+      const on = w ? Math.min(first, Math.max(first - .5, before)) : ln.start;
+      before = last;
+      return { ln, on, first, last };
+    }) };
+  }
+  const L = _captionLines.list;
+  for (let i = L.length - 1; i >= 0; i--) if (L[i].on <= t) return t < Math.min(L[i + 1]?.on ?? Infinity, L[i].last + linger) ? L[i] : null;
+  return null;
+}
+
 // ---------- overlay switches (a shot may call these each frame) ----------
 let _noCaption = false, _noStamp = false, _captionStyle = null;
 const hideCaption = () => { _noCaption = true; };

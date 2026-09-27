@@ -54,17 +54,33 @@ const S = {
 const timingCache = new Map();
 function loadTiming(v) {
   if (!v.timing) return Promise.resolve(null);
-  if (!timingCache.has(v.id)) timingCache.set(v.id, fetch(abs(v.timing)).then(r => r.json()));
+  if (!timingCache.has(v.id)) timingCache.set(v.id, fetch(abs(v.timing)).then(r => r.json()).then(tm => (timeLines(tm), tm)));
   return timingCache.get(v.id);
+}
+// When each line is the line being sung. A line with its words' times (`words`: each word's start and end, in centiseconds from
+// the line's start) takes over as the line before it finishes, its last word sung, or LEAD seconds before its own first word
+// after a rest; so a word held into the next line's start isn't cut off. A line without them is up from its start to its end.
+// Either way, a line goes when the next one comes up, or LINGER seconds after it's sung.
+const LEAD = .5;
+const LINGER = 1.2;
+const lineTimes = new WeakMap();   // line → { on, first, last, starts, ends }
+function timeLines(tm) {
+  let before = -Infinity;
+  for (const l of tm.lines) {
+    const starts = l.words?.map(w => l.start + w[0] / 100);
+    const ends = l.words?.map(w => l.start + w[1] / 100);
+    const first = starts?.[0] ?? l.start;
+    const last = ends?.at(-1) ?? l.end;
+    lineTimes.set(l, { on: starts ? Math.min(first, Math.max(first - LEAD, before)) : l.start, first, last, starts, ends });
+    before = last;
+  }
 }
 function lineAt(t) {
   const L = S.timing?.lines;
   if (!L) return null;
   for (let i = L.length - 1; i >= 0; i--) {
-    if (L[i].start <= t) {
-      const next = L[i + 1];
-      return t < (next ? Math.min(next.start, L[i].end + 1.2) : L[i].end + 1.2) ? L[i] : null;
-    }
+    const k = lineTimes.get(L[i]);
+    if (k.on <= t) return t < Math.min(L[i + 1] ? lineTimes.get(L[i + 1]).on : Infinity, k.last + LINGER) ? L[i] : null;
   }
   return null;
 }
@@ -360,23 +376,127 @@ function setNowLine(ln) {
   const el = ln ? lineEls.get(`${ln.sec}.${ln.n}`) ?? null : null;
   nowLine = el ? ln : null;
   if (el === nowEl) return;
-  nowEl?.classList.remove('now');
-  nowEl?.style.removeProperty('--line-p');
-  nowEl?.style.removeProperty('--line-t');
+  nowEl?.classList.remove('now', 'worded');
+  for (const p of LINE_PROPS) nowEl?.style.removeProperty(p);
   el?.classList.add('now');
   nowEl = el;
   showLineProgress(audio.currentTime);
   renderNowCard();
   if (el && S.follow === 'on') scrollToLine(el);
 }
-// How far through the line being sung the audio is, for the themes whose highlight fills as it's sung: --line-p runs from 0 at
-// the line's start to 1 at its end, and --line-t counts seconds since its start. They come from the audio's clock, so they
-// freeze on pause and jump on seeks.
+
+// The karaoke themes fill the line being sung as it's sung. Its words are in spans, numbered in --i, split as the track's word
+// times are (tools/word_timing.py splits the same way: at spaces, and after a hyphen or en dash inside a word).
+for (const text of document.querySelectorAll('.line .lyric-text')) {
+  const parts = [];
+  let i = 0;
+  for (const word of text.textContent.trim().split(/\s+/)) {
+    if (parts.length) parts.push(' ');
+    for (const piece of word.split(/(?<=[-–])(?=[A-Za-z0-9])/)) {
+      const span = document.createElement('span');
+      span.className = 'w';
+      span.style.setProperty('--i', i++);
+      span.textContent = piece;
+      parts.push(span);
+    }
+  }
+  text.replaceChildren(...parts);
+}
+const LINE_PROPS = ['--line-p', '--line-t', '--line-w', '--row-top', '--row-h', '--ball-x', '--ball-y', '--ball-hop', '--ball-s'];
+// (the longest hop the karaoke ball makes from one word to the next, in seconds)
+const BALL_HOP = .3;
+// An element's padding box's position on the page, as laid out: the line being sung is scaled and tilted, which bounding
+// rectangles would take in.
+function origin(el) {
+  let x = 0, y = 0;
+  for (let e = el; e; e = e.offsetParent) {
+    x += e.offsetLeft + e.clientLeft;
+    y += e.offsetTop + e.clientTop;
+  }
+  return [x, y];
+}
+// How far through the line being sung the audio is. They come from the audio's clock, so they freeze on pause and jump on seeks.
+// --line-t counts seconds since the line came up. With its words' times (the line is .worded), --line-w counts how many words
+// in it is, whole words sung plus the fraction of the one being sung, for fills of each word in turn (a wrapped line fills row by
+// row); --line-p is how far across the line's card the fill has got in the row being sung (all the way, once the row's sung),
+// whose band of the card --row-top and --row-h give; and a bouncing ball (Eurodance's) hops from each word to the next as it's
+// sung, at --ball-x and --ball-y, --ball-hop of its height up. Without them, --line-p runs from 0 at the line's start to 1 at
+// its end.
 function showLineProgress(t) {
   if (!nowEl || !nowLine) return;
-  const dt = t - nowLine.start;
-  nowEl.style.setProperty('--line-p', clamp(dt / Math.max(.05, nowLine.end - nowLine.start), 0, 1).toFixed(4));
-  nowEl.style.setProperty('--line-t', clamp(dt, 0, 60).toFixed(3));
+  const k = lineTimes.get(nowLine);
+  const style = nowEl.style;
+  style.setProperty('--line-t', clamp(t - k.on, 0, 60).toFixed(3));
+  const spans = nowEl.querySelectorAll('.lyric-text .w');
+  const worded = k.starts?.length === spans.length;
+  nowEl.classList.toggle('worded', worded);
+  if (!worded) {
+    style.setProperty('--line-p', clamp((t - nowLine.start) / Math.max(.05, nowLine.end - nowLine.start), 0, 1).toFixed(4));
+    return;
+  }
+  const { starts, ends } = k;
+  let i = -1;
+  while (i + 1 < starts.length && starts[i + 1] <= t) i++;
+  const f = i < 0 ? 0 : ends[i] > starts[i] ? clamp((t - starts[i]) / (ends[i] - starts[i]), 0, 1) : 1;
+  style.setProperty('--line-w', (i + f).toFixed(4));
+  // where the words are, in the card (.lyric) and in the text (.lyric-text), in rows
+  const card = nowEl.querySelector('.lyric');
+  const text = nowEl.querySelector('.lyric-text');
+  const [cx, cy] = origin(card);
+  const [tx, ty] = origin(text);
+  const boxes = [...spans].map(s => {
+    const [x, y] = origin(s);
+    return { x0: x - cx, x1: x - cx + s.offsetWidth, top: y - cy, bottom: y - cy + s.offsetHeight, textX: x - tx, textY: y - ty, row: 0 };
+  });
+  const rows = [];
+  boxes.forEach((b, j) => {
+    const row = rows.at(-1);
+    // (a word's box, the font's full height, can be taller than the row, so the rows' boxes overlap)
+    if (row && b.top < (row.top + row.bottom) / 2) Object.assign(row, { bottom: Math.max(row.bottom, b.bottom), last: j });
+    else rows.push({ top: b.top, bottom: b.bottom, last: j });
+    b.row = rows.length - 1;
+  });
+  const r = i < 0 ? 0 : boxes[i].row;
+  const row = rows[r];
+  const bandTop = r ? (rows[r - 1].bottom + row.top) / 2 : 0;
+  const bandBottom = r < rows.length - 1 ? (row.bottom + rows[r + 1].top) / 2 : card.clientHeight;
+  const front = i < 0 ? 0 : i === row.last && f === 1 ? card.clientWidth : boxes[i].x0 + f * (boxes[i].x1 - boxes[i].x0);
+  style.setProperty('--line-p', clamp(front / card.clientWidth, 0, 1).toFixed(4));
+  style.setProperty('--row-top', `${bandTop.toFixed(1)}px`);
+  style.setProperty('--row-h', `${(bandBottom - bandTop).toFixed(1)}px`);
+  // The ball is a sing-along's: it sits on each word while it's sung (skipping a dash, which isn't), then hops to the next in at
+  // most BALL_HOP s, as high as the hop is long, landing as that one starts. Before the first word it bounces on the beat; after
+  // the last it rests. A wrapped line's next row is a fresh start: rather than arc back over the row, the ball shrinks away on
+  // the row's last word and drops onto the next row's first.
+  const stops = starts.map((s, j) => j).filter(j => ends[j] > starts[j]);
+  if (!stops.length) return;
+  const at = j => [boxes[j].textX + (boxes[j].x1 - boxes[j].x0) / 2, boxes[j].textY];
+  let [x, y] = at(stops[0]);
+  let hop = 0, size = 1;
+  const n = stops.findLastIndex(j => starts[j] <= t);
+  if (n < 0) {
+    hop = Math.abs(Math.sin(Math.PI * (t - S.timing.beat0) * S.timing.bpm / 60)) * .6;
+  } else if (n < stops.length - 1) {
+    const a = stops[n], b = stops[n + 1];
+    const d = Math.max(.05, Math.min(BALL_HOP, starts[b] - starts[a]));
+    const u = clamp((t - (starts[b] - d)) / d, 0, 1);
+    if (boxes[b].row !== boxes[a].row) {
+      const v = 2 * u - 1;
+      if (v < 0) { [x, y] = at(a); size = -v; }
+      else { [x, y] = at(b); size = Math.min(1, 3 * v); hop = 1 - v * v; }
+    } else {
+      const [xa, ya] = at(a);
+      const [xb, yb] = at(b);
+      [x, y] = [xa + (xb - xa) * u, ya + (yb - ya) * u];
+      hop = Math.sin(Math.PI * u) * Math.max(.4, d / BALL_HOP);
+    }
+  } else {
+    [x, y] = at(stops[n]);
+  }
+  style.setProperty('--ball-x', `${x.toFixed(1)}px`);
+  style.setProperty('--ball-y', `${y.toFixed(1)}px`);
+  style.setProperty('--ball-hop', reducedMotion ? '0' : hop.toFixed(3));
+  style.setProperty('--ball-s', size.toFixed(3));
 }
 
 // Two modes. Following docks the player and keeps the line being sung in view, whether or not the song is playing; turning it
@@ -565,8 +685,9 @@ scrub.addEventListener('input', () => seek(+scrub.value));
 async function playFromLine(sec, n) {
   if (!S.version) await switchVersion(select.value);
   const ln = S.timing?.lines.find(l => l.sec === sec && l.n === n);
-  // ▶ beside a line follows the song from there (the line is already in view)
-  if (ln) await seek(Math.max(0, ln.start - .15));
+  // ▶ beside a line follows the song from there (the line is already in view): from when it comes up, with its words' times,
+  // since a little earlier the line before may still be being sung
+  if (ln) await seek(Math.max(0, lineTimes.get(ln).starts ? lineTimes.get(ln).on : ln.start - .15));
   setFollow(true);
   await play();
 }
@@ -638,7 +759,7 @@ async function switchVersion(id) {
   versionReady = (async () => {
     S.timing = await loadTiming(v);
     const loaded = new Promise(ok => audio.addEventListener('loadedmetadata', ok, { once: true }));
-    audio.src = abs(v.audio);
+    audio.src = abs(v.audioMP3 && !audio.canPlayType('audio/mp4; codecs="mp4a.40.2"') ? v.audioMP3 : v.audio);
     await loaded;
     // (a new source starts at 0:00 anyway, but without this seek, Firefox can stall on a later seek far into a track it has
     // loaded before)

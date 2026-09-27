@@ -1192,6 +1192,56 @@ function lineAt(t) {
   return null;
 }
 
+// ---------- the words' times, for karaoke fills ----------
+// A line's `words` (from tools/word_timing.py, through make_timing.py): each word's [start, end] in centiseconds from the line's
+// start. Its words are its text split at spaces and after a hyphen or en dash inside a word, as splitWords splits it.
+const splitWords = text => String(text).split(/\s+/).filter(Boolean).flatMap(w => w.split(/(?<=[-–])(?=[A-Za-z0-9])/));
+// A line's words' times in seconds, { starts, ends }, or null if it hasn't any.
+function wordTimes(ln) {
+  if (ln._wt === undefined) {
+    ln._wt = ln.words && ln.words.length === splitWords(ln.text).length
+      ? { starts: ln.words.map(w => ln.start + w[0] / 100), ends: ln.words.map(w => ln.start + w[1] / 100) } : null;
+  }
+  return ln._wt;
+}
+// How much of `text` (a line's text as a caption draws it: its dashes tidied, say, or in capitals) is sung at t, in characters:
+// each word sung, and as much of the one being sung as its time has gone by (or, with `quick`, of that many seconds from its
+// start: captions that type each word out as it's sung). A word that isn't in the text (a trailing dash a caption drops) counts
+// for nothing. `form` turns a word into the text's form (the text's case doesn't matter). Null without the line's words' times.
+function charsSung(ln, text, t, { quick = 0, form = w => w } = {}) {
+  const w = wordTimes(ln);
+  if (!w) return null;
+  const hay = text.toLowerCase();
+  let from = 0, lit = 0;
+  splitWords(ln.text).forEach((word, i) => {
+    const needle = form(word).toLowerCase(), a = hay.indexOf(needle, from);
+    if (a < 0 || t < w.starts[i]) return;
+    from = a + needle.length;
+    const dur = quick ? Math.min(quick, w.ends[i] - w.starts[i]) : w.ends[i] - w.starts[i];
+    lit = a + needle.length * (dur > 0 ? clamp((t - w.starts[i]) / dur) : 1);
+  });
+  return lit;
+}
+// The line a karaoke caption shows at t, as { ln, on, first, last }: like lineAt, but a line with its words' times comes up as
+// the one before it finishes (its last word sung), or half a second before its own first word after a rest, so that a word held
+// into the next line's start isn't cut off; it goes when the next comes up, or `linger` seconds after its last word (`on` is
+// when it came up; `first` and `last`, when its first word starts and its last ends). A line without them is up from its start.
+let _captionLines = null;
+function captionAt(t, linger = .35) {
+  if (_captionLines?.lines !== LINES) {
+    let before = -Infinity;
+    _captionLines = { lines: LINES, list: LINES.map(ln => {
+      const w = wordTimes(ln), first = w ? w.starts[0] : ln.start, last = w ? w.ends.at(-1) : ln.end;
+      const on = w ? Math.min(first, Math.max(first - .5, before)) : ln.start;
+      before = last;
+      return { ln, on, first, last };
+    }) };
+  }
+  const L = _captionLines.list;
+  for (let i = L.length - 1; i >= 0; i--) if (L[i].on <= t) return t < Math.min(L[i + 1]?.on ?? Infinity, L[i].last + linger) ? L[i] : null;
+  return null;
+}
+
 // ---------- overlay switches (a shot may call these each frame) ----------
 let _noCaption = false, _noStamp = false, _captionStyle = null;
 const hideCaption = () => { _noCaption = true; };
@@ -3079,12 +3129,12 @@ function vignette() {
 
 // ---------- the lyric subtitle: rounded display font, member-colour outline, a member chip, karaoke fill as it's sung ----------
 function drawCaption(t) {
-  const ln = lineAt(t); if (!ln || _noCaption) return;
-  const st = _captionStyle || {};
+  const cap = captionAt(t); if (!cap || _noCaption) return;
+  const ln = cap.ln, st = _captionStyle || {};
   const mk = st.member !== undefined ? st.member : lineMember(ln), M = mk ? MEMBERS[mk] : null;
   const col = st.color ?? (M ? M.col : IP.neonPink), lt = M ? M.lt : '#FFE3F2';
   const text = ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — ');
-  const age = t - ln.start, kin = easeOut(clamp(age / .14)), kout = clamp((ln.end + .35 - t) / .18);
+  const age = t - cap.on, kin = easeOut(clamp(age / .14)), kout = clamp((cap.last + .35 - t) / .18);
   const size = st.size ?? (text.length > 44 ? 38 : 44), y = (st.y ?? 1008);
   const chip = M ? M.name : 'ATTN!', cs = size * .5, cw = textW(chip, cs, 'rammetto') + cs * 1.4;
   const tw0 = textW(text, size, 'rammetto', size * .03), maxW = 1600 - cw - 20, sx = Math.min(1, maxW / tw0), tw = tw0 * sx;
@@ -3100,9 +3150,12 @@ function drawCaption(t) {
   const tx = x0 + cw + 20 + tw / 2;
   const base = { maxW: tw0 * sx + 1, spacing: size * .03, strokes: [['rgb(24 8 44 / .9)', size * .3], [col, size * .16]], shadow: [0, size * .08, 'rgb(20 6 40 / .45)'] };
   dtext(text, tx, y, size, { ...base, fill: IP.white });
-  const prog = clamp((t - ln.start) / Math.max(.3, ln.end - ln.start - .1));
-  if (prog > 0) {
-    ctx.save(); ctx.beginPath(); ctx.rect(tx - tw / 2 - 4, y - size, (tw + 8) * prog, size * 2); ctx.clip();
+  // each word fills as it's sung, letter by letter (or, without the words' times, the line fills evenly)
+  const lit = charsSung(ln, text, t), prefix = n => textW(text.slice(0, n), size, 'rammetto', size * .03) * sx;
+  const fill = lit === null ? (tw + 8) * clamp((t - ln.start) / Math.max(.3, ln.end - ln.start - .1))
+    : lit > 0 ? 4 + lerp(prefix(Math.floor(lit)), prefix(Math.floor(lit) + 1), lit % 1) : 0;
+  if (fill > 0) {
+    ctx.save(); ctx.beginPath(); ctx.rect(tx - tw / 2 - 4, y - size, fill, size * 2); ctx.clip();
     dtext(text, tx, y, size, { maxW: base.maxW, spacing: base.spacing, grad: [IP.white, lt, lt] });
     ctx.restore();
   }
@@ -5451,7 +5504,7 @@ Object.assign(IDOL_POSES.facepalm, { hR: [.12, -.62] });
       let x = w / 2 - ws.reduce((a, b) => a + b, 0) / 2;
       row.forEach((i, j) => {
         const [word, at, col] = HOOK[i], cx = x + ws[j] / 2; x += ws[j];
-        const a = T - (ln.start + at * dur); if (a < 0) return;
+        const a = T - (wordTimes(ln)?.starts[i] ?? ln.start + at * dur); if (a < 0) return;   // (as it's sung, where the timing has the words' times)
         const s = backOut(clamp(a / .18), 2.5) * (i === 4 ? 1 + .06 * pulse(T, 6) : 1);
         ctx.save(); ctx.translate(cx, h * (r ? .66 : .3)); ctx.scale(s, s);
         dtext(word, 0, 0, size, { fill: col, strokes: [[IP.night, size * .22]] });
@@ -9558,7 +9611,7 @@ Object.assign(IDOL_POSES.facepalm, { hR: [.12, -.62] });
       let x = w / 2 - ws.reduce((a, c) => a + c, 0) / 2;
       row.forEach((i, j) => {
         const [word, at, col] = HOOK[i], cx = x + ws[j] / 2; x += ws[j];
-        const a = t - (ln0.start + at * dur); if (a < 0) return;
+        const a = t - (wordTimes(ln0)?.starts[i] ?? ln0.start + at * dur); if (a < 0) return;   // (as it's sung, where the timing has the words' times)
         const s = backOut(clamp(a / .15), 2.5) * (i === 4 ? 1 + .06 * pulse(t, 6) : 1);
         ctx.save(); ctx.translate(cx, h * (r ? .66 : .3)); ctx.scale(s, s); dtext(word, 0, 0, size, { fill: col, strokes: [[IP.night, size * .22]] }); ctx.restore();
       });

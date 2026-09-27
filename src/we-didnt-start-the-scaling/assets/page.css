@@ -700,6 +700,9 @@ button.lyric {
   &:hover, &:focus-visible { rotate: 0deg; outline: none; background: color-mix(in srgb, var(--strip), var(--yellow) 25%); }
   &:focus-visible { box-shadow: 4px 5px 0 var(--shadow), inset 0 0 0 3px var(--blue); }
 }
+/* a word of the line being sung: how much of it the karaoke themes fill, when the track has its words' times (page.mjs sets
+   the line's --line-w, how many words in, and each word's --i) */
+.line.worded .w { --w-p: clamp(0, var(--line-w, 0) - var(--i), 1); }
 /* the unfold tab: a folded sticky-note corner with + / − */
 .lyric .tab {
   flex: none;
@@ -2473,6 +2476,14 @@ button.lyric {
     box-shadow: 0 4px 0 var(--plum), 0 0 0 5px color-mix(in srgb, var(--m) 40%, transparent), 0 0 26px var(--m);
     &::before { visibility: visible; }
   }
+  /* with its words' times, it reaches each word as it's sung, and a card that wraps fills row by row: the rows sung, then the
+     row being sung, in its band of the card (page.mjs sets --row-top and --row-h) */
+  .line.now.worded .lyric {
+    background:
+      linear-gradient(var(--m-lt), var(--m-lt)) 0 0 / 100% var(--row-top) no-repeat,
+      linear-gradient(90deg, var(--m-lt) 50%, transparent 50%) calc((1 - var(--line-p, 0)) * 100%) var(--row-top) / 200% var(--row-h) no-repeat,
+      var(--card);
+  }
   .from-here {
     border: 2px solid var(--m-dk);
     background: var(--card);
@@ -2548,6 +2559,12 @@ button.lyric {
       box-shadow: 0 0 28px var(--hue);
       scale: 1.02;
       &::before { background: var(--rainbow); color: rgb(43 24 56); box-shadow: 0 0 0 2px white; }
+    }
+    .line.now.worded .lyric {
+      background:
+        linear-gradient(90deg, rgb(255 140 200), rgb(214 196 255) 50%, rgb(150 240 255)) 0 0 / 100% var(--row-top) no-repeat,
+        linear-gradient(90deg, rgb(255 140 200), rgb(214 196 255) 25%, rgb(150 240 255) 50%, transparent 50%) calc((1 - var(--line-p, 0)) * 100%) var(--row-top) / 200% var(--row-h) no-repeat,
+        rgb(255 255 255 / 82%);
     }
     .lyric .tab { width: 1.6rem; height: 1.6rem; background: var(--toki-lt); color: rgb(43 24 56); }
     .from-here { background: rgb(255 255 255 / 12%); border-color: rgb(255 255 255 / 60%); color: white; opacity: .8; }
@@ -3036,6 +3053,9 @@ button.lyric {
       background-clip: text;
       color: transparent;
       @media (prefers-color-scheme: dark) { background-image: linear-gradient(90deg, rgb(255 150 190) 50%, var(--ink) 50%); }
+      /* with its words' times, each word fills in turn as it's sung, so that a wrapped line fills row by row */
+      .worded & { background-size: 0 0; }
+      .worded & .w { background: inherit; background-size: 200% 100%; background-position-x: calc((1 - var(--w-p)) * 100%); }
     }
   }
   .from-here {
@@ -3122,7 +3142,8 @@ button.lyric {
       color: rgb(38 48 90);
       text-shadow: none;
       box-shadow: 0 0 0 3px rgb(255 211 107 / 45%), 0 0 26px rgb(255 211 107 / 80%);
-      .lyric-text { background: none; color: inherit; }
+      /* the words fill deep pink as they're sung, as the verses' do (on the gold card in either colour scheme) */
+      .lyric-text { background-image: linear-gradient(90deg, rgb(200 20 96) 50%, rgb(38 48 90) 50%); }
       &::before { background: rgb(214 140 0); }
     }
     .from-here { border-color: white; background: rgb(255 255 255 / 55%); color: var(--navy); }
@@ -3646,7 +3667,8 @@ button.lyric {
     border-radius: 999px 12px 12px 999px;
     background: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0) 50%), linear-gradient(90deg, var(--ultra), var(--uv));
     color: white;
-    font: clamp(.98rem, 2.1vw, 1.1rem)/1.3 var(--heavy);
+    /* (the leading leaves the karaoke ball room above each row of a wrapped line) */
+    font: clamp(.98rem, 2.1vw, 1.1rem)/1.5 var(--heavy);
     text-shadow: 0 1px 0 rgb(0 0 60 / 60%);
     clip-path: none;
     rotate: 0deg;
@@ -3716,16 +3738,33 @@ button.lyric {
       color: transparent;
       text-shadow: none;
       &::after {
+        /* the ball, sized to the words, rests just above the capitals of the row it's on: half the row's leading and the
+           font's ascent over its capitals down from the row's top */
+        --ball: max(.6rem, .42em);
         content: "";
         position: absolute;
-        left: calc(var(--line-p, 0) * 100% - .3rem);
-        top: -.62rem;
-        width: .6rem;
+        /* (over the singer's chip, which it can pass under at the line's start) */
+        z-index: 1;
+        left: calc(var(--line-p, 0) * 100% - var(--ball) / 2);
+        top: calc((1lh - 1em) / 2 - .04em - var(--ball));
+        width: var(--ball);
         aspect-ratio: 1;
         border-radius: 50%;
         background: radial-gradient(circle at 35% 30%, white 0 18%, var(--cyan) 55%, rgb(0 90 140));
         box-shadow: 0 0 6px var(--cyan);
         animation: eurodance-ball-y calc(30s / 141) ease-out infinite alternate;
+      }
+      /* with its words' times, each word fills in turn as it's sung (a wrapped line fills row by row), and the ball hops from
+         each word to the next, landing as it's sung (page.mjs sets --ball-x, --ball-y and --ball-hop) */
+      .worded & {
+        background-size: 0 0;
+        .w { background: inherit; background-size: 200% 100%; background-position-x: calc((1 - var(--w-p)) * 100%); }
+        &::after {
+          left: 0;
+          translate: calc(var(--ball-x, 0px) - var(--ball) / 2) calc(var(--ball-y, 0px) - var(--ball-hop, 0) * 1.4 * var(--ball));
+          scale: var(--ball-s, 1);
+          animation: none;
+        }
       }
     }
     .tab { background: radial-gradient(circle at 35% 30%, white, var(--cyan) 60%, rgb(0 120 150)); }
@@ -3801,7 +3840,7 @@ button.lyric {
       border-radius: 6px;
       background: none;
       color: white;
-      font: clamp(1.25rem, 3vw, 1.95rem)/1.2 var(--display);
+      font: clamp(1.25rem, 3vw, 1.95rem)/1.45 var(--display);
       font-style: italic;
       text-transform: none;
       text-shadow: var(--edge);
@@ -3822,8 +3861,10 @@ button.lyric {
       background: rgb(8 4 24 / 88%);
       box-shadow: 0 0 0 2px var(--magenta), 0 0 26px rgb(255 31 163 / 70%);
       scale: 1.02;
-      &::after { content: "SOFTMAX"; left: .5rem; background: var(--magenta); color: white; }
+      /* (at the line's start, on phones too: a chorus line has no date stamp to make way for) */
+      &::after { content: "SOFTMAX"; left: .5rem; right: auto; background: var(--magenta); color: white; }
       .lyric-text { background: linear-gradient(90deg, rgb(255 110 200) 50%, white 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%; background-clip: text; -webkit-text-stroke: 0; filter: none; }
+      .worded & .lyric-text { background-size: 0 0; }
       .tab { background: radial-gradient(circle at 35% 30%, white, var(--magenta) 60%, rgb(120 0 70)); }
       .lyric-text::after { background: radial-gradient(circle at 35% 30%, white 0 18%, var(--magenta) 55%, rgb(120 0 70)); box-shadow: 0 0 6px var(--magenta); }
     }

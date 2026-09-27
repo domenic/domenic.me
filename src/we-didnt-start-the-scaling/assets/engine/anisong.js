@@ -1192,6 +1192,56 @@ function lineAt(t) {
   return null;
 }
 
+// ---------- the words' times, for karaoke fills ----------
+// A line's `words` (from tools/word_timing.py, through make_timing.py): each word's [start, end] in centiseconds from the line's
+// start. Its words are its text split at spaces and after a hyphen or en dash inside a word, as splitWords splits it.
+const splitWords = text => String(text).split(/\s+/).filter(Boolean).flatMap(w => w.split(/(?<=[-–])(?=[A-Za-z0-9])/));
+// A line's words' times in seconds, { starts, ends }, or null if it hasn't any.
+function wordTimes(ln) {
+  if (ln._wt === undefined) {
+    ln._wt = ln.words && ln.words.length === splitWords(ln.text).length
+      ? { starts: ln.words.map(w => ln.start + w[0] / 100), ends: ln.words.map(w => ln.start + w[1] / 100) } : null;
+  }
+  return ln._wt;
+}
+// How much of `text` (a line's text as a caption draws it: its dashes tidied, say, or in capitals) is sung at t, in characters:
+// each word sung, and as much of the one being sung as its time has gone by (or, with `quick`, of that many seconds from its
+// start: captions that type each word out as it's sung). A word that isn't in the text (a trailing dash a caption drops) counts
+// for nothing. `form` turns a word into the text's form (the text's case doesn't matter). Null without the line's words' times.
+function charsSung(ln, text, t, { quick = 0, form = w => w } = {}) {
+  const w = wordTimes(ln);
+  if (!w) return null;
+  const hay = text.toLowerCase();
+  let from = 0, lit = 0;
+  splitWords(ln.text).forEach((word, i) => {
+    const needle = form(word).toLowerCase(), a = hay.indexOf(needle, from);
+    if (a < 0 || t < w.starts[i]) return;
+    from = a + needle.length;
+    const dur = quick ? Math.min(quick, w.ends[i] - w.starts[i]) : w.ends[i] - w.starts[i];
+    lit = a + needle.length * (dur > 0 ? clamp((t - w.starts[i]) / dur) : 1);
+  });
+  return lit;
+}
+// The line a karaoke caption shows at t, as { ln, on, first, last }: like lineAt, but a line with its words' times comes up as
+// the one before it finishes (its last word sung), or half a second before its own first word after a rest, so that a word held
+// into the next line's start isn't cut off; it goes when the next comes up, or `linger` seconds after its last word (`on` is
+// when it came up; `first` and `last`, when its first word starts and its last ends). A line without them is up from its start.
+let _captionLines = null;
+function captionAt(t, linger = .35) {
+  if (_captionLines?.lines !== LINES) {
+    let before = -Infinity;
+    _captionLines = { lines: LINES, list: LINES.map(ln => {
+      const w = wordTimes(ln), first = w ? w.starts[0] : ln.start, last = w ? w.ends.at(-1) : ln.end;
+      const on = w ? Math.min(first, Math.max(first - .5, before)) : ln.start;
+      before = last;
+      return { ln, on, first, last };
+    }) };
+  }
+  const L = _captionLines.list;
+  for (let i = L.length - 1; i >= 0; i--) if (L[i].on <= t) return t < Math.min(L[i + 1]?.on ?? Infinity, L[i].last + linger) ? L[i] : null;
+  return null;
+}
+
 // ---------- overlay switches (a shot may call these each frame) ----------
 let _noCaption = false, _noStamp = false, _captionStyle = null;
 const hideCaption = () => { _noCaption = true; };
@@ -2127,19 +2177,20 @@ function vignette() {
   g.addColorStop(0, 'rgb(90 60 140 / 0)'); g.addColorStop(1, 'rgb(90 60 140 / .22)');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
 }
-// ---------- the karaoke subtitle: white lettering with a navy rim and a soft glow; the sung part fills pink (verses) / gold (choruses) ----------
+// ---------- the karaoke subtitle: white lettering with a navy rim and a soft glow; the sung part fills pink (verses) / gold (choruses), a letter at a time ----------
 function drawCaption(t) {
-  const ln = lineAt(t); if (!ln || _noCaption) return;
-  const st = _captionStyle || {};
+  const cap = captionAt(t); if (!cap || _noCaption) return;
+  const ln = cap.ln, st = _captionStyle || {};
   const text = ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — ');
-  const age = t - ln.start, kin = easeOut(clamp(age / .16)), kout = clamp((ln.end + .35 - t) / .2);
+  const age = t - cap.on, kin = easeOut(clamp(age / .16)), kout = clamp((cap.last + .35 - t) / .2);
   const chorus = ln.sec[0] !== 'V', size = st.size ?? (text.length > 44 ? 40 : 46), y = st.y ?? 1004, font = 'Archivo Black';
   ctx.save(); ctx.globalAlpha = kin * kout;
   ctx.font = `${size}px "${font}"`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
   const sp_ = size * .02, chars = [...text], ws = chars.map(c => ctx.measureText(c).width), tw0 = ws.reduce((a, b) => a + b, 0) + sp_ * chars.length;
   const sx = Math.min(1, 1640 / tw0), tw = tw0 * sx, x0 = W / 2 - tw / 2;
   ctx.translate(x0, y + (1 - kin) * 16); ctx.scale(sx, 1);
-  const prog = clamp((t - ln.start) / Math.max(.4, ln.end - ln.start - .15)), lit = prog * chars.length;
+  // each word fills as it's sung (or, without the words' times, the line fills evenly)
+  const lit = charsSung(ln, text, t) ?? clamp((t - ln.start) / Math.max(.4, ln.end - ln.start - .15)) * chars.length;
   const col = st.col ?? (chorus ? ['#FFE07A', '#FF9A4A'] : ['#FFB0D0', '#FF5A9A']);
   const draw = pass => {
     let x = 0;

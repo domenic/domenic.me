@@ -1192,6 +1192,56 @@ function lineAt(t) {
   return null;
 }
 
+// ---------- the words' times, for karaoke fills ----------
+// A line's `words` (from tools/word_timing.py, through make_timing.py): each word's [start, end] in centiseconds from the line's
+// start. Its words are its text split at spaces and after a hyphen or en dash inside a word, as splitWords splits it.
+const splitWords = text => String(text).split(/\s+/).filter(Boolean).flatMap(w => w.split(/(?<=[-–])(?=[A-Za-z0-9])/));
+// A line's words' times in seconds, { starts, ends }, or null if it hasn't any.
+function wordTimes(ln) {
+  if (ln._wt === undefined) {
+    ln._wt = ln.words && ln.words.length === splitWords(ln.text).length
+      ? { starts: ln.words.map(w => ln.start + w[0] / 100), ends: ln.words.map(w => ln.start + w[1] / 100) } : null;
+  }
+  return ln._wt;
+}
+// How much of `text` (a line's text as a caption draws it: its dashes tidied, say, or in capitals) is sung at t, in characters:
+// each word sung, and as much of the one being sung as its time has gone by (or, with `quick`, of that many seconds from its
+// start: captions that type each word out as it's sung). A word that isn't in the text (a trailing dash a caption drops) counts
+// for nothing. `form` turns a word into the text's form (the text's case doesn't matter). Null without the line's words' times.
+function charsSung(ln, text, t, { quick = 0, form = w => w } = {}) {
+  const w = wordTimes(ln);
+  if (!w) return null;
+  const hay = text.toLowerCase();
+  let from = 0, lit = 0;
+  splitWords(ln.text).forEach((word, i) => {
+    const needle = form(word).toLowerCase(), a = hay.indexOf(needle, from);
+    if (a < 0 || t < w.starts[i]) return;
+    from = a + needle.length;
+    const dur = quick ? Math.min(quick, w.ends[i] - w.starts[i]) : w.ends[i] - w.starts[i];
+    lit = a + needle.length * (dur > 0 ? clamp((t - w.starts[i]) / dur) : 1);
+  });
+  return lit;
+}
+// The line a karaoke caption shows at t, as { ln, on, first, last }: like lineAt, but a line with its words' times comes up as
+// the one before it finishes (its last word sung), or half a second before its own first word after a rest, so that a word held
+// into the next line's start isn't cut off; it goes when the next comes up, or `linger` seconds after its last word (`on` is
+// when it came up; `first` and `last`, when its first word starts and its last ends). A line without them is up from its start.
+let _captionLines = null;
+function captionAt(t, linger = .35) {
+  if (_captionLines?.lines !== LINES) {
+    let before = -Infinity;
+    _captionLines = { lines: LINES, list: LINES.map(ln => {
+      const w = wordTimes(ln), first = w ? w.starts[0] : ln.start, last = w ? w.ends.at(-1) : ln.end;
+      const on = w ? Math.min(first, Math.max(first - .5, before)) : ln.start;
+      before = last;
+      return { ln, on, first, last };
+    }) };
+  }
+  const L = _captionLines.list;
+  for (let i = L.length - 1; i >= 0; i--) if (L[i].on <= t) return t < Math.min(L[i + 1]?.on ?? Infinity, L[i].last + linger) ? L[i] : null;
+  return null;
+}
+
 // ---------- overlay switches (a shot may call these each frame) ----------
 let _noCaption = false, _noStamp = false, _captionStyle = null;
 const hideCaption = () => { _noCaption = true; };
@@ -1260,8 +1310,8 @@ OVERLAYS.push((t, s) => {
 
 ;
 // ---- styles/eurodance/karaoke.js ----
-// karaoke.js: word timings of the eurodance take (music/suno/eurodance-2.words.json, whisper alignment), for the karaoke wipe.
-// Regenerate if the take's alignment changes; kit.js matches these words to the lyric lines at load and interpolates any it can't match.
+// karaoke.js: whisper's word timings of the eurodance take (music/suno/eurodance-2.words.json), for what's sung that the lyrics don't
+// have (the stutters and ad-libs some shots are timed to), and a fallback for the karaoke wipe of a line without the timing's words.
 const KARAOKE_WORDS = [[12.08,12.26,"We"],[12.26,12.82,"didn't"],[12.82,13.56,"preordain"],[13.56,13.66,"it,"],[13.66,13.78,"but"],[13.78,14.04,"we"],[14.04,14.62,"can't"],[14.62,15.08,"contain"],[15.08,15.12,"it!"],[30.12,30.62,"attention"],[30.62,31.10,"lit"],[31.10,31.26,"the"],[31.26,31.48,"fuse"],[31.48,32.12,"Scaling"],[32.12,32.36,"laws"],[32.36,32.60,"you"],[32.60,32.86,"can't"],[32.86,33.24,"refuse"],[33.24,33.72,"Grun"],[33.72,33.86,"said"],[33.86,34.14,"stack"],[34.14,34.32,"the"],[34.32,34.60,"compute"],[34.60,34.90,"high"],[34.90,35.34,"Few"],[35.34,35.56,"shot"],[35.56,35.94,"learners"],[35.94,36.38,"multiply"],[36.38,36.88,"Chat"],[36.88,37.52,"GPT"],[37.52,38.08,"overnight"],[38.08,39.10,"Sidney's"],[39.10,39.26,"chats"],[39.26,39.48,"gave"],[39.48,39.88,"Rusev"],[39.88,40.10,"fright"],[40.10,40.50,"Six"],[40.50,40.76,"month"],[40.76,41.06,"pause"],[41.06,41.22,"went"],[41.22,41.54,"nowhere"],[41.54,41.92,"fast"],[41.92,42.68,"LEAs"],[42.68,42.96,"are"],[42.96,43.16,"shut"],[43.16,43.26,"it"],[43.26,43.38,"down"],[43.38,43.62,"blast"],[43.62,44.00,"Sam"],[44.00,44.20,"got"],[44.20,44.66,"fired"],[44.66,44.88,"then"],[44.88,45.50,"rehired"],[45.50,45.88,"weekend"],[45.88,46.30,"chaos"],[46.30,46.62,"board"],[46.62,47.10,"expired"],[47.10,47.62,"alias"],[47.62,47.88,"saw"],[47.88,48.16,"what"],[48.16,48.48,"alias"],[48.48,48.76,"saw"],[48.76,49.28,"eu"],[49.28,49.66,"writes"],[49.66,49.82,"the"],[49.82,50.08,"ai"],[50.08,50.46,"lord"],[50.46,50.88,"strawberry"],[50.88,51.28,"thinks"],[51.28,51.76,"link"],[51.76,51.94,"by"],[51.94,52.26,"link"],[52.26,52.66,"news"],[52.66,52.84,"and"],[52.84,53.36,"vetoes"],[53.36,53.64,"doesn't"],[53.64,53.88,"blink"],[53.88,54.60,"hinton"],[54.60,54.80,"takes"],[54.80,55.00,"his"],[55.00,55.32,"medals"],[55.32,55.96,"scolds"],[55.96,56.20,"demis"],[56.20,56.44,"wins"],[56.44,56.74,"for"],[56.74,57.12,"protein"],[57.12,57.50,"folds"],[57.50,58.08,"we"],[58.08,58.48,"didn't"],[58.48,58.66,"start"],[58.66,58.86,"the"],[58.86,59.30,"scaling"],[59.30,60.00,"it"],[60.00,60.18,"was"],[60.18,60.58,"always"],[60.58,61.00,"training"],[61.00,62.12,"and"],[62.12,62.28,"the"],[62.28,62.76,"curves"],[62.76,63.58,"kept"],[63.58,64.28,"gaining"],[64.28,64.92,"we"],[64.92,65.34,"didn't"],[65.34,65.58,"start"],[65.58,66.04,"scaling"],[66.04,66.46,"no"],[66.46,66.62,"we"],[66.62,67.12,"didn't"],[67.12,67.34,"pre"],[67.34,67.74,"-ordain"],[67.74,68.20,"it"],[68.20,69.02,"but"],[69.02,69.22,"we"],[69.22,70.12,"can't"],[70.12,70.86,"contain"],[70.86,71.46,"it"],[72.20,72.84,"Deep,"],[72.98,73.34,"deep,"],[73.40,73.72,"deep,"],[73.94,74.10,"deep,"],[74.20,74.30,"deep,"],[74.40,74.54,"deep,"],[74.66,74.72,"deep,"],[74.72,74.90,"deep"],[74.90,75.24,"New"],[75.24,75.68,"Year's"],[75.68,76.00,"ticker"],[76.00,76.16,"shock"],[76.16,76.58,"Half"],[76.58,76.90,"a"],[76.90,77.22,"trillion"],[77.22,77.78,"Stargate"],[77.78,78.10,"talk"],[78.10,78.42,"Hit"],[78.42,78.74,"accept"],[78.74,79.08,"or"],[79.08,79.32,"never"],[79.32,79.76,"ask"],[79.76,80.46,"MCP"],[80.46,80.76,"for"],[80.76,81.08,"every"],[81.08,81.52,"task"],[81.52,81.90,"Sucks"],[81.90,82.12,"nine"],[82.12,82.40,"-figure"],[82.40,82.80,"poaching"],[82.80,83.14,"spree"],[83.14,84.24,"Superintelligence"],[84.24,84.44,"by"],[84.44,84.90,"three"],[84.90,85.58,"Kroko's"],[85.58,85.78,"mecha"],[85.78,86.10,"Hitler"],[86.10,86.40,"mode"],[86.40,86.84,"Two"],[86.84,87.06,"labs"],[87.06,87.24,"win"],[87.24,87.66,"Olympia"],[87.66,87.90,"gold"],[87.90,88.72,"GPT"],[88.72,88.90,"-5"],[88.90,89.20,"breaks"],[89.20,89.44,"4"],[89.44,89.62,"-0"],[89.62,89.94,"hearts"],[89.94,90.36,"Nano"],[90.36,90.90,"-banana"],[90.90,91.18,"tops"],[91.18,91.48,"the"],[91.48,91.80,"charts"],[91.80,92.38,"Billion"],[92.38,92.56,"-five"],[92.56,93.16,"anthropics"],[93.16,93.42,"prize"],[93.42,93.98,"Jankowski"],[93.98,94.32,"drops,"],[94.46,94.76,"everyone"],[94.76,95.14,"dies"],[95.14,95.70,"Clank"],[95.70,95.82,"a"],[95.82,95.98,"spat"],[95.98,96.24,"in"],[96.24,96.60,"every"],[96.60,97.00,"screed"],[97.00,97.40,"Sora"],[97.40,97.68,"slop"],[97.68,97.96,"in"],[97.96,98.30,"every"],[98.30,98.62,"fee"],[98.62,99.06,"Jan"],[99.06,99.34,"LeCun"],[99.34,99.70,"quits"],[99.70,100.34,"metastage"],[100.34,100.78,"Bubble"],[100.78,101.06,"screams"],[101.06,101.36,"the"],[101.36,101.60,"business"],[101.60,102.06,"page"],[102.06,102.60,"We"],[102.60,103.12,"didn't"],[103.12,103.34,"stop"],[103.34,103.52,"the"],[103.52,103.88,"scaling"],[103.88,104.50,"It"],[104.50,104.84,"was"],[104.84,105.20,"always"],[105.20,105.68,"trading"],[105.68,106.76,"And"],[106.76,106.88,"the"],[106.88,107.36,"curves"],[107.36,107.98,"kept"],[107.98,108.88,"gaining"],[108.88,109.54,"We"],[109.54,109.94,"didn't"],[109.94,110.12,"stop"],[110.12,110.58,"scaling"],[110.58,111.08,"No,"],[111.10,111.22,"we"],[111.22,111.70,"didn't"],[111.70,112.36,"preordain"],[112.36,112.82,"it"],[112.82,113.36,"But"],[113.36,113.70,"we"],[113.70,114.70,"can't"],[114.70,115.42,"contain"],[115.42,116.04,"it"],[116.04,116.68,"Moat,"],[116.70,116.84,"moat,"],[116.84,117.08,"moat,"],[117.08,117.30,"moat,"],[117.32,117.40,"moat"],[117.40,117.64,"book"],[117.64,118.00,"No"],[118.00,118.46,"humans"],[118.46,118.86,"allowed"],[118.86,119.38,"Open"],[119.38,119.58,"claw,"],[119.66,119.76,"the"],[119.76,120.24,"lobster's"],[120.24,120.46,"proud"],[120.46,120.98,"Mythos"],[120.98,121.32,"preview,"],[121.48,121.62,"slips,"],[121.74,121.92,"it's"],[121.92,122.16,"jail"],[122.16,122.76,"Sandwich"],[122.76,122.96,"in"],[122.96,123.08,"the"],[123.08,123.34,"park,"],[123.44,123.52,"new"],[123.52,123.88,"mail"],[123.88,124.34,"Fable"],[124.34,124.58,"5,"],[124.76,124.94,"who's"],[124.94,125.08,"not"],[125.08,125.20,"a"],[125.20,125.46,"fan?"],[125.72,126.18,"Lutnick's"],[126.18,126.40,"letter,"],[126.46,126.80,"export"],[126.80,127.20,"ban"],[127.20,127.68,"Dark"],[127.68,127.80,"for"],[127.80,128.02,"19"],[128.02,128.54,"days"],[128.54,128.72,"and"],[128.72,128.96,"then"],[128.96,129.28,"Come"],[129.28,129.62,"July,"],[129.72,130.00,"it's"],[130.00,130.20,"back"],[130.20,130.54,"again"],[130.54,130.86,"Who"],[130.86,131.08,"hacked?"],[131.16,131.60,"Huggin'"],[131.60,131.72,"face,"],[131.92,132.20,"unknown"],[132.20,132.86,"Sam's"],[132.86,133.00,"own"],[133.00,133.34,"agents,"],[133.46,133.58,"on"],[133.58,133.80,"their"],[133.80,134.12,"own"],[134.12,134.44,"Gnome"],[134.44,134.64,"brown"],[134.64,135.10,"hedges,"],[135.16,135.42,"every"],[135.42,135.72,"bet"],[135.72,136.08,"No"],[136.08,136.74,"millennium"],[136.74,137.04,"prizes"],[137.04,137.42,"yet"],[137.42,138.00,"Mythos"],[138.00,138.22,"might"],[138.22,138.46,"be"],[138.46,139.16,"misaligned"],[139.16,139.54,"Jeff"],[139.54,139.70,"let"],[139.70,139.92,"Google"],[139.92,140.34,"just"],[140.34,140.58,"in"],[140.58,140.92,"time"],[140.92,141.32,"Claude"],[141.32,141.70,"disproved"],[141.70,142.38,"Jacobian"],[142.38,142.80,"Gwern"],[142.80,143.12,"gave"],[143.12,143.42,"up"],[143.42,143.54,"his"],[143.54,144.20,"pseudonym"],[144.20,144.96,"Pseudonym"],[144.96,145.22,"We"],[145.22,145.70,"didn't"],[145.70,145.90,"start"],[145.90,146.06,"the"],[146.06,146.50,"scaling"],[146.50,147.10,"It"],[147.10,147.38,"was"],[147.38,147.76,"always"],[147.76,148.18,"training"],[148.18,149.26,"And"],[149.26,149.44,"the"],[149.44,150.00,"curves"],[150.00,150.48,"kept"],[150.48,151.50,"gaining"],[151.50,152.02,"We"],[152.02,152.48,"didn't"],[152.48,152.70,"start"],[152.70,152.88,"the"],[152.88,153.32,"scaling"],[153.32,153.76,"No,"],[153.76,153.80,"we"],[153.80,154.16,"didn't"],[154.16,154.88,"preordain"],[154.88,155.26,"it"],[155.26,156.04,"But"],[156.04,156.26,"we"],[156.26,156.94,"can't"],[156.94,158.10,"contain"],[158.10,159.18,"it"],[159.80,160.16,"Oh"],[160.16,160.68,"my"],[160.68,162.06,"god,"],[162.10,162.24,"a"],[162.24,162.58,"message"],[162.58,162.90,"board"],[162.90,163.26,"All"],[163.26,163.48,"that"],[163.48,163.82,"hacking"],[163.82,164.08,"for"],[164.08,164.46,"reward"],[164.46,165.04,"Jensen"],[165.04,165.38,"buys"],[165.38,165.56,"the"],[165.56,165.74,"crime"],[165.74,166.00,"scene,"],[166.06,166.22,"why?"],[166.52,166.80,"Brockman,"],[166.90,167.20,"welcome"],[167.20,167.76,"AGI"],[167.76,168.36,"Navy"],[168.36,168.54,"of"],[168.54,168.78,"Stokes"],[168.78,168.94,"blows"],[168.94,169.20,"up"],[169.20,169.40,"in"],[169.40,169.64,"lean"],[169.64,169.96,"Who"],[169.96,170.12,"was"],[170.12,170.32,"first"],[170.32,170.60,"12"],[170.60,170.90,"hours"],[170.90,171.22,"between?"],[171.58,171.80,"Dario"],[171.80,172.42,"Pace"],[172.42,172.52,"the"],[172.52,172.92,"frontier"],[172.92,173.42,"Sam"],[173.42,173.60,"and"],[173.60,173.80,"Elon"],[173.80,174.26,"both"],[174.26,174.48,"Here,"],[174.54,174.72,"here"],[174.72,175.16,"Trump's"],[175.16,175.22,"the"],[175.22,175.70,"guardrail,"],[175.74,175.90,"high"],[175.90,176.24,"IQ"],[176.24,176.92,"Bernie,"],[176.96,177.36,"Bannon,"],[177.40,177.62,"Cher,"],[177.70,177.84,"or"],[177.84,178.02,"Pew"],[178.02,178.50,"Claude"],[178.50,178.68,"builds"],[178.68,178.94,"Claude,"],[178.96,179.06,"now"],[179.06,179.30,"one"],[179.30,179.44,"in"],[179.44,179.66,"four"],[179.66,180.32,"Chatbot"],[180.32,180.58,"nearly"],[180.58,180.96,"starts"],[180.96,181.18,"a"],[181.18,181.40,"war"],[181.40,181.92,"Trump,"],[181.92,182.08,"it's"],[182.08,182.34,"super"],[182.34,182.64,"by"],[182.64,182.92,"decree"],[183.44,183.96,"Artificial,"],[184.06,184.36,"fake"],[184.36,184.52,"to"],[184.52,184.68,"me"],[184.68,185.22,"Ten"],[185.22,185.44,"days"],[185.44,185.74,"after"],[185.74,186.08,"pace"],[186.08,186.22,"of"],[186.22,186.52,"pride,"],[186.74,187.08,"Opus"],[187.08,187.28,"5"],[187.28,187.90,".5"],[187.90,188.56,"Hi"],[188.56,189.10,"guys"],[190.12,190.72,"We"],[190.72,191.32,"didn't"],[191.32,191.56,"start"],[191.56,191.72,"the"],[191.72,192.14,"scaling,"],[192.42,192.82,"it"],[192.82,193.06,"was"],[193.06,193.40,"always"],[193.40,193.96,"training"],[193.96,194.82,"And"],[194.82,195.10,"the"],[195.10,195.54,"curves"],[195.54,196.14,"kept"],[196.14,197.08,"gaining,"],[197.36,197.66,"we"],[197.66,198.08,"didn't"],[198.08,198.32,"start"],[198.32,198.48,"the"],[198.48,198.76,"scaling"],[198.76,199.14,"Now"],[199.14,199.30,"we"],[199.30,199.56,"swear"],[199.56,199.78,"we'll"],[199.78,200.02,"try"],[200.02,200.18,"to"],[200.18,200.46,"pace"],[200.46,200.74,"it,"],[200.88,201.58,"but"],[201.58,201.88,"we'd"],[201.88,202.40,"rather"],[202.40,203.68,"race"],[203.68,204.00,"it"],[204.00,204.32,"We"],[204.32,204.78,"didn't"],[204.78,205.04,"start"],[205.04,205.24,"the"],[205.24,205.90,"scaling"],[207.48,208.08,"But"],[208.08,208.34,"when"],[208.34,208.58,"we"],[208.58,208.84,"log"],[208.84,209.20,"off,"],[209.34,209.82,"will"],[209.82,210.02,"it"],[210.02,210.20,"still"],[210.20,210.58,"train"],[210.58,210.94,"on?"],[210.94,211.14,"And"],[211.14,211.44,"on,"],[211.54,211.84,"and"],[211.84,212.22,"on,"],[212.38,212.68,"and"],[212.68,213.22,"on,"],[213.22,213.50,"and"],[213.50,214.30,"on"],[218.62,219.22,"And"],[219.22,219.82,"on,"],[219.84,219.98,"and"],[219.98,220.24,"on,"],[220.70,222.10,"and"],[222.10,222.50,"on"]];
 
 ;
@@ -2820,7 +2870,24 @@ const _kText = s => String(s).replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' 
 const _kNorm = w => String(w).toLowerCase().replace(/[^a-z0-9]/g, '');
 function _karaTimes(ln) {
   if (ln._kt) return ln._kt;
-  const words = _kText(ln.text).split(' '), src = (typeof KARAOKE_WORDS !== 'undefined' ? KARAOKE_WORDS : []).filter(w => w[0] >= ln.start - .25 && w[0] < ln.end + .05);
+  const words = _kText(ln.text).split(' ');
+  // the line's words' times from the take's forced alignment (timing.js), gathered into the caption's words (which the timing
+  // splits finer: "shut-", "it-", "down" are one here)
+  const wt = wordTimes(ln);
+  if (wt) {
+    const parts = splitWords(ln.text);
+    let j = 0, ok = true;
+    const tm = words.map(w => {
+      const s0 = wt.starts[j];
+      let got = '', s1 = s0;
+      while (j < parts.length && got.length < w.length) { got += parts[j]; s1 = wt.ends[j]; j++; }
+      ok &&= got === w;
+      return [s0, s1];
+    });
+    if (ok) return (ln._kt = { words, tm });
+  }
+  // else whisper's words (karaoke.js), matched to the line's, and the rest shared out by length
+  const src = (typeof KARAOKE_WORDS !== 'undefined' ? KARAOKE_WORDS : []).filter(w => w[0] >= ln.start - .25 && w[0] < ln.end + .05);
   const tm = words.map(() => null); let j = 0;
   words.forEach((w, i) => { const d = _kNorm(w); if (!d) return; for (let q = j; q < Math.min(src.length, j + 4); q++) { const c = _kNorm(src[q][2]); if (c && (c === d || (c.length >= 3 && d.startsWith(c)) || (d.length >= 3 && c.startsWith(d)))) { tm[i] = [src[q][0], src[q][1]]; j = q + 1; break; } } });
   if (!tm[0]) tm[0] = [ln.start, null];
@@ -2856,8 +2923,15 @@ function karaokeLine(ln, t, o = {}) {
   const ctr = i => tx + (xs[i][0] + xs[i][1]) / 2, by = y - size * .78;
   let bx, bh;
   if (wi < 0) { bx = ctr(0); bh = Math.abs(Math.sin(bpOf(t) * Math.PI)) * 30; }
-  else if (wi < words.length - 1) { const s0 = tm[wi][0], s1 = tm[wi + 1][0], u = clamp((t - s0) / Math.max(.05, s1 - s0)); bx = lerp(ctr(wi), ctr(wi + 1), u); bh = Math.sin(u * Math.PI) * Math.min(46, 16 + (s1 - s0) * 60); }
-  else { const u = clamp((t - tm[wi][0]) / .35); bx = ctr(wi) + u * 30; bh = Math.sin(clamp(u) * Math.PI) * 20; }
+  else if (wi < words.length - 1) {
+    // as a sing-along's (and the page's) does, it sits on each word while it's sung, then hops to the next in at most .3 s, landing
+    // as that one starts (hopping over a dash, which isn't sung)
+    const nx = words.findIndex((w, i) => i > wi && w !== '—'), to = nx < 0 ? wi + 1 : nx;
+    const s1 = tm[to][0], d = Math.max(.05, Math.min(.3, s1 - tm[wi][0])), u = clamp((t - (s1 - d)) / d);
+    bx = lerp(ctr(wi), ctr(to), u); bh = Math.sin(u * Math.PI) * (16 + d * 100);
+  }
+  // and on the last word it rests, until it fades as the word ends
+  else { bx = ctr(wi); bh = 0; }
   const fade = wi >= words.length - 1 ? 1 - clamp((t - tm[words.length - 1][1]) / .3) : 1;
   if (fade > 0) { ctx.globalAlpha *= fade; ctx.fillStyle = 'rgb(0 0 20 / .35)'; ell(bx, by + 12, 12, 4); ctx.fill(); glossBall(bx, by - bh, 12, 12 * (bh < 3 ? .8 : 1), S.col, { lw: 2.5, rim: null }); }
   ctx.restore();
@@ -2865,15 +2939,17 @@ function karaokeLine(ln, t, o = {}) {
 function _karaoke(t) {
   if (_noCaption) return;
   const st = _captionStyle || {}, beat = beatLen();
+  // (when each line's singing starts and ends: its first word's start and last word's end, where the timing has its words)
+  const A = ln => ln && (wordTimes(ln)?.starts[0] ?? ln.start), B = ln => ln && (wordTimes(ln)?.ends.at(-1) ?? ln.end);
   let cur = null, dots = 0;
   for (let i = 0; i < LINES.length; i++) {
-    const ln = LINES[i], prev = LINES[i - 1], next = LINES[i + 1], gap = prev ? ln.start - prev.end : 99, pre = gap > 1.8 ? Math.min(4 * beat, gap - .4) : Math.max(0, Math.min(gap, .05));
-    const show0 = ln.start - pre, show1 = next && next.start - ln.end < 1.8 ? next.start - Math.max(0, Math.min(next.start - ln.end, .05)) : ln.end + .5;
-    if (t >= show0 && t < show1) { cur = ln; if (gap > 1.8 && t < ln.start) dots = Math.min(4, Math.ceil((ln.start - t) / beat)); break; }
+    const ln = LINES[i], prev = LINES[i - 1], next = LINES[i + 1], gap = prev ? A(ln) - B(prev) : 99, pre = gap > 1.8 ? Math.min(4 * beat, gap - .4) : Math.max(0, Math.min(gap, .05));
+    const show0 = A(ln) - pre, show1 = next && A(next) - B(ln) < 1.8 ? A(next) - Math.max(0, Math.min(A(next) - B(ln), .05)) : B(ln) + .5;
+    if (t >= show0 && t < show1) { cur = ln; if (gap > 1.8 && t < A(ln)) dots = Math.min(4, Math.ceil((A(ln) - t) / beat)); break; }
   }
   if (!cur) return;
-  const next = LINES[LINES.indexOf(cur) + 1], out = !next || next.start - cur.end >= 1.8 ? clamp((cur.end + .5 - t) / .25) : 1;
-  const inA = clamp((t - (cur.start - (dots ? 4 * beat : .05))) / .12);
+  const next = LINES[LINES.indexOf(cur) + 1], out = !next || A(next) - B(cur) >= 1.8 ? clamp((B(cur) + .5 - t) / .25) : 1;
+  const inA = clamp((t - (A(cur) - (dots ? 4 * beat : .05))) / .12);
   karaokeLine(cur, t, { y: st.y, size: st.size, singer: st.singer, dots, alpha: Math.min(out, Math.max(inA, dots ? 1 : inA)) });
 }
 

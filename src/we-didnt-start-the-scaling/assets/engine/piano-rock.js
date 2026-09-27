@@ -1192,6 +1192,56 @@ function lineAt(t) {
   return null;
 }
 
+// ---------- the words' times, for karaoke fills ----------
+// A line's `words` (from tools/word_timing.py, through make_timing.py): each word's [start, end] in centiseconds from the line's
+// start. Its words are its text split at spaces and after a hyphen or en dash inside a word, as splitWords splits it.
+const splitWords = text => String(text).split(/\s+/).filter(Boolean).flatMap(w => w.split(/(?<=[-–])(?=[A-Za-z0-9])/));
+// A line's words' times in seconds, { starts, ends }, or null if it hasn't any.
+function wordTimes(ln) {
+  if (ln._wt === undefined) {
+    ln._wt = ln.words && ln.words.length === splitWords(ln.text).length
+      ? { starts: ln.words.map(w => ln.start + w[0] / 100), ends: ln.words.map(w => ln.start + w[1] / 100) } : null;
+  }
+  return ln._wt;
+}
+// How much of `text` (a line's text as a caption draws it: its dashes tidied, say, or in capitals) is sung at t, in characters:
+// each word sung, and as much of the one being sung as its time has gone by (or, with `quick`, of that many seconds from its
+// start: captions that type each word out as it's sung). A word that isn't in the text (a trailing dash a caption drops) counts
+// for nothing. `form` turns a word into the text's form (the text's case doesn't matter). Null without the line's words' times.
+function charsSung(ln, text, t, { quick = 0, form = w => w } = {}) {
+  const w = wordTimes(ln);
+  if (!w) return null;
+  const hay = text.toLowerCase();
+  let from = 0, lit = 0;
+  splitWords(ln.text).forEach((word, i) => {
+    const needle = form(word).toLowerCase(), a = hay.indexOf(needle, from);
+    if (a < 0 || t < w.starts[i]) return;
+    from = a + needle.length;
+    const dur = quick ? Math.min(quick, w.ends[i] - w.starts[i]) : w.ends[i] - w.starts[i];
+    lit = a + needle.length * (dur > 0 ? clamp((t - w.starts[i]) / dur) : 1);
+  });
+  return lit;
+}
+// The line a karaoke caption shows at t, as { ln, on, first, last }: like lineAt, but a line with its words' times comes up as
+// the one before it finishes (its last word sung), or half a second before its own first word after a rest, so that a word held
+// into the next line's start isn't cut off; it goes when the next comes up, or `linger` seconds after its last word (`on` is
+// when it came up; `first` and `last`, when its first word starts and its last ends). A line without them is up from its start.
+let _captionLines = null;
+function captionAt(t, linger = .35) {
+  if (_captionLines?.lines !== LINES) {
+    let before = -Infinity;
+    _captionLines = { lines: LINES, list: LINES.map(ln => {
+      const w = wordTimes(ln), first = w ? w.starts[0] : ln.start, last = w ? w.ends.at(-1) : ln.end;
+      const on = w ? Math.min(first, Math.max(first - .5, before)) : ln.start;
+      before = last;
+      return { ln, on, first, last };
+    }) };
+  }
+  const L = _captionLines.list;
+  for (let i = L.length - 1; i >= 0; i--) if (L[i].on <= t) return t < Math.min(L[i + 1]?.on ?? Infinity, L[i].last + linger) ? L[i] : null;
+  return null;
+}
+
 // ---------- overlay switches (a shot may call these each frame) ----------
 let _noCaption = false, _noStamp = false, _captionStyle = null;
 const hideCaption = () => { _noCaption = true; };
@@ -2875,14 +2925,30 @@ function ccText(str, o = {}) {
   if (!o.notes) rows = rows.map(r => r.replace(/^♪ /, '').replace(/ ♪$/, ''));
   _ccDraw(rows, o.y ?? 1004, o.size ?? 42, o.color ?? NP.ccText, o.reveal ?? 1);
 }
+// How much of a caption's rows (as _ccRows lays out `text`, with its ♪s) shows when `sung` characters of the text are: _ccDraw's
+// reveal. (Each row drops the space it breaks at.)
+function _ccShown(rows, text, sung) {
+  const total = rows.reduce((n, r) => n + r.length, 0);
+  if (sung >= text.length) return 1;
+  let at = 0, shown = 2;
+  rows.forEach((r, i) => {
+    const len = r.length - (i === 0 ? 2 : 0) - (i === rows.length - 1 ? 2 : 0);
+    shown += clamp(Math.floor(sung) - at, 0, len);
+    at += len + 1;
+  });
+  return shown / total;
+}
 function _caption(t) {
   if (_noCaption) return;
   const st = _captionStyle || {}, sz = st.size ?? 42, maxc = st.maxChars ?? 36, cy = st.y ?? 1004, rh = Math.round(sz * 1.42);
-  const ln = lineAt(t); if (!ln) return;
-  const i = LINES.indexOf(ln), age = t - ln.start, dur = ln.end - ln.start;
+  const cap = captionAt(t); if (!cap) return;
+  const ln = cap.ln, i = LINES.indexOf(ln), age = t - cap.on, dur = ln.end - ln.start;
   const col = st.color ?? (ln.sec[0] === 'C' ? NP.ccYellow : NP.ccText);
-  const rows = _ccRows(_ccText(ln.text), maxc);
-  const rev = clamp(age / clamp(dur * .28, .16, .42));
+  const text = _ccText(ln.text), rows = _ccRows(text, maxc);
+  // like live captions, each word comes up as it's sung, typed out in a tenth of a second (or, without the timing's words, the
+  // whole line types out at once)
+  const sung = charsSung(ln, text, t, { quick: .1, form: _ccText });
+  const rev = sung === null ? clamp(age / clamp(dur * .28, .16, .42)) : _ccShown(rows, text, sung);
   // roll-up: the previous line slides up out of the way, then is erased
   const prev = LINES[i - 1];
   if (prev && age < .26 && ln.start - prev.end < .6 && st.rows !== 1) {
@@ -3815,7 +3881,8 @@ OVERLAYS.push((t, s) => {
   const HOOK = ["WE", "DIDN'T", "START", "THE", "SCALING"], HOOKF = [0, .24, .46, .58, .73];
   function hookWords(t, ln, o = {}) {
     const S1 = o.s1 ?? 124, S2 = o.s2 ?? 210, S3 = S1 * .62, y1 = o.y1 ?? 300, y2 = o.y2 ?? 520, gap = S1 * .32, dur = ln.end - ln.start;
-    const at = HOOKF.map(f => ln.start + f * dur);
+    // (each word as it's sung, where the timing has the words' times)
+    const wt = wordTimes(ln), at = HOOKF.map((f, i) => wt ? wt.starts[i] : ln.start + f * dur);
     const ws = HOOK.map((w, i) => textW(w, i === 3 ? S3 : i === 4 ? S2 : S1, 'archivo', 2));
     const row1 = ws[0] + ws[1] + ws[2] + gap * 2, row2 = ws[3] + ws[4] + gap * .6;
     const pos = [[W / 2 - row1 / 2 + ws[0] / 2, y1], [W / 2 - row1 / 2 + ws[0] + gap + ws[1] / 2, y1], [W / 2 + row1 / 2 - ws[2] / 2, y1],
@@ -3960,7 +4027,7 @@ OVERLAYS.push((t, s) => {
     const cC = renderTo('c1boxC', .4, () => anchorShot(t, { who: 'clawd', talk: talk(t), shuffle: .4, cam: { x: 600, y: 590, zoom: 2.3 }, clawd: { eyes: 'happy', dy: Math.sin(b * Math.PI) * .12 } }));
     const cV = renderTo('c1boxV', .4, () => anchorShot(t, { who: 'val', talk: talk(t, 2), shuffle: .4, cam: { x: 1320, y: 600, zoom: 2.3 }, val: { eyes: 'happy', dy: Math.sin(b * Math.PI) * .06 } }));
     // the boxes pass the sides (not the middle) as SCALING lands
-    const kin = easeOut(clamp(age / .35)), base = (t - (ln.start + HOOKF[4] * (ln.end - ln.start))) * 2.4;
+    const kin = easeOut(clamp(age / .35)), base = (t - (wordTimes(ln)?.starts[4] ?? ln.start + HOOKF[4] * (ln.end - ln.start))) * 2.4;
     const boxes = [[cC, base + Math.PI], [cV, base]].map(([c, a]) => { const z = Math.sin(a); return { c, x: W / 2 + Math.cos(a) * 600 * kin, y: lerp(410, 750 + z * 80, kin), s: lerp(.55, .95, (z + 1) / 2) * lerp(.1, 1, kin), z, rot: -Math.cos(a) * .1 }; });
     const drawBox = B => flyBox(B.c, B.x, B.y, 600 * B.s, 338 * B.s, B.rot, clamp(kin * 2));
     boxes.filter(B => B.z < 0).forEach(drawBox);
@@ -4907,7 +4974,8 @@ OVERLAYS.push((t, s) => {
   }
   // the hook, word by word: onsets as fractions of the sung line (measured from this take: We · didn't · start · the · scaling)
   const HOOK = ['WE', "DIDN'T", 'START', 'THE', 'SCALING'], HOOKF = [0, .18, .4, .5, .63];
-  const wordK = (t, ln, i) => clamp((t - (ln.start + (ln.end - ln.start) * HOOKF[i]) + .05) / .13);
+  // (each word as it's sung, where the timing has the words' times)
+  const wordK = (t, ln, i) => clamp((t - (wordTimes(ln)?.starts[i] ?? ln.start + (ln.end - ln.start) * HOOKF[i]) + .05) / .13);
   // a row of chrome words centred on (cx, y), each slamming in with its k
   function hookRow(words, ks, cx, y, size, styles, o = {}) {
     const gap = size * .38, ws = words.map(w => textW(w, size, 'archivo', 2) + size * .12), tot = ws.reduce((a, b) => a + b, 0) + gap * (words.length - 1);
