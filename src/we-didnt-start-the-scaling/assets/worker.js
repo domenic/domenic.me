@@ -1,4 +1,10 @@
 // Renders the music video off the main thread. The page transfers an OffscreenCanvas and posts song times; this worker draws frames with the same engine the MP4 was rendered with.
+// An engine's optional hooks: STYLE_READY (a promise to settle before the first frame), STYLE_LOWRES() (how many pictures the last
+// frame drew as stand-ins), STYLE_STALE (set here: call it when a stand-in's picture arrives), QUALITY_LEVELS and setQuality(level)
+// (the quality levels the page's controller steps through: 0 the video as designed, each cheaper than the last, its type always at
+// full resolution), STYLE_FINISH() (finish the GPU's work for the frame just drawn, so that the page's measure of it includes that)
+// and STYLE_INFO() (what the frame was, for the page's ?debug overlay), and STYLE_ALL (a promise that settles once a style that
+// loads more as it plays has everything: every picture, or its scenes warmed up; the page lets its reader seek from then on).
 self.onmessage = async (e) => {
   const m = e.data;
   try {
@@ -25,13 +31,17 @@ self.onmessage = async (e) => {
       URL.revokeObjectURL(code);
       await fonts;
       if (self.STYLE_READY) await self.STYLE_READY;
-      self.postMessage({ type: 'ready' });
+      self.postMessage({ type: 'ready', levels: self.QUALITY_LEVELS ?? 0 });
+      Promise.resolve(self.STYLE_ALL).catch(() => {}).then(() => self.postMessage({ type: 'all' }));
     } else if (m.type === 'frame') {
       const t0 = performance.now();
       renderFrame(m.t);
-      self.postMessage({ type: 'drawn', ms: performance.now() - t0, lowRes: self.STYLE_LOWRES?.() ?? 0 });
+      self.STYLE_FINISH?.();
+      self.postMessage({ type: 'drawn', ms: performance.now() - t0, lowRes: self.STYLE_LOWRES?.() ?? 0, info: m.info ? self.STYLE_INFO?.() : undefined });
     } else if (m.type === 'scale') {
       setRenderScale(m.scale);
+    } else if (m.type === 'quality') {
+      self.setQuality?.(m.level);
     } else if (m.type === 'timing') {
       setTiming(m.timing);
     }

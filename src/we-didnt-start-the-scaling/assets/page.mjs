@@ -86,6 +86,13 @@ function lineAt(t) {
 }
 
 // ---------- renderer: a worker drawing to an OffscreenCanvas, else the main thread ----------
+// Quality has one controller, the page's. It measures how long each frame really takes to reach the screen: from asking the
+// engine for it to its being drawn, the GPU's work included (an engine that draws with WebGL finishes it in its STYLE_FINISH
+// hook). When frames run late it steps down a ladder, quickly; when they're comfortably quick for a long while it steps back up,
+// slowly; and a step it had to leave again after climbing back to it isn't tried again, so it settles rather than oscillating. The
+// ladder is the engine's own quality levels, if it has any (QUALITY_LEVELS of them, chosen with setQuality(level): 0 the video as
+// designed, each cheaper than the last, simplified effects before any drop in resolution, its type always at the canvas's full
+// resolution), then the canvas's own scale (QUALITY). An engine without levels has just the scale, as before.
 const QUALITY = [1, .75, .5];
 let renderer = null;
 let rendererStarting = null;
@@ -95,6 +102,19 @@ let fastFrames = 0;
 let appliedScale = 0;
 let lastDrawMs = 0;
 let lastLowRes = 0;
+let engineLevels = 0;       // (the running engine's QUALITY_LEVELS)
+let step = 0;               // (where on the ladder: the engine's levels first, then the canvas's scale steps)
+let settling = 0;           // (frames to leave out after a step, while the engine settles into it)
+const leftAfterClimb = new Set();
+let climbedTo = -1;
+const ladderLength = () => Math.max(1, engineLevels) + QUALITY.length - 1;
+function applyStep() {
+  const top = Math.max(0, engineLevels - 1);
+  renderer?.setQuality?.(Math.min(step, top));
+  qi = Math.max(0, step - top);
+  settling = 12;
+  updateScale();
+}
 
 function idealScale() {
   // Map the 1920×1080 scene exactly onto the canvas's device pixels; step down only if frames are slow.
@@ -110,16 +130,48 @@ function updateScale() {
     drawNow();
   }
 }
-// (lowRes: how many pictures the frame drew as low-res stand-ins, in a style whose pictures are still loading)
-function onDrawn(ms, lowRes = 0) {
+// (ms: how long the frame took to reach the screen, as the page measured it; lowRes: how many pictures the frame drew as low-res
+// stand-ins, in a style whose pictures are still loading; info: what the engine says the frame was, for the debug overlay)
+function onDrawn(ms, lowRes = 0, info = null) {
   lastDrawMs = ms;
   lastLowRes = lowRes;
   player.dataset.drawn = '';
+  debugHUD?.(ms, info);
   if (S.playback !== 'playing') return;
-  if (ms > 30) { slowFrames++; fastFrames = 0; } else if (ms < 12) { fastFrames++; slowFrames = Math.max(0, slowFrames - 1); }
-  if (slowFrames > 24 && qi < QUALITY.length - 1) { qi++; slowFrames = 0; updateScale(); }
-  if (fastFrames > 240 && qi > 0) { qi--; fastFrames = 0; updateScale(); }
+  if (settling > 0) { settling--; return; }
+  // late: over 28 ms (under about 35 frames a second); comfortably quick: under 12 ms
+  if (ms > 28) { slowFrames++; fastFrames = 0; } else if (ms < 12) { fastFrames++; slowFrames = Math.max(0, slowFrames - 1); }
+  if (slowFrames > 10 && step < ladderLength() - 1) {
+    // (leaving a step it climbed back to: it's not tried again)
+    if (step === climbedTo) leftAfterClimb.add(step);
+    step++; slowFrames = 0; fastFrames = 0; climbedTo = -1; applyStep();
+  } else if (fastFrames > 600 && step > 0 && !leftAfterClimb.has(step - 1)) {
+    step--; fastFrames = 0; climbedTo = step; applyStep();
+  }
 }
+// ?debug: an overlay on the player with what the video is drawing and how fast it reaches the screen
+const debugHUD = new URLSearchParams(location.search).has('debug') ? (() => {
+  const el = document.createElement('pre');
+  el.className = 'debug-hud';
+  el.style.cssText = 'position:fixed;left:6px;top:40px;z-index:99;margin:0;padding:6px 8px;max-width:calc(100vw - 12px);background:rgb(0 0 0 / 78%);color:#9ef;font:11px/1.35 ui-monospace,monospace;white-space:pre-wrap;pointer-events:none';
+  document.body.append(el);
+  const times = [];
+  let shown = 0, info = null;
+  return (ms, i) => {
+    times.push(ms); if (times.length > 120) times.shift();
+    if (i) info = i;
+    const now = performance.now(); if (now - shown < 250) return; shown = now;
+    const sorted = [...times].sort((a, b) => a - b), avg = times.reduce((a, b) => a + b, 0) / times.length;
+    const dpr = devicePixelRatio, cw = canvas.clientWidth, ch = canvas.clientHeight;
+    el.textContent = [
+      `${renderer?.style ?? '—'} · ${renderer?.kind ?? 'no renderer'} · ${S.playback}`,
+      info?.era ? `era: ${info.era}` : null,
+      `quality: step ${step + 1} of ${ladderLength()}${engineLevels ? ` · engine level ${Math.min(step, engineLevels - 1)} of 0–${engineLevels - 1}` : ' · (no engine levels)'} · canvas scale step ${qi}`,
+      `render scale ${appliedScale.toFixed(3)} · canvas ${Math.round(1920 * appliedScale)}×${Math.round(1080 * appliedScale)} for ${Math.round(cw * dpr)}×${Math.round(ch * dpr)} device px (${cw}×${ch} css × ${dpr})`,
+      `frame to screen: ${avg.toFixed(1)} ms avg · p95 ${sorted[Math.floor(sorted.length * .95)]?.toFixed(1)} · last ${ms.toFixed(1)}`
+    ].filter(Boolean).join('\n');
+  };
+})() : null;
 
 // Each album track draws with its own video style's engine, named for the track. Every engine defines the same globals, so each
 // style runs in its own worker (or, without OffscreenCanvas in workers, its own hidden iframe) and draws to its own canvas;
@@ -139,23 +191,29 @@ function workerRenderer(el, style, tm, scale) {
   const worker = new Worker(new URL('worker.js', import.meta.url));
   let busy = false;
   let queued = null;
-  let resolveReady, rejectReady, resolveDrawn;
+  let resolveReady, rejectReady, resolveDrawn, resolveAll;
   const ready = new Promise((ok, bad) => { resolveReady = ok; rejectReady = bad; });
   const drawn = new Promise(ok => { resolveDrawn = ok; });
-  const send = t => { busy = true; worker.postMessage({ type: 'frame', t }); };
+  const all = new Promise(ok => { resolveAll = ok; });
+  let sentAt = 0;
+  const send = t => { busy = true; sentAt = performance.now(); worker.postMessage({ type: 'frame', t, info: !!debugHUD }); };
   worker.onmessage = e => {
     const m = e.data;
-    if (m.type === 'ready') resolveReady();
+    if (m.type === 'ready') { engineLevels = m.levels ?? 0; resolveReady(); }
+    else if (m.type === 'all') resolveAll();
     else if (m.type === 'drawn') {
       busy = false;
       resolveDrawn();
-      if (renderer?.worker === worker) onDrawn(m.ms, m.lowRes);
+      if (renderer?.worker === worker) onDrawn(performance.now() - sentAt, m.lowRes, m.info);
       if (queued !== null) { const t = queued; queued = null; send(t); }
     } else if (m.type === 'stale') {
       // a picture the last frame drew as a stand-in has loaded: a paused video redraws (a playing one is about to anyway)
       if (renderer?.worker === worker && S.playback !== 'playing') drawNow();
     } else if (m.type === 'error') {
+      // (a frame that failed doesn't hold up the next, or a switch of styles waiting for the first)
       console.error('scaling video worker:', m.message);
+      busy = false;
+      resolveDrawn();
       rejectReady(new Error(m.message));
     }
   };
@@ -174,8 +232,10 @@ function workerRenderer(el, style, tm, scale) {
     worker,
     ready,
     drawn,
+    all,
     frame(t) { if (busy) queued = t; else send(t); },
     setScale(s) { worker.postMessage({ type: 'scale', scale: s }); },
+    setQuality(level) { worker.postMessage({ type: 'quality', level }); },
     setTiming(t) { worker.postMessage({ type: 'timing', timing: t }); },
     terminate() { worker.terminate(); }
   };
@@ -201,33 +261,42 @@ async function frameRenderer(el, style, tm, scale) {
     await face.load();
     doc.fonts.add(face);
   }));
-  await new Promise((ok, bad) => {
-    const s = doc.createElement('script');
-    s.src = engine.script;
-    s.onload = ok;
-    s.onerror = bad;
-    doc.head.append(s);
-  });
-  await fonts;
-  if (win.STYLE_READY) await win.STYLE_READY;
+  try {
+    await new Promise((ok, bad) => {
+      const s = doc.createElement('script');
+      s.src = engine.script;
+      s.onload = ok;
+      s.onerror = bad;
+      doc.head.append(s);
+    });
+    await fonts;
+    if (win.STYLE_READY) await win.STYLE_READY;
+  } catch (e) {
+    host.remove();
+    throw e;
+  }
   const out = doc.getElementById('out');
   const g = el.getContext('2d');
   const r = {
     kind: 'main',
     ready: Promise.resolve(),
     drawn: Promise.resolve(),
+    all: Promise.resolve(win.STYLE_ALL).catch(() => {}),
     frame(t) {
       const t0 = performance.now();
       win.renderFrame(t);
+      win.STYLE_FINISH?.();
       if (el.width !== out.width || el.height !== out.height) { el.width = out.width; el.height = out.height; }
       g.drawImage(out, 0, 0);
-      onDrawn(performance.now() - t0, win.STYLE_LOWRES?.() ?? 0);
+      onDrawn(performance.now() - t0, win.STYLE_LOWRES?.() ?? 0, debugHUD && win.STYLE_INFO?.());
     },
     setScale(s) { win.setRenderScale(s); },
+    setQuality(level) { win.setQuality?.(level); },
     setTiming(t) { win.setTiming(t); },
     terminate() { host.remove(); }
   };
   win.STYLE_STALE = () => { if (renderer === r && S.playback !== 'playing') drawNow(); };
+  engineLevels = win.QUALITY_LEVELS ?? 0;
   return r;
 }
 
@@ -252,6 +321,8 @@ function startRenderer() {
   rendererStyle = style;
   const previous = rendererStarting;
   player.dataset.loading = '';
+  delete player.dataset.noVideo;
+  setSeekable();
   rendererStarting = (async () => {
     await previous?.catch(() => {});
     // The previous style's engine stops drawing right away (it doesn't know this take's timing); this version's poster
@@ -263,12 +334,14 @@ function startRenderer() {
     appliedScale = idealScale();
     let el = old ? freshCanvas() : canvas;
     let r = null;
+    let workerError = null;
     if (workersOK) {
       r = workerRenderer(el, style, tm, appliedScale);
       try {
         await r.ready;
-      } catch {
+      } catch (e) {
         // Fonts or OffscreenCanvas unavailable in workers here: use the iframe fallback from now on.
+        workerError = e;
         r.terminate();
         r = null;
         workersOK = false;
@@ -277,26 +350,67 @@ function startRenderer() {
         if (used !== canvas) used.remove(); else swapCanvas(el);
       }
     }
-    r ??= await frameRenderer(el, style, tm, appliedScale);
+    if (!r) {
+      try {
+        r = await frameRenderer(el, style, tm, appliedScale);
+      } catch (e) {
+        // The engine can't run here at all (the K-pop video without WebGL2, say), so the worker wasn't to blame: the poster stays
+        // up, with the reason in place of the loading label.
+        console.error('scaling video:', e);
+        if (workerError) workersOK = true;
+        // (and the next engine gets a canvas no worker has taken)
+        old?.terminate();
+        swapCanvas(el);
+        if (rendererStyle === style) {
+          delete player.dataset.loading;
+          player.dataset.noVideo = /WebGL2/.test(`${e?.message} ${workerError?.message}`) ? 'webgl2' : '';
+          setSeekable();
+        }
+        return null;
+      }
+    }
     r.style = style;
     if (S.timing && S.timing !== tm) r.setTiming(S.timing);
     renderer = r;
+    // (a new engine starts at the top of the ladder)
+    step = 0; climbedTo = -1; leftAfterClimb.clear(); slowFrames = fastFrames = 0; qi = 0;
     // the canvas may have been resized while the engine started (say, into fullscreen)
     updateScale();
+    // Draw the first frame (underneath the previous style's video, if any), then uncover it. (A style that warms up after its first
+    // frame, as the demoscene's scenes do, starts on that then, before the reader presses Play.)
+    r.frame(audio.currentTime);
+    await r.drawn;
     if (old) {
-      // Draw the first frame underneath, then uncover it.
-      r.frame(audio.currentTime);
-      await r.drawn;
       swapCanvas(el);
       old.terminate();
     }
-    if (rendererStyle === style) delete player.dataset.loading;
+    r.all.then(() => {
+      if (renderer !== r) return;
+      delete player.dataset.loading;
+      setSeekable();
+    });
     return r;
   })();
   return rendererStarting;
 }
 function drawNow() {
   renderer?.frame(audio.currentTime);
+}
+// The song waits for its video. While the track's video is loading, from its engine starting until a style that loads more as it
+// plays has everything (its pictures, or its scenes warmed up), the reader can't seek (the scrub bar and the ▶ beside each line
+// are off), and Play shows the video loading and starts the song once it's in; otherwise the song would run on while the video
+// stood still.
+const fromHereButtons = document.querySelectorAll('.from-here');
+let loadedWaiters = [];
+const videoLoaded = () => ('loading' in player.dataset ? new Promise(ok => loadedWaiters.push(ok)) : Promise.resolve());
+function setSeekable() {
+  const off = 'loading' in player.dataset;
+  scrub.disabled = off;
+  for (const b of fromHereButtons) b.disabled = off;
+  if (!off) {
+    for (const ok of loadedWaiters) ok();
+    loadedWaiters = [];
+  }
 }
 
 // ---------- lyrics: the current line, following, notes ----------
@@ -403,7 +517,7 @@ for (const text of document.querySelectorAll('.line .lyric-text')) {
   text.replaceChildren(...parts);
 }
 const LINE_PROPS = ['--line-p', '--line-t', '--line-w', '--row-top', '--row-h', '--ball-x', '--ball-y', '--ball-hop', '--ball-s'];
-// (the longest hop the karaoke ball makes from one word to the next, in seconds)
+// (the longest hop the karaoke marker (Eurodance's cursor) makes from one word to the next, in seconds)
 const BALL_HOP = .3;
 // An element's padding box's position on the page, as laid out: the line being sung is scaled and tilted, which bounding
 // rectangles would take in.
@@ -419,9 +533,9 @@ function origin(el) {
 // --line-t counts seconds since the line came up. With its words' times (the line is .worded), --line-w counts how many words
 // in it is, whole words sung plus the fraction of the one being sung, for fills of each word in turn (a wrapped line fills row by
 // row); --line-p is how far across the line's card the fill has got in the row being sung (all the way, once the row's sung),
-// whose band of the card --row-top and --row-h give; and a bouncing ball (Eurodance's) hops from each word to the next as it's
-// sung, at --ball-x and --ball-y, --ball-hop of its height up. Without them, --line-p runs from 0 at the line's start to 1 at
-// its end.
+// whose band of the card --row-top and --row-h give; and a marker (Eurodance's text-mode cursor) hops from each word to the next
+// as it's sung, like a sing-along's bouncing ball, at --ball-x and --ball-y, --ball-hop of its height up. Without them, --line-p
+// runs from 0 at the line's start to 1 at its end.
 function showLineProgress(t) {
   if (!nowEl || !nowLine) return;
   const k = lineTimes.get(nowLine);
@@ -562,7 +676,7 @@ document.querySelector('.lyrics').addEventListener('click', e => {
   if (e.target.closest('button.lyric')) {
     toggleNote(li);
     showAllNotes();
-  } else if (e.target.closest('.from-here')) {
+  } else if (e.target.closest('.from-here:not(:disabled)')) {
     playFromLine(li.dataset.sec, +li.dataset.n);
   }
 });
@@ -602,7 +716,7 @@ nowCard.querySelector('.side-play').addEventListener('click', () => play());
 function setPlayback(state) {
   S.playback = state;
   player.dataset.state = state;
-  // for decorations that move only while the song plays (the Eurodance theme's bouncing ball and spinning CDs)
+  // for decorations that move only while the song plays (the Eurodance theme's blinking cursor)
   root.dataset.playback = state;
   deckPlay.setAttribute('aria-label', state === 'playing' ? 'Pause' : 'Play');
   renderNowCard();
@@ -615,13 +729,23 @@ async function play() {
   if (S.playback === 'ended' || audio.ended) audio.currentTime = 0;
   setPlayback('playing');
   startRenderer().then(drawNow);
+  await startSong();
+}
+// (once the track's video has loaded, unless the reader paused meanwhile)
+async function startSong() {
+  await videoLoaded();
+  if (S.playback !== 'playing') return;
   try {
     await audio.play();
   } catch {
     setPlayback('paused');
   }
 }
-function pause() { audio.pause(); }
+function pause() {
+  // (a press of Play still waiting for the video is called off)
+  if (audio.paused && S.playback === 'playing') setPlayback('paused');
+  audio.pause();
+}
 
 audio.addEventListener('play', () => { if (S.playback !== 'playing') setPlayback('playing'); tick(); });
 audio.addEventListener('pause', () => { if (!audio.ended) setPlayback('paused'); });
@@ -780,7 +904,8 @@ async function switchVersion(id) {
   const el = followTarget();
   if (S.follow === 'on' && el && !inView(el, .6)) scrollToLine(el);
   if (wasPlaying) {
-    try { await audio.play(); } catch { setPlayback('paused'); }
+    setPlayback('playing');
+    await startSong();
   } else {
     drawNow();
   }
@@ -880,7 +1005,10 @@ audio.addEventListener('play', () => {
 if ('mediaSession' in navigator) {
   navigator.mediaSession.setActionHandler('play', () => (jukeboxLast ? jukebox.resume() : play()));
   navigator.mediaSession.setActionHandler('pause', () => { pause(); jukebox.pause(); });
-  navigator.mediaSession.setActionHandler('seekto', e => (jukeboxLast ? jukebox.seek(e.seekTime) : seek(e.seekTime)));
+  navigator.mediaSession.setActionHandler('seekto', e => {
+    if (jukeboxLast) jukebox.seek(e.seekTime);
+    else if (!('loading' in player.dataset)) seek(e.seekTime);
+  });
 }
 
 // ---------- fullscreen ----------
@@ -1061,7 +1189,7 @@ addEventListener('resize', updateScale);
 
 // Hooks for the automated tests and for debugging (?debug shows render stats in the console).
 window.__scaling = {
-  state: () => ({ ...S, version: S.version?.id, timing: undefined, now: nowEl?.id ?? null, scale: appliedScale, quality: QUALITY[qi], renderer: renderer?.kind ?? null, style: renderer?.style ?? null, lastDrawMs, lowRes: lastLowRes, time: audio.currentTime, canvasCss: canvas.clientWidth, fullscreen: fullscreenElement() === screenEl }),
+  state: () => ({ ...S, version: S.version?.id, timing: undefined, now: nowEl?.id ?? null, scale: appliedScale, quality: QUALITY[qi], qualityStep: step, engineLevels, renderer: renderer?.kind ?? null, style: renderer?.style ?? null, lastDrawMs, lowRes: lastLowRes, time: audio.currentTime, canvasCss: canvas.clientWidth, fullscreen: fullscreenElement() === screenEl }),
   audio,
   jukebox: () => jukebox.state(),
   jukeboxAudio: jukebox.audio,

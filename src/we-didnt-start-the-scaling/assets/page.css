@@ -226,7 +226,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
 .player[data-state="idle"] .stage canvas { opacity: 0; }
 .player[data-style="indie-folk"] .poster { image-rendering: pixelated; }
 /* while a track's own video is still downloading */
-.player[data-loading]:not([data-state="idle"]) .screen::after {
+.player:is([data-loading], [data-no-video]):not([data-state="idle"]) .screen::after {
   content: "Loading this track’s video…";
   position: absolute;
   left: .8rem;
@@ -236,6 +236,9 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
   color: rgb(255 253 246);
   font: .8rem/1.3 var(--type);
 }
+/* when the track's video can't play in this browser, its poster stays up */
+.player[data-no-video]:not([data-state="idle"]) .screen::after { content: "This track’s video couldn’t start"; }
+.player[data-no-video="webgl2"]:not([data-state="idle"]) .screen::after { content: "This track’s video needs WebGL2, which this browser doesn’t have or has turned off"; }
 /* when the track's audio doesn't load, a message and a Retry button take the Play button's place */
 .load-error {
   position: absolute;
@@ -753,6 +756,8 @@ button.lyric {
   &:hover, &:focus-visible { opacity: 1; background: var(--yellow); color: rgb(28 26 31); }
 }
 .line:hover .from-here, .line.now .from-here { opacity: 1; }
+/* seeking waits for the track's video to load (over every theme's own opacity for these, its hover's included) */
+:root .lyrics .line .from-here:disabled, .scrub input:disabled { opacity: .2; cursor: progress; }
 
 .note {
   grid-column: 3 / -1;
@@ -2128,580 +2133,848 @@ button.lyric {
 @keyframes indie-folk-blink { 50% { opacity: 0; } }
 @keyframes indie-folk-flicker { 50% { opacity: .75; } 75% { opacity: .9; } }
 
-/* ---------- K-pop: ATTN!'s comeback ----------
-   Light is a variety-show cutaway: pastel polka dots, stickers with thick plum lineart. Dark is the LED stage at night. The
-   four members' colours run through it: verse line n is sung by TOKI, RELU, ADA and LOGI in turn, as in the video. */
+/* ---------- K-pop: ATTN!'s comeback, as its M/V ----------
+   The page is the comeback's M/V, in the video's one restrained system: pearl for the concept-photo studio and for light, ink for
+   the stage, chrome for hardware, and one accent at a time, the colour of the member singing (all four only when the whole group
+   is on). Light is the studio, a high-key infinity cove with the singer's name printed huge and faint on the backdrop; dark is the
+   stage at night, light columns in her colour over a glitter floor. The choruses are the stage in either: the M/V set, the music
+   show's LED wall, the first win, the encore. Verse lines go to the members in couplets, each verse starting one member further on,
+   as in the video (`singerOf()` in its kit.js), and the line being sung lights word by word, the word being sung in her colour and
+   underlined as the video's subtitle is. The type is the video's: Unbounded for display and labels, Instrument Serif for the tender
+   word, Inter for reading, Space Mono for dates. (Each face is a static instance of its own family, so nothing is ever synthesized
+   bold or slanted.) */
 :root[data-theme="k-pop"] {
   color-scheme: light;
+  font-synthesis: none;
+  /* the video's palette (`PAL` and `MEM` in its kit.js) */
+  --stage: rgb(6 5 11);
+  --night: rgb(16 13 28);
+  --haze: rgb(30 24 52);
+  --plum: rgb(42 32 70);
+  --pearl: rgb(244 240 250);
+  --pearl-2: rgb(227 221 236);
+  --cove: rgb(234 229 241);
+  --chrome: rgb(188 192 210);
+  --text: rgb(13 11 22);
   --toki: rgb(255 79 168);
   --relu: rgb(31 214 168);
   --ada: rgb(143 99 255);
   --logi: rgb(255 179 33);
-  --toki-lt: rgb(255 214 234);
-  --relu-lt: rgb(200 246 230);
-  --ada-lt: rgb(228 218 255);
-  --logi-lt: rgb(255 234 184);
-  --toki-dk: rgb(206 16 116);
-  --relu-dk: rgb(8 128 98);
-  --ada-dk: rgb(104 64 224);
-  --logi-dk: rgb(168 96 0);
-  --neon-pink: rgb(255 61 168);
-  --neon-cyan: rgb(53 232 255);
-  --lilac: rgb(201 182 255);
-  --plum: rgb(58 33 80);
-  --paper: rgb(255 242 249);
-  --ink: rgb(43 24 56);
-  --ink-soft: rgb(43 24 56 / 76%);
+  --toki-soft: rgb(255 214 235);
+  --relu-soft: rgb(205 246 234);
+  --ada-soft: rgb(226 216 255);
+  --logi-soft: rgb(255 235 196);
+  /* each colour as type on the page's ground (deepened on pearl, as it is on ink), and as a tint behind it */
+  --toki-ink: rgb(214 22 128);
+  --relu-ink: rgb(0 124 96);
+  --ada-ink: rgb(110 64 236);
+  --logi-ink: rgb(160 96 0);
+  --toki-tint: rgb(255 238 247);
+  --relu-tint: rgb(231 250 244);
+  --ada-tint: rgb(242 237 255);
+  --logi-tint: rgb(255 246 228);
+  /* all four, for the group: the curve of the MUSIC CURVE logo, and a photocard's holo foil */
+  --curve-4: linear-gradient(90deg, var(--toki), var(--relu) 36%, var(--ada) 68%, var(--logi));
+  --holo: linear-gradient(115deg, rgb(255 154 207), rgb(255 236 246) 18%, rgb(134 244 213) 32%, rgb(189 164 255) 52%, rgb(240 236 255) 64%, rgb(255 210 122) 78%, rgb(255 154 207));
+  --paper: var(--pearl);
+  --paper-2: var(--pearl-2);
+  --ink: var(--text);
+  --ink-soft: rgb(13 11 22 / 62%);
   --card: white;
-  --chip-ink: white;
-  --link: rgb(170 20 110);
-  --rainbow: linear-gradient(90deg, var(--toki), var(--ada) 30%, var(--neon-cyan) 55%, var(--relu) 75%, var(--logi));
-  --outline: 2px 2px 0 var(--plum), -2px 2px 0 var(--plum), 2px -2px 0 var(--plum), -2px -2px 0 var(--plum), 0 3px 0 var(--plum), 3px 0 0 var(--plum), -3px 0 0 var(--plum), 0 -3px 0 var(--plum);
-  --display: "Rammetto One", "Arial Rounded MT Bold", sans-serif;
-  --heavy: "Rammetto One", "Arial Rounded MT Bold", sans-serif;
-  --type: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
-  --code: "Space Mono", "Courier New", monospace;
-  /* who sings: choruses are everyone */
+  --hair: rgb(13 11 22 / 11%);
+  --track: var(--pearl-2);
+  /* the studio's soft shadow, long and low */
+  --lift: 0 1px 2px rgb(42 32 70 / 7%), 0 14px 34px -14px rgb(42 32 70 / 26%);
+  --shadow: rgb(42 32 70 / 18%);
+  --link: var(--text);
+  /* the line being sung: its words sung, and those to come (the stage sets its own) */
+  --sung: var(--text);
+  --unsung: rgb(13 11 22 / 30%);
+  --display: "Unbounded Black", "Arial Black", sans-serif;
+  --wide: "Unbounded Light", "Helvetica Neue", Arial, sans-serif;
+  --serif: "Instrument Serif", Georgia, serif;
+  --serif-i: "Instrument Serif Italic", Georgia, serif;
+  --ui: "Inter Medium", system-ui, sans-serif;
+  --ui-b: "Inter ExtraBold", system-ui, sans-serif;
+  --mono: "Space Mono", ui-monospace, monospace;
+  --heavy: var(--ui-b);
+  --type: var(--ui);
+  --stamp: var(--mono);
+  --hand: var(--serif-i);
+  /* who sings a line (the group, ATTN!, unless a rule below gives it a member), in her colour, as type, as a tint, and by name */
   --m: var(--toki);
-  --m-lt: var(--toki-lt);
-  --m-dk: var(--toki-dk);
+  --m-ink: var(--toki-ink);
+  --m-tint: var(--toki-tint);
   --mname: "ATTN!";
+  scrollbar-color: var(--chrome) var(--pearl);
 
   @media (prefers-color-scheme: dark) {
     color-scheme: dark;
-    --toki-lt: rgb(118 26 84);
-    --relu-lt: rgb(8 92 76);
-    --ada-lt: rgb(74 46 160);
-    --logi-lt: rgb(150 96 12);
-    --toki-dk: var(--toki);
-    --relu-dk: var(--relu);
-    --ada-dk: rgb(172 140 255);
-    --logi-dk: var(--logi);
-    --plum: rgb(8 2 22);
-    --paper: rgb(21 11 46);
-    --ink: rgb(252 245 255);
-    --ink-soft: rgb(252 245 255 / 76%);
-    --card: rgb(42 20 82);
-    --chip-ink: rgb(24 8 44);
-    --link: rgb(255 158 212);
+    --toki-ink: var(--toki);
+    --relu-ink: var(--relu);
+    --ada-ink: rgb(170 138 255);
+    --logi-ink: var(--logi);
+    --toki-tint: rgb(52 18 44);
+    --relu-tint: rgb(12 44 42);
+    --ada-tint: rgb(36 26 72);
+    --logi-tint: rgb(50 36 20);
+    --holo: linear-gradient(115deg, rgb(255 154 207 / 70%), rgb(244 240 250 / 30%) 18%, rgb(134 244 213 / 70%) 32%, rgb(189 164 255 / 70%) 52%, rgb(244 240 250 / 30%) 64%, rgb(255 210 122 / 70%) 78%, rgb(255 154 207 / 70%));
+    --paper: var(--stage);
+    --paper-2: var(--haze);
+    --ink: var(--pearl);
+    --ink-soft: rgb(244 240 250 / 62%);
+    --card: var(--night);
+    --hair: rgb(244 240 250 / 12%);
+    --track: var(--haze);
+    --lift: 0 0 0 1px rgb(244 240 250 / 3%), 0 18px 40px -18px black;
+    --shadow: rgb(0 0 0 / 55%);
+    --link: var(--pearl);
+    --sung: var(--pearl);
+    --unsung: rgb(244 240 250 / 32%);
+    scrollbar-color: var(--plum) var(--stage);
   }
 
-  .verse .line:nth-child(4n + 1) { --m: var(--toki); --m-lt: var(--toki-lt); --m-dk: var(--toki-dk); --mname: "TOKI"; }
-  .verse .line:nth-child(4n + 2) { --m: var(--relu); --m-lt: var(--relu-lt); --m-dk: var(--relu-dk); --mname: "RELU"; }
-  .verse .line:nth-child(4n + 3) { --m: var(--ada); --m-lt: var(--ada-lt); --m-dk: var(--ada-dk); --mname: "ADA"; }
-  .verse .line:nth-child(4n + 4) { --m: var(--logi); --m-lt: var(--logi-lt); --m-dk: var(--logi-dk); --mname: "LOGI"; }
+  /* Who sings each verse line: the members in couplets, each verse starting one member further on (V1 TOKI, V2 RELU, V3 ADA,
+     V4 LOGI); the outro is TOKI's ending fairy. The choruses are the group's, and their lines light in the four colours in turn. */
+  :is(#v1 .line:is(:nth-child(8n + 1), :nth-child(8n + 2)), #v2 .line:is(:nth-child(8n + 7), :nth-child(8n + 8)), #v3 .line:is(:nth-child(8n + 5), :nth-child(8n + 6)), #v4 .line:is(:nth-child(8n + 3), :nth-child(8n + 4)), .outro .line) { --m: var(--toki); --m-ink: var(--toki-ink); --m-tint: var(--toki-tint); --mname: "TOKI"; }
+  :is(#v1 .line:is(:nth-child(8n + 3), :nth-child(8n + 4)), #v2 .line:is(:nth-child(8n + 1), :nth-child(8n + 2)), #v3 .line:is(:nth-child(8n + 7), :nth-child(8n + 8)), #v4 .line:is(:nth-child(8n + 5), :nth-child(8n + 6))) { --m: var(--relu); --m-ink: var(--relu-ink); --m-tint: var(--relu-tint); --mname: "RELU"; }
+  :is(#v1 .line:is(:nth-child(8n + 5), :nth-child(8n + 6)), #v2 .line:is(:nth-child(8n + 3), :nth-child(8n + 4)), #v3 .line:is(:nth-child(8n + 1), :nth-child(8n + 2)), #v4 .line:is(:nth-child(8n + 7), :nth-child(8n + 8))) { --m: var(--ada); --m-ink: var(--ada-ink); --m-tint: var(--ada-tint); --mname: "ADA"; }
+  :is(#v1 .line:is(:nth-child(8n + 7), :nth-child(8n + 8)), #v2 .line:is(:nth-child(8n + 5), :nth-child(8n + 6)), #v3 .line:is(:nth-child(8n + 3), :nth-child(8n + 4)), #v4 .line:is(:nth-child(8n + 1), :nth-child(8n + 2))) { --m: var(--logi); --m-ink: var(--logi-ink); --m-tint: var(--logi-tint); --mname: "LOGI"; }
+  .chorus .line {
+    &:nth-child(4n + 2) { --m: var(--relu); --m-ink: var(--relu); }
+    &:nth-child(4n + 3) { --m: var(--ada); --m-ink: rgb(170 138 255); }
+    &:nth-child(4n + 4) { --m: var(--logi); --m-ink: var(--logi); }
+  }
+  /* (on the stage, every colour reads as it is) */
+  .chorus .line:nth-child(4n + 1), .chorus.final .line:last-child { --m: var(--toki); --m-ink: var(--toki); }
+
+  /* ...and the page's accent is whoever is singing now: the corner tag's dot, the light columns, the seek bar, the photocard. While
+     no one member is (the choruses, and before the song starts), it's the group's. */
+  &:has(:is(#v1 .line:is(:nth-child(8n + 1), :nth-child(8n + 2)), #v2 .line:is(:nth-child(8n + 7), :nth-child(8n + 8)), #v3 .line:is(:nth-child(8n + 5), :nth-child(8n + 6)), #v4 .line:is(:nth-child(8n + 3), :nth-child(8n + 4)), .outro .line).now) { --a: var(--toki); --a-ink: var(--toki-ink); --a-tint: var(--toki-tint); --a-name: "TOKI"; }
+  &:has(:is(#v1 .line:is(:nth-child(8n + 3), :nth-child(8n + 4)), #v2 .line:is(:nth-child(8n + 1), :nth-child(8n + 2)), #v3 .line:is(:nth-child(8n + 7), :nth-child(8n + 8)), #v4 .line:is(:nth-child(8n + 5), :nth-child(8n + 6))).now) { --a: var(--relu); --a-ink: var(--relu-ink); --a-tint: var(--relu-tint); --a-name: "RELU"; }
+  &:has(:is(#v1 .line:is(:nth-child(8n + 5), :nth-child(8n + 6)), #v2 .line:is(:nth-child(8n + 3), :nth-child(8n + 4)), #v3 .line:is(:nth-child(8n + 1), :nth-child(8n + 2)), #v4 .line:is(:nth-child(8n + 7), :nth-child(8n + 8))).now) { --a: var(--ada); --a-ink: var(--ada-ink); --a-tint: var(--ada-tint); --a-name: "ADA"; }
+  &:has(:is(#v1 .line:is(:nth-child(8n + 7), :nth-child(8n + 8)), #v2 .line:is(:nth-child(8n + 5), :nth-child(8n + 6)), #v3 .line:is(:nth-child(8n + 3), :nth-child(8n + 4)), #v4 .line:is(:nth-child(8n + 1), :nth-child(8n + 2))).now) { --a: var(--logi); --a-ink: var(--logi-ink); --a-tint: var(--logi-tint); --a-name: "LOGI"; }
 
   body {
-    background:
-      radial-gradient(circle, rgb(255 179 214 / 60%) 2.6px, transparent 3.2px) 0 0 / 28px 28px,
-      radial-gradient(circle, rgb(201 182 255 / 50%) 2.6px, transparent 3.2px) 14px 14px / 28px 28px,
-      linear-gradient(rgb(255 234 245), rgb(244 234 255) 40%, rgb(230 244 255) 75%, rgb(255 240 248));
-    font: 17px/1.55 var(--type);
-    @media (prefers-color-scheme: dark) {
-      /* the LED wall behind the stage */
-      background:
-        radial-gradient(circle, rgb(170 130 255 / 16%) 1.6px, transparent 2.1px) 0 0 / 9px 9px,
-        radial-gradient(ellipse 70rem 30rem at 50% 0, rgb(255 61 168 / 22%), transparent),
-        linear-gradient(rgb(21 11 46), rgb(36 14 72) 45%, rgb(21 11 46));
-    }
+    background: var(--pearl);
+    font: 16.5px/1.6 var(--ui);
+    @media (prefers-color-scheme: dark) { background: var(--stage); }
   }
   body::after { content: none; }
+  ::selection { background: color-mix(in srgb, var(--a, var(--toki)) 32%, transparent); }
+  a { text-decoration-color: var(--a, var(--toki)); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
 
-  /* sparkles */
+  /* The set, fixed behind the page. By day the concept-photo studio: a key light from above, the cove's floor falling off below,
+     and the singer's name printed huge and faint along the foot of the backdrop (ATTN!'s, while the group sings). */
   .fx { display: block; }
-  /* in the margins, clear of the text */
-  .fx i {
+  .fx::before {
+    content: var(--a-name, "ATTN!");
     position: absolute;
-    left: calc(mod(var(--i) * 41, 11) * 1% + mod(var(--i), 2) * 87% + 1%);
-    top: calc(mod(var(--i) * 29 + 9, 86) * 1% + 6%);
-    width: calc(12px + mod(var(--i) * 7, 16) * 1px);
-    @media (max-width: 640px) { width: 8px; }
-    aspect-ratio: 1;
-    background: var(--toki);
-    clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
-    opacity: .7;
-    animation: k-pop-twinkle 2.4s ease-in-out infinite;
-    animation-delay: calc(var(--i) * -.37s);
-    &:nth-child(4n + 2) { background: var(--ada); }
-    &:nth-child(4n + 3) { background: var(--neon-cyan); }
-    &:nth-child(4n + 4) { background: var(--logi); }
-    @media (prefers-color-scheme: dark) { background: white; &:nth-child(2n) { background: var(--neon-pink); } }
+    z-index: 1;
+    left: -.05em;
+    bottom: -.2em;
+    color: transparent;
+    -webkit-text-stroke: 1.5px rgb(13 11 22 / 7%);
+    font: 31vw/1 var(--wide);
+    white-space: nowrap;
+  }
+  .fx::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 70% 55% at 50% -12%, white, rgb(255 255 255 / 0) 72%),
+      linear-gradient(transparent 58%, rgb(234 229 241 / 80%) 82%, rgb(227 221 236));
+  }
+  .fx i { display: none; }
+  /* By night the M/V set: the horizon's glow, light columns in the singer's colour (the four at once for the group), and a glitter
+     floor with a few glints that catch the light. */
+  @media (prefers-color-scheme: dark) {
+    .fx { background: radial-gradient(ellipse 90% 26% at 50% 74%, rgb(42 32 70 / 70%), transparent 70%), linear-gradient(var(--stage) 30%, var(--night) 74%, var(--stage)); }
+    .fx::before { -webkit-text-stroke-color: rgb(244 240 250 / 7%); }
+    .fx::after { top: 74%; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='100'%3E%3Cg fill='%23F4F0FA'%3E%3Ccircle cx='77.7' cy='33.6' r='0.66' fill-opacity='0.27'/%3E%3Ccircle cx='128.6' cy='54.3' r='0.52' fill-opacity='0.44'/%3E%3Ccircle cx='9.0' cy='59.7' r='0.53' fill-opacity='0.29'/%3E%3Ccircle cx='101.9' cy='86.1' r='0.58' fill-opacity='0.39'/%3E%3Ccircle cx='150.6' cy='93.1' r='0.92' fill-opacity='0.52'/%3E%3Ccircle cx='234.3' cy='18.6' r='0.60' fill-opacity='0.28'/%3E%3Ccircle cx='34.6' cy='29.5' r='0.56' fill-opacity='0.41'/%3E%3Ccircle cx='43.4' cy='70.5' r='0.85' fill-opacity='0.44'/%3E%3Ccircle cx='131.5' cy='21.5' r='0.51' fill-opacity='0.28'/%3E%3Ccircle cx='163.3' cy='59.3' r='0.64' fill-opacity='0.50'/%3E%3Ccircle cx='108.8' cy='48.7' r='0.79' fill-opacity='0.49'/%3E%3Ccircle cx='58.6' cy='70.0' r='0.78' fill-opacity='0.69'/%3E%3Ccircle cx='175.1' cy='47.6' r='0.85' fill-opacity='0.29'/%3E%3Ccircle cx='100.3' cy='81.9' r='0.60' fill-opacity='0.54'/%3E%3Ccircle cx='9.4' cy='76.2' r='0.95' fill-opacity='0.56'/%3E%3Ccircle cx='210.1' cy='49.9' r='0.76' fill-opacity='0.46'/%3E%3Ccircle cx='139.2' cy='61.4' r='0.89' fill-opacity='0.66'/%3E%3Ccircle cx='113.8' cy='76.0' r='0.54' fill-opacity='0.63'/%3E%3Ccircle cx='155.3' cy='95.6' r='1.11' fill-opacity='0.45'/%3E%3Ccircle cx='92.6' cy='76.3' r='0.51' fill-opacity='0.50'/%3E%3Ccircle cx='40.3' cy='29.4' r='0.51' fill-opacity='0.40'/%3E%3Ccircle cx='31.0' cy='43.8' r='0.63' fill-opacity='0.51'/%3E%3Ccircle cx='19.3' cy='60.9' r='0.75' fill-opacity='0.63'/%3E%3Ccircle cx='196.6' cy='88.3' r='0.69' fill-opacity='0.52'/%3E%3Ccircle cx='86.1' cy='89.5' r='1.17' fill-opacity='0.35'/%3E%3Ccircle cx='42.3' cy='42.3' r='0.57' fill-opacity='0.39'/%3E%3Ccircle cx='141.4' cy='45.3' r='0.50' fill-opacity='0.38'/%3E%3Ccircle cx='88.6' cy='69.4' r='1.01' fill-opacity='0.59'/%3E%3Ccircle cx='123.7' cy='72.9' r='0.88' fill-opacity='0.28'/%3E%3Ccircle cx='215.9' cy='83.3' r='1.07' fill-opacity='0.73'/%3E%3Ccircle cx='94.2' cy='57.0' r='0.54' fill-opacity='0.51'/%3E%3Ccircle cx='14.9' cy='22.2' r='0.53' fill-opacity='0.27'/%3E%3Ccircle cx='81.6' cy='19.7' r='0.50' fill-opacity='0.27'/%3E%3Ccircle cx='24.4' cy='54.1' r='0.51' fill-opacity='0.58'/%3E%3Ccircle cx='147.4' cy='33.3' r='0.56' fill-opacity='0.33'/%3E%3Ccircle cx='87.4' cy='30.1' r='0.68' fill-opacity='0.45'/%3E%3Ccircle cx='111.8' cy='63.5' r='0.54' fill-opacity='0.30'/%3E%3Ccircle cx='82.2' cy='45.4' r='0.78' fill-opacity='0.30'/%3E%3Ccircle cx='5.5' cy='93.3' r='0.88' fill-opacity='0.35'/%3E%3Ccircle cx='130.4' cy='14.5' r='0.55' fill-opacity='0.33'/%3E%3Ccircle cx='207.2' cy='78.0' r='0.66' fill-opacity='0.46'/%3E%3Ccircle cx='40.1' cy='82.8' r='0.84' fill-opacity='0.72'/%3E%3Ccircle cx='79.1' cy='41.4' r='0.75' fill-opacity='0.53'/%3E%3Ccircle cx='204.6' cy='84.8' r='1.04' fill-opacity='0.71'/%3E%3Ccircle cx='54.4' cy='66.0' r='0.68' fill-opacity='0.26'/%3E%3Ccircle cx='6.7' cy='46.8' r='0.59' fill-opacity='0.48'/%3E%3Ccircle cx='229.6' cy='60.8' r='0.93' fill-opacity='0.68'/%3E%3Ccircle cx='229.2' cy='54.2' r='0.59' fill-opacity='0.34'/%3E%3Ccircle cx='47.2' cy='39.5' r='0.68' fill-opacity='0.49'/%3E%3Ccircle cx='201.7' cy='63.2' r='0.82' fill-opacity='0.61'/%3E%3Ccircle cx='20.3' cy='75.7' r='1.03' fill-opacity='0.68'/%3E%3Ccircle cx='180.0' cy='63.1' r='0.59' fill-opacity='0.60'/%3E%3Ccircle cx='79.8' cy='84.5' r='1.14' fill-opacity='0.49'/%3E%3Ccircle cx='96.3' cy='93.0' r='1.03' fill-opacity='0.37'/%3E%3Ccircle cx='30.5' cy='33.6' r='0.72' fill-opacity='0.43'/%3E%3Ccircle cx='35.1' cy='86.1' r='1.16' fill-opacity='0.66'/%3E%3Ccircle cx='84.1' cy='68.2' r='0.57' fill-opacity='0.26'/%3E%3Ccircle cx='233.0' cy='75.0' r='0.80' fill-opacity='0.75'/%3E%3Ccircle cx='104.1' cy='88.7' r='1.07' fill-opacity='0.39'/%3E%3Ccircle cx='60.4' cy='48.0' r='0.59' fill-opacity='0.45'/%3E%3Ccircle cx='62.2' cy='58.6' r='0.56' fill-opacity='0.63'/%3E%3Ccircle cx='84.9' cy='61.6' r='0.77' fill-opacity='0.65'/%3E%3Ccircle cx='101.0' cy='91.4' r='0.86' fill-opacity='0.60'/%3E%3Ccircle cx='125.6' cy='12.5' r='0.53' fill-opacity='0.26'/%3E%3Ccircle cx='0.9' cy='84.4' r='0.61' fill-opacity='0.54'/%3E%3Ccircle cx='174.0' cy='68.7' r='0.67' fill-opacity='0.51'/%3E%3Ccircle cx='133.3' cy='83.5' r='0.57' fill-opacity='0.59'/%3E%3Ccircle cx='59.6' cy='46.6' r='0.77' fill-opacity='0.41'/%3E%3Ccircle cx='134.8' cy='82.0' r='1.08' fill-opacity='0.51'/%3E%3Ccircle cx='147.0' cy='65.1' r='0.76' fill-opacity='0.57'/%3E%3C/g%3E%3C/svg%3E") 0 0 / 240px 100px; mask-image: linear-gradient(transparent, black 40%); opacity: .5; }
+    .fx i {
+      --c: var(--toki);
+      display: block;
+      position: absolute;
+      &:nth-child(4n + 2) { --c: var(--relu); }
+      &:nth-child(4n + 3) { --c: var(--ada); }
+      &:nth-child(4n + 4) { --c: var(--logi); }
+      &:nth-child(-n + 8) {
+        left: calc(var(--i) * 13.4% + 1.5%);
+        top: 0;
+        height: 76%;
+        width: clamp(36px, 5vw, 80px);
+        translate: -50% 0;
+        background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--a, var(--c)) 26%, transparent), transparent);
+        mask-image: linear-gradient(transparent, black 35%, black 80%, transparent);
+        animation: k-pop-column 5s ease-in-out infinite alternate;
+        animation-delay: calc(var(--i) * -1.3s);
+      }
+      /* (four on a phone, one in each colour) */
+      @media (max-width: 640px) {
+        &:nth-child(-n + 4) { left: calc(var(--i) * 25% + 12.5%); }
+        &:nth-child(n + 5):nth-child(-n + 8) { display: none; }
+      }
+      &:nth-child(n + 9) {
+        left: calc(mod(var(--i) * 37 + 11, 94) * 1% + 3%);
+        top: calc(mod(var(--i) * 13, 20) * 1% + 78%);
+        width: 3px;
+        height: 3px;
+        border-radius: 50%;
+        background: var(--pearl);
+        box-shadow: 0 0 6px 1px color-mix(in srgb, var(--a, var(--c)) 70%, transparent);
+        animation: k-pop-glint 2.8s ease-in-out infinite;
+        animation-delay: calc(var(--i) * -.53s);
+      }
+    }
   }
 
+  /* the masthead is the video's corner tag: the rollout's label in Unbounded Light, spaced wide, after a dot in the singer's colour */
   .masthead {
-    background: var(--plum);
-    color: white;
-    border-bottom: 4px solid;
-    border-image: var(--rainbow) 1;
-    font: 11px/1.4 var(--display);
-    letter-spacing: .08em;
+    background: rgb(244 240 250 / 92%);
+    color: var(--text);
+    box-shadow: inset 0 -1px var(--hair);
+    font: 9.5px/1.3 var(--wide);
+    letter-spacing: .2em;
+    a:hover { text-decoration: none; opacity: .6; }
+    .issue::before {
+      content: "";
+      display: inline-block;
+      width: .7em;
+      height: .7em;
+      margin: 0 .9em .08em 0;
+      border-radius: 50%;
+      background: var(--a, currentColor);
+      vertical-align: middle;
+    }
+    @media (prefers-color-scheme: dark) { background: rgb(6 5 11 / 92%); color: var(--pearl); }
+    @media (width < 400px) { font-size: 9px; letter-spacing: .08em; }
   }
 
-  /* the title is the group's logo: candy letters in the members' colours, bouncing on a wave */
+  /* The title as the video sets a line: a stack of Unbounded Black with the tender word in Instrument Serif italic, rising into
+     place word by word, with the group's curve (the MUSIC CURVE logo's) climbing behind it. */
   .cover h1 {
     position: relative;
-    font-size: clamp(1.7rem, 7vw, 4.9rem);
-    gap: .1em;
-    &::before, &::after {
+    isolation: isolate;
+    font-size: clamp(1.45rem, 5.6vw, 4.3rem);
+    gap: .04em;
+    .line-2 { font-size: 1.32em; }
+    &::after {
       content: "";
       position: absolute;
-      width: .7em;
-      aspect-ratio: 1;
-      background: var(--logi);
-      clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
-      animation: k-pop-twinkle 1.6s ease-in-out infinite;
+      z-index: -1;
+      inset: 32% -4% -8% -2%;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 300' preserveAspectRatio='none'%3E%3Cdefs%3E%3ClinearGradient id='g' x2='1'%3E%3Cstop offset='0' stop-color='%23FF4FA8'/%3E%3Cstop offset='.36' stop-color='%231FD6A8'/%3E%3Cstop offset='.68' stop-color='%238F63FF'/%3E%3Cstop offset='1' stop-color='%23FFB321'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg fill='none' stroke='url(%23g)' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M0 285L25 284L50 283L75 282L100 281L125 279L150 278L175 277L200 275L225 273L250 271L275 269L300 267L325 264L350 262L375 259L400 256L425 252L450 249L475 245L500 240L525 236L550 231L575 225L600 219L625 213L650 206L675 199L700 190L725 182L750 172L775 162L800 151L825 138L850 125L875 111L900 96L925 79L950 61L975 41L1000 20' stroke-width='16' stroke-opacity='.18' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 285L25 284L50 283L75 282L100 281L125 279L150 278L175 277L200 275L225 273L250 271L275 269L300 267L325 264L350 262L375 259L400 256L425 252L450 249L475 245L500 240L525 236L550 231L575 225L600 219L625 213L650 206L675 199L700 190L725 182L750 172L775 162L800 151L825 138L850 125L875 111L900 96L925 79L950 61L975 41L1000 20' stroke-width='5' vector-effect='non-scaling-stroke'/%3E%3C/g%3E%3C/svg%3E") 0 0 / 100% 100% no-repeat;
+      opacity: .9;
     }
-    &::before { left: 4%; top: -.2em; }
-    &::after { right: 5%; bottom: -.1em; width: .5em; background: var(--neon-cyan); animation-delay: -.8s; }
   }
-  .ransom .word { gap: .02em; }
+  .ransom .word { gap: 0; }
   .ransom .gap { width: .3em; }
   .ransom .glyph {
-    --c: var(--toki);
-    --c-lt: var(--toki-lt);
-    padding: 0 .02em;
+    padding: 0 .004em;
+    color: var(--ink);
     font-family: var(--display);
-    color: white;
-    -webkit-text-stroke: .24em white;
-    text-shadow: 0 .09em 0 rgb(58 33 80 / 30%);
-    transform: translateY(calc(sin(var(--i) * 1.3) * .07em)) rotate(calc(sin(var(--i) * 2.1) * 5deg));
-    animation: k-pop-spring .45s cubic-bezier(.3, 1.6, .5, 1) backwards;
-    animation-delay: calc(var(--i) * 35ms);
-    &:nth-child(4n + 2) { --c: var(--relu); --c-lt: rgb(200 246 230); }
-    &:nth-child(4n + 3) { --c: var(--ada); --c-lt: rgb(228 218 255); }
-    &:nth-child(4n + 4) { --c: var(--logi); --c-lt: rgb(255 234 184); }
-    &::before { color: rgb(58 33 80); -webkit-text-stroke: .12em rgb(58 33 80); text-shadow: none; }
-    &::after { background: linear-gradient(white 12%, var(--c-lt) 30%, var(--c) 72%); background-clip: text; color: transparent; -webkit-text-stroke: 0; text-shadow: none; }
-    @media (prefers-color-scheme: dark) { filter: drop-shadow(0 0 .1em var(--c)); text-shadow: none; }
+    line-height: 1.02;
+    transform: none;
+    /* the studio's soft shadow, falling forward */
+    text-shadow: 0 .06em .1em rgb(42 32 70 / 18%);
+    animation: k-pop-rise .7s cubic-bezier(.16, 1, .3, 1) backwards;
+    animation-delay: calc(var(--i) * 26ms + 60ms);
+    &::before, &::after { content: none; }
+    /* on the stage the type blooms instead */
+    @media (prefers-color-scheme: dark) { text-shadow: 0 0 .22em rgb(244 240 250 / 30%); }
   }
-  .dek { font-size: 1.05rem; }
+  .cover .line-2 .word:first-child .glyph {
+    font: italic 1.12em/1 var(--serif-i);
+    text-transform: lowercase;
+    text-shadow: none;
+    translate: 0 .08em;
+  }
+  .cover .line-2 .word:first-child { margin-inline-end: -.06em; }
+  .dek { max-width: 40rem; margin-block: 1.1rem 1.4rem; color: var(--ink-soft); font: 1rem/1.6 var(--ui); }
+  /* the hook, as a headline's tender line */
   .tape {
     display: table;
-    margin: 0 auto .9rem;
-    padding: .2rem .8rem .25rem;
-    border: 3px solid rgb(58 33 80);
-    border-radius: 14px;
-    background: rgb(255 226 150);
-    color: rgb(43 24 56);
-    font: 1.05rem/1.3 var(--display);
-    rotate: -2deg;
-    box-shadow: 3px 4px 0 var(--plum);
+    margin: 0 auto .5rem;
+    padding: 0;
+    background: none;
+    color: var(--ink);
+    font: italic clamp(1.5rem, 3vw, 2.1rem)/1.15 var(--serif-i);
+    rotate: 0deg;
+    box-shadow: none;
   }
 
-  /* the player: a glossy card with sparkles for corners */
+  /* the player: the premiere's player, a glossy card lit from above (by night, lit by the stage's colour below it) */
   .player {
-    border-radius: 26px;
+    border-radius: 22px;
     background: var(--card);
-    box-shadow: 0 0 0 3px var(--plum), 0 9px 0 var(--plum), 0 21px 44px rgb(143 99 255 / 28%);
-    &::before, &::after {
-      width: 38px;
-      height: 38px;
-      top: -20px;
-      background: var(--logi);
-      clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
-      rotate: 0deg;
-      animation: k-pop-twinkle 2s ease-in-out infinite;
+    box-shadow: 0 0 0 1px var(--hair), 0 2px 4px rgb(42 32 70 / 6%), 0 34px 70px -30px rgb(42 32 70 / 42%);
+    &::before, &::after { content: none; }
+    @media (prefers-color-scheme: dark) {
+      box-shadow: 0 0 0 1px rgb(244 240 250 / 11%), inset 0 1px rgb(244 240 250 / 8%), 0 40px 90px -40px color-mix(in srgb, var(--a, var(--ada)) 70%, transparent);
     }
-    /* close enough in that a twinkle (a 45° turn) stays on the page */
-    &::before { left: -6px; }
-    &::after { right: -6px; background: var(--toki); animation-delay: -1s; }
-    @media (prefers-color-scheme: dark) { box-shadow: 0 0 0 3px var(--plum), 0 0 0 5px var(--neon-pink), 0 9px 0 var(--plum), 0 0 36px rgb(255 61 168 / 45%); }
   }
-  .stage { border-radius: 16px; }
+  .stage { border-radius: 14px; background: var(--stage); }
+  /* Play: the stage's ring mark, glowing, over frosted glass */
   .big-play {
-    border: 5px solid white;
-    background: radial-gradient(circle at 36% 30%, rgb(236 70 156), rgb(196 12 108) 62%);
-    color: white;
-    font-family: var(--display);
+    border: 2px solid var(--pearl);
+    background: rgb(6 5 11 / 40%);
+    backdrop-filter: blur(10px);
+    color: var(--pearl);
+    font-family: var(--wide);
     rotate: 0deg;
-    box-shadow: 0 0 0 4px var(--plum), 0 0 34px var(--neon-pink);
-    .big-play-label { font-size: calc(clamp(12px, 1.9cqi, 19px) * var(--grow)); }
+    box-shadow: 0 0 0 7px rgb(244 240 250 / 13%), 0 0 44px rgb(244 240 250 / 42%);
+    transition: --grow .15s, background-color .15s;
+    .big-play-label { font-size: calc(clamp(9px, 1.3cqi, 13px) * var(--grow)); letter-spacing: .32em; margin: .5em -.32em 0 0; }
+    &:hover, &:focus-visible { background: rgb(255 79 168 / 55%); outline: none; box-shadow: 0 0 0 7px rgb(255 79 168 / 25%), 0 0 50px rgb(255 79 168 / 60%); }
   }
+  .player:is([data-loading], [data-no-video]):not([data-state="idle"]) .screen::after { padding: .35rem .8rem; border-radius: 999px; background: rgb(6 5 11 / 70%); color: var(--pearl); font: 11px/1.3 var(--wide); letter-spacing: .14em; }
+  .load-error {
+    background: rgb(6 5 11 / 78%);
+    color: var(--pearl);
+    font-family: var(--ui);
+    .retry { border: 0; border-radius: 999px; background: var(--pearl); color: var(--text); font: 13px var(--ui-b); padding: .4em 1.2em; box-shadow: none; }
+  }
+
+  /* the deck: pills with a hairline, the counter in Space Mono */
   .deck {
-    font-family: var(--code);
+    color: var(--ink-soft);
     button {
-      border: 3px solid var(--plum);
+      border: 0;
       border-radius: 999px;
       background: var(--card);
       color: var(--ink);
-      box-shadow: 0 3px 0 var(--plum);
+      box-shadow: inset 0 0 0 1px var(--hair), 0 1px 2px rgb(42 32 70 / 8%);
+      transition: box-shadow .15s;
+      &:hover { box-shadow: inset 0 0 0 1px var(--ink); }
+      &:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     }
-    .deck-play { background: var(--toki); color: rgb(43 24 56); }
+    .deck-play, .deck-play:hover { background: var(--ink); color: var(--paper); box-shadow: none; }
+    .time { color: var(--ink); }
+    .follow { font-family: var(--ui); }
     .version select {
       color-scheme: inherit;
-      border: 3px solid var(--plum);
+      border: 0;
       border-radius: 999px;
-      padding: .25rem .6rem;
-      background: light-dark(rgb(255 234 184), var(--card));
-      color: var(--ink);
-      box-shadow: 0 3px 0 var(--plum);
-    }
-  }
-  .check input { border: 2px solid var(--plum); border-radius: 6px; background: var(--card); color: var(--toki-dk); }
-  .scrub input {
-    &::-webkit-slider-runnable-track { background: linear-gradient(to right, var(--toki), var(--ada) var(--pct, 0%), var(--card) 0); border: 2px solid var(--plum); border-radius: 999px; }
-    &::-moz-range-track { background: var(--card); border: 2px solid var(--plum); border-radius: 999px; }
-    &::-moz-range-progress { background: linear-gradient(to right, var(--toki), var(--ada)); border-radius: 999px; }
-    &::-webkit-slider-thumb { width: 20px; height: 20px; margin-top: -7px; background: white; border: 3px solid var(--plum); border-radius: 50%; }
-    &::-moz-range-thumb { width: 14px; height: 14px; background: white; border: 3px solid var(--plum); border-radius: 50%; }
-  }
-  .scrub .ticks span { color: var(--ink-soft); &::before { border-color: var(--plum); } }
-
-  /* section heads are variety-show captions */
-  .lyrics-head h2, .album h2, .jukebox h2, .liner h2 {
-    color: white;
-    font: 1.9rem/1.2 var(--display);
-    letter-spacing: .02em;
-    text-shadow: var(--outline), 0 6px 0 var(--plum);
-  }
-  .lyrics-head .inline-play { border-color: var(--plum); }
-
-  .verse-head {
-    align-items: center;
-    h3 { font-size: 1.9rem; }
-    .ransom .glyph { -webkit-text-stroke-width: .2em; &::before { -webkit-text-stroke-width: .1em; } }
-    .era { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; font-family: var(--display); }
-    .era-dates { padding: .15em .75em; border-radius: 999px; background: var(--plum); color: white; font-size: .78rem; }
-    .era-span {
-      margin: 0;
-      padding: .1em .7em;
-      border: 2px solid var(--lilac);
-      border-radius: 999px;
+      padding-inline: .8rem .5rem;
       background: var(--card);
-      color: var(--ada-dk);
-      font: .75rem/1.5 var(--display);
-      text-transform: none;
-      rotate: -3deg;
-      &::before { content: "("; }
-      &::after { content: "…)"; }
+      color: var(--ink);
+      font: 13px var(--ui);
+      box-shadow: inset 0 0 0 1px var(--hair), 0 1px 2px rgb(42 32 70 / 8%);
+      &:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     }
   }
+  /* the seek bar: played, in the singer's colour, or the group's curve */
+  .scrub input {
+    &::-webkit-slider-runnable-track { height: 6px; border: 0; border-radius: 999px; background: linear-gradient(to right, transparent var(--pct, 0%), var(--track) 0), var(--a-fill, var(--curve-4)); }
+    &::-moz-range-track { height: 6px; border: 0; border-radius: 999px; background: var(--track); }
+    &::-moz-range-progress { height: 6px; border-radius: 999px; background: var(--a-fill, var(--curve-4)); }
+    &::-webkit-slider-thumb { width: 16px; height: 16px; margin-top: -5px; border: 0; border-radius: 50%; background: var(--card); box-shadow: 0 0 0 1.5px var(--ink), 0 2px 6px rgb(0 0 0 / 18%); }
+    &::-moz-range-thumb { width: 13px; height: 13px; border: 1.5px solid var(--ink); border-radius: 50%; background: var(--card); }
+  }
+  &:has(.verse .line.now, .outro .line.now) { --a-fill: linear-gradient(var(--a), var(--a)); }
+  .scrub .ticks span { color: var(--ink-soft); &::before { border-left: 1px solid var(--hair); } }
 
-  /* dates are the comeback-schedule card, counting down to D-DAY */
+  /* section heads: Unbounded Black, tight */
+  .lyrics-head h2, .album h2, .jukebox h2, .liner h2 {
+    font: clamp(1.5rem, 3.4vw, 2rem)/1.1 var(--display);
+    letter-spacing: -.01em;
+    text-transform: uppercase;
+  }
+  .lyrics-head {
+    p { color: var(--ink-soft); }
+    .all-notes { color: var(--ink); font: .85rem var(--ui); text-decoration-color: var(--toki); text-decoration-thickness: 1.5px; }
+  }
+
+  /* verse heads: the rollout's label for that part of the video over the verse's number, its dates on the date stamp and its span
+     as the tender word; the label's dot is the colour of the member who starts the verse */
+  .verse-head {
+    align-items: baseline;
+    gap: .35rem 1.1rem;
+    margin-bottom: 1.3rem;
+    &::before {
+      content: var(--rollout) / "";
+      flex-basis: 100%;
+      padding-left: 1.5em;
+      background: radial-gradient(circle closest-side, var(--lead) 92%, transparent) 0 50% / .7em .7em no-repeat;
+      color: var(--ink-soft);
+      font: 9.5px/1.4 var(--wide);
+      letter-spacing: .24em;
+    }
+    h3 { font-size: clamp(1.6rem, 3.2vw, 2rem); }
+    .ransom .glyph { animation: none; }
+    .era { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .8rem; color: var(--ink-soft); font: .8rem/1.4 var(--mono); }
+    .era-span { margin: 0; padding: 0; border: 0; color: var(--ink); font: italic 1.4rem/1 var(--serif-i); text-transform: none; rotate: 0deg; }
+  }
+  #v1 { --rollout: "TEASERS"; --lead: var(--toki); }
+  #v2 { --rollout: "PROMOTIONS"; --lead: var(--relu); }
+  #v3 { --rollout: "HEADS (ATTN!’S FANDOM) · STREAMING PARTY"; --lead: var(--ada); }
+  #v4 { --rollout: "ENCORE STAGE"; --lead: var(--logi); }
+
+  /* the dates are the video's date stamp: Space Mono, year first */
   .stamp {
-    position: relative;
-    display: inline-grid;
-    grid-template-columns: auto auto;
-    justify-content: start;
-    column-gap: .3em;
-    row-gap: .15rem;
-    padding: .25rem .5rem .3rem 1.85rem;
-    border: 2px solid var(--m);
-    border-radius: 10px;
-    background: var(--card);
-    color: var(--ink);
-    font: .6rem/1.25 var(--display);
-    rotate: -1deg;
+    display: inline-flex;
+    align-items: baseline;
+    gap: .55em;
+    padding: 0;
+    border: 0;
+    color: var(--ink-soft);
+    font: .7rem/1.4 var(--mono);
+    letter-spacing: .04em;
+    rotate: 0deg;
     opacity: 1;
     mask-image: none;
-    box-shadow: 0 2px 0 var(--plum);
-    &::before {
-      content: "";
-      position: absolute;
-      left: .38rem;
-      top: 50%;
-      translate: 0 -50%;
-      width: 1.1rem;
-      height: 1.15rem;
-      border: 2px solid var(--plum);
-      border-radius: 4px;
-      background: linear-gradient(var(--m) 0 38%, white 0);
-    }
-    &[data-comeback]::after {
-      content: "COMEBACK " attr(data-comeback);
-      grid-column: 1 / -1;
-      justify-self: start;
-      padding: 0 .5em;
-      border-radius: 999px;
-      background: var(--m-dk);
-      color: var(--chip-ink);
-      font: .5rem/1.6 var(--code);
-      letter-spacing: .02em;
-    }
-    @media (max-width: 640px) { grid-template-columns: auto auto auto; align-items: center; &[data-comeback]::after { grid-column: auto; margin-left: .3em; } }
+    .stamp-y { order: -1; color: var(--ink); }
   }
-  .line.now .stamp { scale: 1.08; box-shadow: 0 2px 0 var(--plum), 0 0 0 4px var(--m-lt), 0 0 18px var(--m); }
+  .line.now .stamp { scale: 1; color: var(--m-ink); .stamp-y { color: var(--m-ink); } }
 
-  /* lines are rounded caption cards; the one being sung fills with its member's colour, chip and all */
+  /* The verses' lines are the video's colour-coded parts: clean cards, each with a bar in its singer's colour, in couplets, with her
+     name over the first line of each. */
+  .verse .line:nth-child(odd):not(:first-child) { margin-top: 1.05rem; }
   .lyric {
-    padding: .4rem .5rem .45rem 1rem;
-    border: 2px solid transparent;
-    border-radius: 18px;
+    padding: .5rem .55rem .55rem 1rem;
+    border: 0;
+    border-radius: 12px;
     background: var(--card);
     color: var(--ink);
-    font: clamp(.98rem, 2.1vw, 1.16rem)/1.3 var(--heavy);
+    font: clamp(1rem, 2vw, 1.13rem)/1.38 var(--ui-b);
+    letter-spacing: -.005em;
     clip-path: none;
     rotate: 0deg;
-    box-shadow: 0 3px 0 rgb(201 182 255);
-    @media (prefers-color-scheme: dark) { box-shadow: 0 3px 0 var(--plum), 0 0 0 1px rgb(255 255 255 / 10%); }
+    box-shadow: inset 3px 0 var(--m), 0 0 0 1px var(--hair), 0 1px 2px rgb(42 32 70 / 6%);
   }
   button.lyric {
-    &:hover, &:focus-visible { background: var(--m-lt); rotate: 0deg; }
-    &:focus-visible { border-color: var(--plum); box-shadow: 0 3px 0 var(--plum); }
+    &:hover, &:focus-visible { background: var(--m-tint); rotate: 0deg; }
+    &:focus-visible { box-shadow: inset 3px 0 var(--m), 0 0 0 2px var(--ink); }
   }
-  .lyric .tab, .line:nth-child(3n + 2) .lyric .tab, .line:nth-child(3n + 3) .lyric .tab {
-    width: 1.5rem;
-    height: 1.5rem;
-    border-radius: 50%;
-    background: var(--m-lt);
-    color: var(--ink);
-    font: .95rem/1 var(--display);
-    clip-path: none;
-    box-shadow: inset 0 -2px 0 rgb(58 33 80 / 18%);
-  }
-  .line.seed .lyric { background: linear-gradient(90deg, var(--ada-lt), var(--toki-lt)); }
-  .line.open .lyric { background: var(--m-lt); border-color: var(--plum); box-shadow: 0 3px 0 var(--plum); rotate: 0deg; }
+  /* the member's name, as the subtitle's chip has it, over the first line of her couplet */
   .lyric::before {
-    content: var(--mname);
+    content: var(--mname) / "";
     position: absolute;
-    left: .7rem;
-    top: -.8rem;
-    padding: .05rem .55rem;
-    border-radius: 999px;
-    background: var(--m-dk);
-    color: var(--chip-ink);
-    font: .58rem/1.6 var(--display);
-    letter-spacing: .06em;
-    box-shadow: 0 0 0 2px var(--card);
+    left: .75rem;
+    top: 0;
+    translate: 0 -118%;
+    padding-left: 1.4em;
+    background: radial-gradient(circle closest-side, var(--m) 90%, transparent) 0 50% / .72em .72em no-repeat;
+    color: var(--m-ink);
+    font: 8.5px/1.3 var(--wide);
+    letter-spacing: .24em;
     visibility: hidden;
-    @media (max-width: 640px) { left: auto; right: 2.8rem; }
+    @media (max-width: 640px) { left: auto; right: .75rem; }
   }
-  /* the member's colour wipes across the line as it's sung, in step with the audio (page.mjs sets --line-p) */
+  .verse .line:nth-child(odd) .lyric::before { visibility: visible; }
+  .lyric .tab, .line:nth-child(3n + 2) .lyric .tab, .line:nth-child(3n + 3) .lyric .tab {
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 50%;
+    background: none;
+    color: var(--ink-soft);
+    font: .95rem/1 var(--ui);
+    clip-path: none;
+    box-shadow: inset 0 0 0 1px var(--hair);
+  }
+  .line.open .lyric .tab { background: var(--ink); color: var(--paper); box-shadow: none; }
+  .line.open .lyric { background: var(--m-tint); box-shadow: inset 3px 0 var(--m), 0 0 0 1px color-mix(in srgb, var(--m) 45%, transparent); }
+  /* @tautologer's original verse: rare cards, in holo foil */
+  .line.seed .lyric::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    padding: 2px;
+    border-radius: inherit;
+    background: var(--holo);
+    mask: linear-gradient(black 0 0) content-box exclude, linear-gradient(black 0 0);
+    pointer-events: none;
+  }
+
+  /* The line being sung comes forward, lit in its singer's colour. Its words light as they're sung: those to come faint, the one
+     being sung in her colour, filling as it's sung and underlined as it goes, the video's subtitle's way, and those sung at full
+     strength (page.mjs sets each word's --w-p). Without its words' times, the words fill evenly as the line goes, and a hairline
+     runs along the card's foot (page.mjs sets --line-p). */
   .line.now .lyric {
-    border: 3px solid var(--plum);
-    background: linear-gradient(90deg, var(--m-lt) 50%, var(--card) 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%;
-    color: var(--ink);
-    scale: 1.03;
-    rotate: -.5deg;
-    box-shadow: 0 4px 0 var(--plum), 0 0 0 5px color-mix(in srgb, var(--m) 40%, transparent), 0 0 26px var(--m);
-    &::before { visibility: visible; }
+    background: linear-gradient(90deg, var(--m) 50%, transparent 50%) calc((1 - var(--line-p, 0)) * 100%) 100% / 200% 2px no-repeat, var(--card);
+    scale: 1.025;
+    rotate: 0deg;
+    box-shadow: inset 4px 0 var(--m), 0 0 0 1.5px color-mix(in srgb, var(--m) 60%, transparent), 0 12px 32px -10px color-mix(in srgb, var(--m) 55%, transparent);
+    .lyric-text {
+      background: linear-gradient(90deg, var(--sung) 50%, var(--unsung) 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%;
+      background-clip: text;
+      color: transparent;
+    }
+    .tab { color: var(--ink); }
   }
-  /* with its words' times, it reaches each word as it's sung, and a card that wraps fills row by row: the rows sung, then the
-     row being sung, in its band of the card (page.mjs sets --row-top and --row-h) */
-  .line.now.worded .lyric {
-    background:
-      linear-gradient(var(--m-lt), var(--m-lt)) 0 0 / 100% var(--row-top) no-repeat,
-      linear-gradient(90deg, var(--m-lt) 50%, transparent 50%) calc((1 - var(--line-p, 0)) * 100%) var(--row-top) / 200% var(--row-h) no-repeat,
-      var(--card);
+  .line.now.worded {
+    .lyric { background-size: 0 0, auto; }
+    .lyric-text { background-size: 0 0; }
+    .w {
+      /* (1 once the word is sung, until then 0) */
+      --done: clamp(0, (var(--w-p) - .999) * 1000, 1);
+      position: relative;
+      background: linear-gradient(90deg, color-mix(in oklab, var(--m-ink) calc(100% - var(--done) * 100%), var(--sung)) 50%, var(--unsung) 50%) calc((1 - var(--w-p)) * 100%) 0 / 200% 100%;
+      background-clip: text;
+      color: transparent;
+      &::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        bottom: -.02em;
+        width: calc(var(--w-p) * 100%);
+        height: max(2px, .11em);
+        border-radius: 1px;
+        background: var(--m);
+      }
+    }
   }
   .from-here {
-    border: 2px solid var(--m-dk);
-    background: var(--card);
-    color: var(--m-dk);
-    opacity: .55;
-    &:hover, &:focus-visible { background: var(--m-dk); color: var(--chip-ink); }
-  }
-
-  /* annotations are the variety show's TMI cards */
-  .note, .line:nth-child(3n + 2) .note, .line:nth-child(3n + 3) .note {
-    padding: 1.3rem 1.2rem .9rem;
-    border: 3px solid var(--plum);
-    border-radius: 20px;
+    border: 0;
     background: var(--card);
     color: var(--ink);
-    font: .95rem/1.55 var(--type);
+    box-shadow: inset 0 0 0 1px var(--hair);
+    opacity: .55;
+    &:hover, &:focus-visible { background: var(--m); color: var(--text); box-shadow: none; opacity: 1; }
+    &:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  }
+  .line.now .from-here { background: var(--m); color: var(--text); box-shadow: none; }
+
+  /* annotations are the backs of the photocards: TMI, by the singer's dot, over the story */
+  .note, .line:nth-child(3n + 2) .note, .line:nth-child(3n + 3) .note {
+    margin: .75rem 0 1rem;
+    padding: 2.1rem 1.25rem 1rem;
+    border-radius: 14px;
+    background: var(--card);
+    color: var(--ink);
+    font: .94rem/1.62 var(--ui);
     rotate: 0deg;
-    box-shadow: 0 5px 0 var(--plum);
+    box-shadow: inset 0 3px var(--m), 0 0 0 1px var(--hair), var(--lift);
     &::before {
-      content: "TMI ♡";
-      left: 1rem;
-      top: -.85rem;
+      content: "TMI" / "";
+      left: 1.25rem;
+      top: .95rem;
       width: auto;
       height: auto;
-      padding: .1rem .75rem;
-      border-radius: 999px;
-      background: var(--m-dk);
-      color: var(--chip-ink);
-      font: .72rem/1.5 var(--display);
-      rotate: -3deg;
-      box-shadow: 0 0 0 3px var(--card);
+      padding-left: 1.4em;
+      background: radial-gradient(circle closest-side, var(--m) 90%, transparent) 0 50% / .72em .72em no-repeat;
+      color: var(--m-ink);
+      font: 8.5px/1.3 var(--wide);
+      letter-spacing: .24em;
+      rotate: 0deg;
     }
-    .sources li::before { content: "♡ "; color: var(--m-dk); }
+    a { color: var(--ink); text-decoration-color: var(--m); }
+    .sources { color: var(--ink-soft); li::before { content: "→ " / ""; color: var(--m-ink); } }
   }
-  .seed-credit { font: 1rem var(--type); rotate: 0deg; }
+  .seed-credit { margin-top: 1.1rem; color: var(--ink-soft); font: italic 1.15rem/1.4 var(--serif-i); rotate: 0deg; }
 
-  /* choruses are the stage: the LED wall, beams, and a lightstick ocean; the venue grows every time */
+  /* The choruses are the stage, in either scheme: the ink void, a glitter floor, and the group's four colours. Each is the set of
+     its part of the video, labelled as the video tags it: the M/V premiere, the music show's comeback stage and first win, and
+     the encore. The words are Unbounded Black, the tender last lines Instrument Serif. */
   .chorus {
-    --hue: var(--neon-pink);
+    --ink: var(--pearl);
+    --ink-soft: rgb(244 240 250 / 62%);
+    --hair: rgb(244 240 250 / 16%);
+    --card: var(--night);
+    --m-tint: rgb(244 240 250 / 10%);
+    --sung: var(--pearl);
+    --unsung: rgb(244 240 250 / 32%);
+    --tag: "M/V PREMIERE";
     position: relative;
     isolation: isolate;
     overflow: hidden;
     margin: 2.5rem -16px;
-    padding: 2rem clamp(16px, 3vw, 2.5rem) 3.6rem;
-    border-radius: 28px;
+    padding: 3.4rem clamp(16px, 3vw, 2.5rem) 3.6rem;
+    border-radius: 22px;
+    color: var(--pearl);
+    /* the M/V set: light columns in the four colours, the horizon's glow, the glitter floor and its ring mark */
     background:
-      radial-gradient(circle, var(--hue) 2.5px, transparent 3.5px) 0 calc(100% - 10px) / 20px 16px repeat-x,
-      radial-gradient(circle, var(--neon-cyan) 2.5px, transparent 3.5px) 10px calc(100% - 26px) / 20px 16px repeat-x,
-      radial-gradient(circle, rgb(255 255 255 / 11%) 1.5px, transparent 2px) 0 0 / 8px 8px,
-      conic-gradient(from 160deg at 15% -12%, transparent 0 8deg, color-mix(in srgb, var(--hue) 30%, transparent) 10deg 17deg, transparent 20deg 360deg),
-      conic-gradient(from 165deg at 85% -12%, transparent 0 20deg, rgb(53 232 255 / 22%) 23deg 30deg, transparent 33deg 360deg),
-      linear-gradient(rgb(11 5 32), rgb(24 10 52) 55%, rgb(58 26 107));
-    box-shadow: 0 0 0 4px var(--plum), 0 12px 32px rgb(58 33 80 / 35%);
+      radial-gradient(ellipse 36% 3.4rem at 50% 100%, transparent 86%, rgb(244 240 250 / 40%) 92%, transparent 98%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='100'%3E%3Cg fill='%23F4F0FA'%3E%3Ccircle cx='77.7' cy='33.6' r='0.66' fill-opacity='0.27'/%3E%3Ccircle cx='128.6' cy='54.3' r='0.52' fill-opacity='0.44'/%3E%3Ccircle cx='9.0' cy='59.7' r='0.53' fill-opacity='0.29'/%3E%3Ccircle cx='101.9' cy='86.1' r='0.58' fill-opacity='0.39'/%3E%3Ccircle cx='150.6' cy='93.1' r='0.92' fill-opacity='0.52'/%3E%3Ccircle cx='234.3' cy='18.6' r='0.60' fill-opacity='0.28'/%3E%3Ccircle cx='34.6' cy='29.5' r='0.56' fill-opacity='0.41'/%3E%3Ccircle cx='43.4' cy='70.5' r='0.85' fill-opacity='0.44'/%3E%3Ccircle cx='131.5' cy='21.5' r='0.51' fill-opacity='0.28'/%3E%3Ccircle cx='163.3' cy='59.3' r='0.64' fill-opacity='0.50'/%3E%3Ccircle cx='108.8' cy='48.7' r='0.79' fill-opacity='0.49'/%3E%3Ccircle cx='58.6' cy='70.0' r='0.78' fill-opacity='0.69'/%3E%3Ccircle cx='175.1' cy='47.6' r='0.85' fill-opacity='0.29'/%3E%3Ccircle cx='100.3' cy='81.9' r='0.60' fill-opacity='0.54'/%3E%3Ccircle cx='9.4' cy='76.2' r='0.95' fill-opacity='0.56'/%3E%3Ccircle cx='210.1' cy='49.9' r='0.76' fill-opacity='0.46'/%3E%3Ccircle cx='139.2' cy='61.4' r='0.89' fill-opacity='0.66'/%3E%3Ccircle cx='113.8' cy='76.0' r='0.54' fill-opacity='0.63'/%3E%3Ccircle cx='155.3' cy='95.6' r='1.11' fill-opacity='0.45'/%3E%3Ccircle cx='92.6' cy='76.3' r='0.51' fill-opacity='0.50'/%3E%3Ccircle cx='40.3' cy='29.4' r='0.51' fill-opacity='0.40'/%3E%3Ccircle cx='31.0' cy='43.8' r='0.63' fill-opacity='0.51'/%3E%3Ccircle cx='19.3' cy='60.9' r='0.75' fill-opacity='0.63'/%3E%3Ccircle cx='196.6' cy='88.3' r='0.69' fill-opacity='0.52'/%3E%3Ccircle cx='86.1' cy='89.5' r='1.17' fill-opacity='0.35'/%3E%3Ccircle cx='42.3' cy='42.3' r='0.57' fill-opacity='0.39'/%3E%3Ccircle cx='141.4' cy='45.3' r='0.50' fill-opacity='0.38'/%3E%3Ccircle cx='88.6' cy='69.4' r='1.01' fill-opacity='0.59'/%3E%3Ccircle cx='123.7' cy='72.9' r='0.88' fill-opacity='0.28'/%3E%3Ccircle cx='215.9' cy='83.3' r='1.07' fill-opacity='0.73'/%3E%3Ccircle cx='94.2' cy='57.0' r='0.54' fill-opacity='0.51'/%3E%3Ccircle cx='14.9' cy='22.2' r='0.53' fill-opacity='0.27'/%3E%3Ccircle cx='81.6' cy='19.7' r='0.50' fill-opacity='0.27'/%3E%3Ccircle cx='24.4' cy='54.1' r='0.51' fill-opacity='0.58'/%3E%3Ccircle cx='147.4' cy='33.3' r='0.56' fill-opacity='0.33'/%3E%3Ccircle cx='87.4' cy='30.1' r='0.68' fill-opacity='0.45'/%3E%3Ccircle cx='111.8' cy='63.5' r='0.54' fill-opacity='0.30'/%3E%3Ccircle cx='82.2' cy='45.4' r='0.78' fill-opacity='0.30'/%3E%3Ccircle cx='5.5' cy='93.3' r='0.88' fill-opacity='0.35'/%3E%3Ccircle cx='130.4' cy='14.5' r='0.55' fill-opacity='0.33'/%3E%3Ccircle cx='207.2' cy='78.0' r='0.66' fill-opacity='0.46'/%3E%3Ccircle cx='40.1' cy='82.8' r='0.84' fill-opacity='0.72'/%3E%3Ccircle cx='79.1' cy='41.4' r='0.75' fill-opacity='0.53'/%3E%3Ccircle cx='204.6' cy='84.8' r='1.04' fill-opacity='0.71'/%3E%3Ccircle cx='54.4' cy='66.0' r='0.68' fill-opacity='0.26'/%3E%3Ccircle cx='6.7' cy='46.8' r='0.59' fill-opacity='0.48'/%3E%3Ccircle cx='229.6' cy='60.8' r='0.93' fill-opacity='0.68'/%3E%3Ccircle cx='229.2' cy='54.2' r='0.59' fill-opacity='0.34'/%3E%3Ccircle cx='47.2' cy='39.5' r='0.68' fill-opacity='0.49'/%3E%3Ccircle cx='201.7' cy='63.2' r='0.82' fill-opacity='0.61'/%3E%3Ccircle cx='20.3' cy='75.7' r='1.03' fill-opacity='0.68'/%3E%3Ccircle cx='180.0' cy='63.1' r='0.59' fill-opacity='0.60'/%3E%3Ccircle cx='79.8' cy='84.5' r='1.14' fill-opacity='0.49'/%3E%3Ccircle cx='96.3' cy='93.0' r='1.03' fill-opacity='0.37'/%3E%3Ccircle cx='30.5' cy='33.6' r='0.72' fill-opacity='0.43'/%3E%3Ccircle cx='35.1' cy='86.1' r='1.16' fill-opacity='0.66'/%3E%3Ccircle cx='84.1' cy='68.2' r='0.57' fill-opacity='0.26'/%3E%3Ccircle cx='233.0' cy='75.0' r='0.80' fill-opacity='0.75'/%3E%3Ccircle cx='104.1' cy='88.7' r='1.07' fill-opacity='0.39'/%3E%3Ccircle cx='60.4' cy='48.0' r='0.59' fill-opacity='0.45'/%3E%3Ccircle cx='62.2' cy='58.6' r='0.56' fill-opacity='0.63'/%3E%3Ccircle cx='84.9' cy='61.6' r='0.77' fill-opacity='0.65'/%3E%3Ccircle cx='101.0' cy='91.4' r='0.86' fill-opacity='0.60'/%3E%3Ccircle cx='125.6' cy='12.5' r='0.53' fill-opacity='0.26'/%3E%3Ccircle cx='0.9' cy='84.4' r='0.61' fill-opacity='0.54'/%3E%3Ccircle cx='174.0' cy='68.7' r='0.67' fill-opacity='0.51'/%3E%3Ccircle cx='133.3' cy='83.5' r='0.57' fill-opacity='0.59'/%3E%3Ccircle cx='59.6' cy='46.6' r='0.77' fill-opacity='0.41'/%3E%3Ccircle cx='134.8' cy='82.0' r='1.08' fill-opacity='0.51'/%3E%3Ccircle cx='147.0' cy='65.1' r='0.76' fill-opacity='0.57'/%3E%3C/g%3E%3C/svg%3E") 0 100% / 240px 100px repeat-x,
+      radial-gradient(ellipse 80% 16% at 50% 70%, rgb(244 240 250 / 16%), transparent 70%),
+      linear-gradient(90deg, transparent 9%, rgb(255 79 168 / 16%) 12%, transparent 15% 35%, rgb(31 214 168 / 13%) 38%, transparent 41% 59%, rgb(143 99 255 / 16%) 62%, transparent 65% 85%, rgb(255 179 33 / 13%) 88%, transparent 91%) 0 0 / 100% 70% no-repeat,
+      linear-gradient(var(--stage), var(--night) 70%, var(--stage) 70.2%);
     rotate: 0deg;
+    box-shadow: 0 0 0 1px rgb(244 240 250 / 9%), 0 30px 60px -30px rgb(6 5 11 / 55%);
+    @media (max-width: 640px) { border-radius: 0; }
+    /* the corner tag */
+    &::before {
+      content: var(--tag) / "";
+      position: absolute;
+      left: clamp(16px, 3vw, 2.5rem);
+      top: 1.3rem;
+      padding-left: 4em;
+      background:
+        radial-gradient(circle closest-side, var(--toki) 90%, transparent) 0 50% / .6em .6em no-repeat,
+        radial-gradient(circle closest-side, var(--relu) 90%, transparent) .8em 50% / .6em .6em no-repeat,
+        radial-gradient(circle closest-side, var(--ada) 90%, transparent) 1.6em 50% / .6em .6em no-repeat,
+        radial-gradient(circle closest-side, var(--logi) 90%, transparent) 2.4em 50% / .6em .6em no-repeat;
+      color: rgb(244 240 250 / 75%);
+      font: 9.5px/1.4 var(--wide);
+      letter-spacing: .24em;
+    }
+    .line { margin: .2rem 0; }
     .lyric {
-      padding: .2rem .6rem;
-      border: 3px solid transparent;
+      padding: .2rem .45rem .25rem;
       background: transparent;
-      color: white;
-      font: clamp(1.25rem, 3vw, 2rem)/1.2 var(--display);
-      text-transform: none;
-      text-shadow: 0 0 14px var(--hue), 0 3px 0 rgb(24 8 44);
+      color: var(--pearl);
+      font: clamp(1.1rem, 2.5vw, 1.7rem)/1.18 var(--display);
+      letter-spacing: -.01em;
+      text-transform: uppercase;
       box-shadow: none;
     }
-    button.lyric:hover, button.lyric:focus-visible { background: rgb(255 255 255 / 12%); }
-    .line.open .lyric { background: rgb(255 255 255 / 14%); border-color: rgb(255 255 255 / 50%); box-shadow: none; }
+    /* "We didn't start the scaling", set as the title is */
+    .line:nth-child(odd):not(.twist) .w:nth-child(4) { font: italic 1.2em/1 var(--serif-i); text-transform: lowercase; letter-spacing: 0; }
+    /* the last chorus's own lines are the tender ones */
+    .twist .lyric { font: italic clamp(1.35rem, 3.1vw, 2.15rem)/1.12 var(--serif-i); text-transform: none; letter-spacing: 0; }
+    button.lyric:hover, button.lyric:focus-visible { background: rgb(244 240 250 / 9%); }
+    .lyric::before { content: none; }
+    .line.open .lyric { background: rgb(244 240 250 / 10%); box-shadow: inset 0 0 0 1px rgb(244 240 250 / 22%); }
     .line.now .lyric {
-      --m-dk: var(--toki-dk);
-      border-color: white;
-      background: linear-gradient(90deg, rgb(255 140 200), rgb(214 196 255) 25%, rgb(150 240 255) 50%, rgb(255 255 255 / 82%) 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%;
-      color: rgb(43 24 56);
-      text-shadow: none;
-      box-shadow: 0 0 28px var(--hue);
-      scale: 1.02;
-      &::before { background: var(--rainbow); color: rgb(43 24 56); box-shadow: 0 0 0 2px white; }
-    }
-    .line.now.worded .lyric {
       background:
-        linear-gradient(90deg, rgb(255 140 200), rgb(214 196 255) 50%, rgb(150 240 255)) 0 0 / 100% var(--row-top) no-repeat,
-        linear-gradient(90deg, rgb(255 140 200), rgb(214 196 255) 25%, rgb(150 240 255) 50%, transparent 50%) calc((1 - var(--line-p, 0)) * 100%) var(--row-top) / 200% var(--row-h) no-repeat,
-        rgb(255 255 255 / 82%);
+        linear-gradient(90deg, var(--m) 50%, transparent 50%) calc((1 - var(--line-p, 0)) * 100%) 100% / 200% 2px no-repeat,
+        radial-gradient(closest-side, color-mix(in srgb, var(--m) 16%, transparent), transparent);
+      scale: 1.02;
+      box-shadow: none;
     }
-    .lyric .tab { width: 1.6rem; height: 1.6rem; background: var(--toki-lt); color: rgb(43 24 56); }
-    .from-here { background: rgb(255 255 255 / 12%); border-color: rgb(255 255 255 / 60%); color: white; opacity: .8; }
-    .twist .lyric { color: rgb(255 214 64); }
-    .twist.now .lyric { color: rgb(43 24 56); }
+    .line.now.worded .lyric { background-size: 0 0, auto; }
+    .lyric .tab { box-shadow: inset 0 0 0 1px rgb(244 240 250 / 30%); color: var(--pearl); }
+    .line.open .lyric .tab { background: var(--pearl); color: var(--text); }
+    .from-here { background: rgb(6 5 11 / 50%); color: var(--pearl); box-shadow: inset 0 0 0 1px rgb(244 240 250 / 30%); }
+    .line.now .from-here { background: var(--m); color: var(--text); box-shadow: none; }
+    .note { --card: var(--night); margin-top: .8rem; box-shadow: inset 0 3px var(--m), 0 0 0 1px var(--hair); }
   }
-  #c2 { --hue: var(--logi); }
-  #c3 { --hue: var(--neon-cyan); }
-  .chorus.final {
-    --hue: rgb(255 210 63);
-    rotate: 0deg;
-    &::before {
-      content: "D-DAY";
+  /* the music show's comeback stage: the LED wall, the MUSIC CURVE's curve across it, and the HEADS' lightsticks in the four colours */
+  #c2, #c3 {
+    --tag: "MUSIC CURVE · COMEBACK STAGE";
+    background:
+      radial-gradient(circle, rgb(255 79 168 / 90%) 1.5px, rgb(255 79 168 / 25%) 3px, transparent 5px) 0 calc(100% - 6px) / 46px 14px repeat-x,
+      radial-gradient(circle, rgb(31 214 168 / 90%) 1.5px, rgb(31 214 168 / 25%) 3px, transparent 5px) 12px calc(100% - 16px) / 46px 14px repeat-x,
+      radial-gradient(circle, rgb(143 99 255 / 90%) 1.5px, rgb(143 99 255 / 25%) 3px, transparent 5px) 24px calc(100% - 2px) / 46px 14px repeat-x,
+      radial-gradient(circle, rgb(255 179 33 / 90%) 1.5px, rgb(255 179 33 / 25%) 3px, transparent 5px) 35px calc(100% - 22px) / 46px 14px repeat-x,
+      linear-gradient(transparent calc(100% - 3.2rem), rgb(6 5 11 / 80%)),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 300' preserveAspectRatio='none'%3E%3Cdefs%3E%3ClinearGradient id='g' x2='1'%3E%3Cstop offset='0' stop-color='%23FF4FA8'/%3E%3Cstop offset='.36' stop-color='%231FD6A8'/%3E%3Cstop offset='.68' stop-color='%238F63FF'/%3E%3Cstop offset='1' stop-color='%23FFB321'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg fill='none' stroke='url(%23g)' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M0 285L25 284L50 283L75 282L100 281L125 279L150 278L175 277L200 275L225 273L250 271L275 269L300 267L325 264L350 262L375 259L400 256L425 252L450 249L475 245L500 240L525 236L550 231L575 225L600 219L625 213L650 206L675 199L700 190L725 182L750 172L775 162L800 151L825 138L850 125L875 111L900 96L925 79L950 61L975 41L1000 20' stroke-width='16' stroke-opacity='.08' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M0 285L25 284L50 283L75 282L100 281L125 279L150 278L175 277L200 275L225 273L250 271L275 269L300 267L325 264L350 262L375 259L400 256L425 252L450 249L475 245L500 240L525 236L550 231L575 225L600 219L625 213L650 206L675 199L700 190L725 182L750 172L775 162L800 151L825 138L850 125L875 111L900 96L925 79L950 61L975 41L1000 20' stroke-width='4' stroke-opacity='.5' vector-effect='non-scaling-stroke'/%3E%3C/g%3E%3C/svg%3E") 0 18% / 100% 62% no-repeat,
+      radial-gradient(circle, rgb(244 240 250 / 8%) 1px, transparent 1.6px) 0 0 / 5px 5px,
+      linear-gradient(var(--night), var(--haze) 80%, var(--stage));
+  }
+  /* the first win: 1ST PLACE on the wall, and confetti */
+  #c3 {
+    --tag: "MUSIC CURVE · 1ST PLACE";
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='260'%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%23FFB321' fill-opacity='0.60' transform='translate(78 141) rotate(67)'/%3E%3Crect x='-2.5' y='-2.5' width='5' height='5' fill='%23F4F0FA' fill-opacity='0.57' transform='translate(288 122) rotate(99)'/%3E%3Crect x='-2.0' y='-3.5' width='4' height='7' fill='%23F4F0FA' fill-opacity='0.73' transform='translate(175 104) rotate(155)'/%3E%3Crect x='-2.0' y='-3.5' width='4' height='7' fill='%23F4F0FA' fill-opacity='0.68' transform='translate(167 191) rotate(121)'/%3E%3Crect x='-2.5' y='-2.5' width='5' height='5' fill='%23FFD27A' fill-opacity='0.60' transform='translate(188 80) rotate(6)'/%3E%3Crect x='-2.5' y='-2.5' width='5' height='5' fill='%23FFB321' fill-opacity='0.66' transform='translate(291 102) rotate(142)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%23FFD27A' fill-opacity='0.32' transform='translate(184 247) rotate(24)'/%3E%3Crect x='-2.5' y='-2.5' width='5' height='5' fill='%23FFD27A' fill-opacity='0.55' transform='translate(158 69) rotate(121)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%23F4F0FA' fill-opacity='0.64' transform='translate(124 92) rotate(105)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%23F4F0FA' fill-opacity='0.78' transform='translate(294 220) rotate(178)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%23F4F0FA' fill-opacity='0.44' transform='translate(286 147) rotate(128)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%23F4F0FA' fill-opacity='0.70' transform='translate(24 219) rotate(178)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%23FFB321' fill-opacity='0.32' transform='translate(132 42) rotate(53)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%23FFD27A' fill-opacity='0.55' transform='translate(196 15) rotate(129)'/%3E%3Crect x='-2.0' y='-3.5' width='4' height='7' fill='%23F4F0FA' fill-opacity='0.79' transform='translate(316 82) rotate(14)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%23FFD27A' fill-opacity='0.48' transform='translate(95 70) rotate(124)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%23FFB321' fill-opacity='0.61' transform='translate(47 221) rotate(68)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%23F4F0FA' fill-opacity='0.52' transform='translate(297 132) rotate(78)'/%3E%3C/svg%3E") 0 0 / 320px 260px,
+      radial-gradient(circle, rgb(255 179 33 / 90%) 1.5px, rgb(255 179 33 / 25%) 3px, transparent 5px) 0 calc(100% - 6px) / 46px 14px repeat-x,
+      radial-gradient(circle, rgb(255 79 168 / 90%) 1.5px, rgb(255 79 168 / 25%) 3px, transparent 5px) 12px calc(100% - 16px) / 46px 14px repeat-x,
+      radial-gradient(circle, rgb(31 214 168 / 90%) 1.5px, rgb(31 214 168 / 25%) 3px, transparent 5px) 24px calc(100% - 2px) / 46px 14px repeat-x,
+      radial-gradient(circle, rgb(143 99 255 / 90%) 1.5px, rgb(143 99 255 / 25%) 3px, transparent 5px) 35px calc(100% - 22px) / 46px 14px repeat-x,
+      linear-gradient(transparent calc(100% - 3.2rem), rgb(6 5 11 / 80%)),
+      radial-gradient(ellipse 60% 50% at 50% 40%, rgb(255 179 33 / 16%), transparent 70%),
+      radial-gradient(circle, rgb(244 240 250 / 8%) 1px, transparent 1.6px) 0 0 / 5px 5px,
+      linear-gradient(var(--night), var(--haze) 80%, var(--stage));
+    /* the result, on the LED wall behind */
+    &::after {
+      content: "1ST" / "";
       position: absolute;
       z-index: -1;
-      right: -.05em;
+      right: -.04em;
       top: 50%;
       translate: 0 -50%;
-      color: rgb(255 210 63 / 13%);
-      font: clamp(4rem, 13vw, 10rem)/1 var(--display);
+      background: radial-gradient(circle, rgb(255 210 122 / 30%) 1.4px, transparent 1.8px) 0 0 / 5px 5px;
+      background-clip: text;
+      color: transparent;
+      font: clamp(6rem, 22vw, 15rem)/1 var(--display);
       pointer-events: none;
     }
   }
-  .outro .lyric {
-    padding: .2rem 1rem;
-    border: 2px solid var(--lilac);
-    border-radius: 999px;
-    background: var(--card);
-    color: var(--ada-dk);
-    font: clamp(1rem, 2.4vw, 1.25rem)/1.4 var(--display);
-    rotate: -2deg;
-    mask-image: none;
+  /* the encore: the whole set at once, with confetti in the four colours */
+  .chorus.final {
+    --tag: "ENCORE STAGE";
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='260'%3E%3Crect x='-2.5' y='-2.5' width='5' height='5' fill='%231FD6A8' fill-opacity='0.55' transform='translate(145 145) rotate(166)'/%3E%3Crect x='-2.0' y='-3.5' width='4' height='7' fill='%23FFB321' fill-opacity='0.35' transform='translate(187 51) rotate(92)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%23FFB321' fill-opacity='0.60' transform='translate(99 27) rotate(146)'/%3E%3Crect x='-2.0' y='-3.5' width='4' height='7' fill='%23FFB321' fill-opacity='0.61' transform='translate(128 118) rotate(133)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%23F4F0FA' fill-opacity='0.69' transform='translate(263 20) rotate(6)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%23F4F0FA' fill-opacity='0.55' transform='translate(106 153) rotate(35)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%238F63FF' fill-opacity='0.65' transform='translate(211 119) rotate(50)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%23F4F0FA' fill-opacity='0.50' transform='translate(102 62) rotate(52)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%23FFB321' fill-opacity='0.41' transform='translate(268 101) rotate(172)'/%3E%3Crect x='-2.5' y='-2.5' width='5' height='5' fill='%23FFB321' fill-opacity='0.51' transform='translate(293 17) rotate(68)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%23FF4FA8' fill-opacity='0.46' transform='translate(181 54) rotate(121)'/%3E%3Crect x='-2.0' y='-3.5' width='4' height='7' fill='%23F4F0FA' fill-opacity='0.65' transform='translate(9 107) rotate(166)'/%3E%3Crect x='-2.0' y='-3.5' width='4' height='7' fill='%23FFB321' fill-opacity='0.52' transform='translate(7 121) rotate(88)'/%3E%3Crect x='-2.5' y='-2.5' width='5' height='5' fill='%23FFB321' fill-opacity='0.36' transform='translate(63 188) rotate(24)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%238F63FF' fill-opacity='0.80' transform='translate(135 58) rotate(49)'/%3E%3Crect x='-1.5' y='-4.0' width='3' height='8' fill='%238F63FF' fill-opacity='0.32' transform='translate(10 51) rotate(179)'/%3E%3Crect x='-1.5' y='-3.0' width='3' height='6' fill='%238F63FF' fill-opacity='0.72' transform='translate(50 115) rotate(2)'/%3E%3Crect x='-2.0' y='-3.5' width='4' height='7' fill='%23FFB321' fill-opacity='0.31' transform='translate(124 23) rotate(38)'/%3E%3C/svg%3E") 0 0 / 320px 260px,
+      radial-gradient(ellipse 36% 3.4rem at 50% 100%, transparent 86%, rgb(244 240 250 / 40%) 92%, transparent 98%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='100'%3E%3Cg fill='%23F4F0FA'%3E%3Ccircle cx='77.7' cy='33.6' r='0.66' fill-opacity='0.27'/%3E%3Ccircle cx='128.6' cy='54.3' r='0.52' fill-opacity='0.44'/%3E%3Ccircle cx='9.0' cy='59.7' r='0.53' fill-opacity='0.29'/%3E%3Ccircle cx='101.9' cy='86.1' r='0.58' fill-opacity='0.39'/%3E%3Ccircle cx='150.6' cy='93.1' r='0.92' fill-opacity='0.52'/%3E%3Ccircle cx='234.3' cy='18.6' r='0.60' fill-opacity='0.28'/%3E%3Ccircle cx='34.6' cy='29.5' r='0.56' fill-opacity='0.41'/%3E%3Ccircle cx='43.4' cy='70.5' r='0.85' fill-opacity='0.44'/%3E%3Ccircle cx='131.5' cy='21.5' r='0.51' fill-opacity='0.28'/%3E%3Ccircle cx='163.3' cy='59.3' r='0.64' fill-opacity='0.50'/%3E%3Ccircle cx='108.8' cy='48.7' r='0.79' fill-opacity='0.49'/%3E%3Ccircle cx='58.6' cy='70.0' r='0.78' fill-opacity='0.69'/%3E%3Ccircle cx='175.1' cy='47.6' r='0.85' fill-opacity='0.29'/%3E%3Ccircle cx='100.3' cy='81.9' r='0.60' fill-opacity='0.54'/%3E%3Ccircle cx='9.4' cy='76.2' r='0.95' fill-opacity='0.56'/%3E%3Ccircle cx='210.1' cy='49.9' r='0.76' fill-opacity='0.46'/%3E%3Ccircle cx='139.2' cy='61.4' r='0.89' fill-opacity='0.66'/%3E%3Ccircle cx='113.8' cy='76.0' r='0.54' fill-opacity='0.63'/%3E%3Ccircle cx='155.3' cy='95.6' r='1.11' fill-opacity='0.45'/%3E%3Ccircle cx='92.6' cy='76.3' r='0.51' fill-opacity='0.50'/%3E%3Ccircle cx='40.3' cy='29.4' r='0.51' fill-opacity='0.40'/%3E%3Ccircle cx='31.0' cy='43.8' r='0.63' fill-opacity='0.51'/%3E%3Ccircle cx='19.3' cy='60.9' r='0.75' fill-opacity='0.63'/%3E%3Ccircle cx='196.6' cy='88.3' r='0.69' fill-opacity='0.52'/%3E%3Ccircle cx='86.1' cy='89.5' r='1.17' fill-opacity='0.35'/%3E%3Ccircle cx='42.3' cy='42.3' r='0.57' fill-opacity='0.39'/%3E%3Ccircle cx='141.4' cy='45.3' r='0.50' fill-opacity='0.38'/%3E%3Ccircle cx='88.6' cy='69.4' r='1.01' fill-opacity='0.59'/%3E%3Ccircle cx='123.7' cy='72.9' r='0.88' fill-opacity='0.28'/%3E%3Ccircle cx='215.9' cy='83.3' r='1.07' fill-opacity='0.73'/%3E%3Ccircle cx='94.2' cy='57.0' r='0.54' fill-opacity='0.51'/%3E%3Ccircle cx='14.9' cy='22.2' r='0.53' fill-opacity='0.27'/%3E%3Ccircle cx='81.6' cy='19.7' r='0.50' fill-opacity='0.27'/%3E%3Ccircle cx='24.4' cy='54.1' r='0.51' fill-opacity='0.58'/%3E%3Ccircle cx='147.4' cy='33.3' r='0.56' fill-opacity='0.33'/%3E%3Ccircle cx='87.4' cy='30.1' r='0.68' fill-opacity='0.45'/%3E%3Ccircle cx='111.8' cy='63.5' r='0.54' fill-opacity='0.30'/%3E%3Ccircle cx='82.2' cy='45.4' r='0.78' fill-opacity='0.30'/%3E%3Ccircle cx='5.5' cy='93.3' r='0.88' fill-opacity='0.35'/%3E%3Ccircle cx='130.4' cy='14.5' r='0.55' fill-opacity='0.33'/%3E%3Ccircle cx='207.2' cy='78.0' r='0.66' fill-opacity='0.46'/%3E%3Ccircle cx='40.1' cy='82.8' r='0.84' fill-opacity='0.72'/%3E%3Ccircle cx='79.1' cy='41.4' r='0.75' fill-opacity='0.53'/%3E%3Ccircle cx='204.6' cy='84.8' r='1.04' fill-opacity='0.71'/%3E%3Ccircle cx='54.4' cy='66.0' r='0.68' fill-opacity='0.26'/%3E%3Ccircle cx='6.7' cy='46.8' r='0.59' fill-opacity='0.48'/%3E%3Ccircle cx='229.6' cy='60.8' r='0.93' fill-opacity='0.68'/%3E%3Ccircle cx='229.2' cy='54.2' r='0.59' fill-opacity='0.34'/%3E%3Ccircle cx='47.2' cy='39.5' r='0.68' fill-opacity='0.49'/%3E%3Ccircle cx='201.7' cy='63.2' r='0.82' fill-opacity='0.61'/%3E%3Ccircle cx='20.3' cy='75.7' r='1.03' fill-opacity='0.68'/%3E%3Ccircle cx='180.0' cy='63.1' r='0.59' fill-opacity='0.60'/%3E%3Ccircle cx='79.8' cy='84.5' r='1.14' fill-opacity='0.49'/%3E%3Ccircle cx='96.3' cy='93.0' r='1.03' fill-opacity='0.37'/%3E%3Ccircle cx='30.5' cy='33.6' r='0.72' fill-opacity='0.43'/%3E%3Ccircle cx='35.1' cy='86.1' r='1.16' fill-opacity='0.66'/%3E%3Ccircle cx='84.1' cy='68.2' r='0.57' fill-opacity='0.26'/%3E%3Ccircle cx='233.0' cy='75.0' r='0.80' fill-opacity='0.75'/%3E%3Ccircle cx='104.1' cy='88.7' r='1.07' fill-opacity='0.39'/%3E%3Ccircle cx='60.4' cy='48.0' r='0.59' fill-opacity='0.45'/%3E%3Ccircle cx='62.2' cy='58.6' r='0.56' fill-opacity='0.63'/%3E%3Ccircle cx='84.9' cy='61.6' r='0.77' fill-opacity='0.65'/%3E%3Ccircle cx='101.0' cy='91.4' r='0.86' fill-opacity='0.60'/%3E%3Ccircle cx='125.6' cy='12.5' r='0.53' fill-opacity='0.26'/%3E%3Ccircle cx='0.9' cy='84.4' r='0.61' fill-opacity='0.54'/%3E%3Ccircle cx='174.0' cy='68.7' r='0.67' fill-opacity='0.51'/%3E%3Ccircle cx='133.3' cy='83.5' r='0.57' fill-opacity='0.59'/%3E%3Ccircle cx='59.6' cy='46.6' r='0.77' fill-opacity='0.41'/%3E%3Ccircle cx='134.8' cy='82.0' r='1.08' fill-opacity='0.51'/%3E%3Ccircle cx='147.0' cy='65.1' r='0.76' fill-opacity='0.57'/%3E%3C/g%3E%3C/svg%3E") 0 100% / 240px 100px repeat-x,
+      radial-gradient(ellipse 80% 14% at 50% 74%, rgb(244 240 250 / 16%), transparent 70%),
+      linear-gradient(90deg, transparent 9%, rgb(255 79 168 / 16%) 12%, transparent 15% 35%, rgb(31 214 168 / 13%) 38%, transparent 41% 59%, rgb(143 99 255 / 16%) 62%, transparent 65% 85%, rgb(255 179 33 / 13%) 88%, transparent 91%) 0 0 / 100% 74% no-repeat,
+      linear-gradient(var(--stage), var(--night) 74%, var(--stage) 74.2%);
+    rotate: 0deg;
   }
-  .outro .line.now .lyric { background: var(--ada-lt); color: var(--ink); }
-
-  /* the now-playing card is a photocard of whoever's singing, with a holographic frame */
-  .lyrics:has(.verse .line.now:nth-child(4n + 1)) .now-card { --m: var(--toki); --m-dk: var(--toki-dk); --mname: "TOKI"; }
-  .lyrics:has(.verse .line.now:nth-child(4n + 2)) .now-card { --m: var(--relu); --m-dk: var(--relu-dk); --mname: "RELU"; }
-  .lyrics:has(.verse .line.now:nth-child(4n + 3)) .now-card { --m: var(--ada); --m-dk: var(--ada-dk); --mname: "ADA"; }
-  .lyrics:has(.verse .line.now:nth-child(4n + 4)) .now-card { --m: var(--logi); --m-dk: var(--logi-dk); --mname: "LOGI"; }
-  .now-card {
-    padding: 1.5rem 1.2rem 1rem;
-    border: 7px solid transparent;
-    border-radius: 24px;
-    background: linear-gradient(var(--card), var(--card)) padding-box, linear-gradient(135deg, rgb(255 179 214), rgb(201 182 255), rgb(174 227 255), rgb(169 243 218), rgb(255 226 150), rgb(255 179 214)) border-box;
-    color: var(--ink);
-    font: .92rem/1.5 var(--type);
-    rotate: .8deg;
-    box-shadow: 0 0 0 3px var(--plum), 0 7px 0 3px var(--plum);
+  /* the tag trails off after the encore, into TOKI's ending fairy */
+  .outro {
     &::before {
-      content: var(--mname);
-      left: 50%;
-      top: -1.1rem;
-      translate: -50% 0;
+      content: "ENDING FAIRY" / "";
+      display: block;
+      margin: 0 0 .4rem 2.8rem;
+      padding-left: 1.5em;
+      background: radial-gradient(circle closest-side, var(--toki) 90%, transparent) 0 50% / .7em .7em no-repeat;
+      color: var(--ink-soft);
+      font: 9.5px/1.4 var(--wide);
+      letter-spacing: .24em;
+    }
+    .lyric { padding: .1rem .4rem; background: none; box-shadow: none; color: var(--ink-soft); font: italic clamp(1.35rem, 3vw, 1.9rem)/1.2 var(--serif-i); }
+    .lyric::before { content: none; }
+    .line.now .lyric { background: none; box-shadow: none; scale: 1; mask-image: none; }
+  }
+  .line.unsung .lyric-text { opacity: .45; }
+
+  /* the now-playing card is the photocard of whoever's singing: holo foil round it, her name huge and faint behind, the date stamp
+     in its corner */
+  .now-card {
+    --m: var(--a, var(--toki));
+    --m-ink: var(--a-ink, var(--ink));
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    padding: 2.5rem 1.3rem 1.2rem;
+    border: 4px solid transparent;
+    border-radius: 20px;
+    background: linear-gradient(var(--card), var(--card)) padding-box, var(--holo) border-box;
+    color: var(--ink);
+    font: .92rem/1.58 var(--ui);
+    rotate: 0deg;
+    box-shadow: 0 0 0 1px var(--hair), var(--lift);
+    &::before {
+      content: var(--a-name, "ATTN!") / "";
+      left: 1.25rem;
+      top: 1.15rem;
       width: auto;
       height: auto;
-      padding: .15rem 1rem;
-      border-radius: 999px;
-      background: var(--m-dk);
-      color: var(--chip-ink);
-      font: .8rem/1.5 var(--display);
-      letter-spacing: .08em;
-      rotate: -2deg;
-      box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--plum);
+      padding-left: 1.4em;
+      background: radial-gradient(circle closest-side, var(--a, var(--ink)) 90%, transparent) 0 50% / .72em .72em no-repeat;
+      color: var(--m-ink);
+      font: 9px/1.3 var(--wide);
+      letter-spacing: .24em;
+      rotate: 0deg;
     }
-    .side-play { border: 3px solid var(--plum); border-radius: 999px; background: var(--toki-dk); color: var(--chip-ink); font-family: var(--display); box-shadow: 0 3px 0 var(--plum); }
-    .now-stamp:not(:empty) { padding: .05rem .6rem; border: 2px solid var(--m); border-radius: 999px; color: var(--ink); font: .66rem/1.5 var(--display); rotate: 0deg; }
-    .now-line { font: 1.1rem/1.3 var(--display); }
-    .sources li::before { content: "♡ "; }
+    &::after {
+      content: var(--a-name, "ATTN!") / "";
+      position: absolute;
+      z-index: -1;
+      right: -.06em;
+      bottom: -.2em;
+      color: color-mix(in srgb, var(--a, var(--ink)) 9%, transparent);
+      font: 5.6rem/1 var(--display);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    p { margin: 0 0 .6rem; }
+    strong { font-family: var(--ui-b); font-weight: normal; }
+    .side-play { border: 0; border-radius: 999px; padding: .45rem 1.05rem; background: var(--ink); color: var(--paper); font: .85rem var(--ui-b); box-shadow: none; }
+    .now-kicker { position: absolute; top: 1.05rem; right: 1.25rem; margin: 0; }
+    .now-stamp:not(:empty) { padding: 0; border: 0; color: var(--ink-soft); font: .72rem/1.3 var(--mono); rotate: 0deg; }
+    .now-line { margin-bottom: .6rem; font: 1.12rem/1.32 var(--ui-b); }
+    a { color: var(--ink); }
+    .sources { color: var(--ink-soft); li::before { content: "→ " / ""; color: var(--m-ink); } }
   }
 
-  /* the tape wall is an album's photocard binder */
-  .tapes { gap: 2rem 1.6rem; }
+  /* the album's tracks are a binder of photocards; the one playing is the holo */
+  .tapes { gap: 1.6rem; }
   .tape-card {
-    padding: 1.6rem 1.1rem 1rem;
-    border: 3px solid var(--plum);
-    border-radius: 22px;
-    background: linear-gradient(90deg, rgb(255 179 214), rgb(201 182 255), rgb(174 227 255), rgb(169 243 218), rgb(255 226 150)) top / 100% 10px no-repeat, var(--card);
-    box-shadow: 0 5px 0 var(--plum);
-    rotate: -.6deg;
-    &:nth-child(2n) { rotate: .6deg; }
-    .tape-label, .tape-model { top: -.85rem; padding: .05rem .65rem; border: 2px solid var(--plum); border-radius: 999px; font: .62rem/1.5 var(--display); letter-spacing: .05em; }
-    .tape-label { background: var(--toki-lt); color: var(--ink); }
-    .tape-model { background: var(--ada-lt); color: var(--ink); &[data-model^="Suno"] { background: var(--relu-lt); } }
-    h3 { color: var(--ink); font: 1.35rem/1.2 var(--display); }
-    p { font-family: var(--type); }
-    .tape-video { font: .82rem/1.4 var(--type); }
-    .play-version { border: 3px solid var(--plum); border-radius: 999px; background: var(--toki-dk); color: var(--chip-ink); font: .82rem var(--display); box-shadow: 0 3px 0 var(--plum), inset 0 2px 0 rgb(255 255 255 / 30%); }
-    &.playing { outline: 0; box-shadow: 0 5px 0 var(--plum), 0 0 0 7px var(--toki-lt), 0 0 30px var(--neon-pink); }
-  }
-
-  /* the jukebox: pastel cassettes, the kind sold at the merch table */
-  .cassettes {
-    --cs-shell: light-dark(rgb(232 222 255), rgb(58 26 107));
-    --cs-screw: var(--toki);
-    --cs-label: var(--card);
-    --cs-stripe: var(--rainbow);
-    --cs-ink: var(--ink);
-    --cs-soft: var(--ink-soft);
-    --cs-hub: var(--toki);
-    --cs-hub-ink: rgb(43 24 56);
-    --cs-tape: var(--toki);
-    --cs-window: rgb(43 24 56);
-    --cs-title: var(--display);
-    --cs-text: var(--type);
-    --cs-radius: 20px;
-  }
-  .cassette { border: 3px solid var(--plum); box-shadow: 0 4px 0 var(--plum); }
-  .cassette.playing { box-shadow: 0 4px 0 var(--plum), 0 0 0 6px var(--toki-lt), 0 0 24px var(--neon-pink); }
-  .cassette-label { border-radius: 12px; h3 { font-size: 1rem; } }
-
-  .liner-body {
-    padding: 1.5rem 1.7rem;
-    border: 3px solid var(--plum);
-    border-radius: 24px;
+    padding: 2.6rem 1.25rem 1.15rem;
+    border: 0;
+    border-radius: 18px;
     background: var(--card);
     color: var(--ink);
-    font-family: var(--type);
+    box-shadow: 0 0 0 1px var(--hair), var(--lift);
     rotate: 0deg;
-    box-shadow: 0 6px 0 var(--plum);
-    a { color: var(--link); }
+    &:nth-child(2n) { rotate: 0deg; }
+    .tape-label, .tape-model { top: 1.1rem; padding: 0; background: none; color: var(--ink-soft); font: 8.5px/1.4 var(--wide); letter-spacing: .24em; text-transform: uppercase; }
+    .tape-label { left: 1.25rem; }
+    .tape-model, .tape-model[data-model^="Suno"] { right: 1.25rem; background: none; font: .7rem/1.4 var(--mono); letter-spacing: .02em; text-transform: none; }
+    h3 { margin: .2rem 0 .45rem; font: 1.3rem/1.15 var(--display); letter-spacing: -.01em; text-transform: uppercase; }
+    p { color: var(--ink-soft); font: .9rem/1.55 var(--ui); }
+    .tape-actions { font: .82rem var(--ui); a { color: var(--ink); } }
+    .tape-dur { font: .75rem var(--mono); color: var(--ink-soft); }
+    .play-version { border: 0; border-radius: 999px; padding: .42rem 1rem; background: var(--ink); color: var(--paper); font: .85rem var(--ui-b); box-shadow: none; }
+    &.playing {
+      outline: 0;
+      box-shadow: 0 0 0 1px var(--hair), 0 18px 44px -16px rgb(143 99 255 / 45%);
+      &::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        padding: 3px;
+        border-radius: inherit;
+        background: var(--holo) 0 0 / 200% 200%;
+        mask: linear-gradient(black 0 0) content-box exclude, linear-gradient(black 0 0);
+        animation: k-pop-foil 6s ease-in-out infinite alternate;
+        pointer-events: none;
+      }
+      .tape-label { color: var(--ink); }
+    }
+  }
+
+  /* the bonus tracks are cassettes from the merch table: pearl shells, the group's curve on the label */
+  .cassettes {
+    --cs-shell: light-dark(var(--pearl-2), var(--haze));
+    --cs-screw: light-dark(rgb(13 11 22 / 22%), rgb(244 240 250 / 22%));
+    --cs-label: var(--card);
+    --cs-stripe: var(--curve-4);
+    --cs-ink: var(--ink);
+    --cs-soft: var(--ink-soft);
+    --cs-hub: var(--ink);
+    --cs-hub-ink: var(--paper);
+    --cs-tape: var(--toki);
+    --cs-window: light-dark(var(--pearl-2), var(--haze));
+    --cs-title: var(--ui-b);
+    --cs-text: var(--ui);
+    --cs-radius: 16px;
+  }
+  .cassette { box-shadow: inset 0 0 0 1px var(--hair); }
+  .cassette.playing { box-shadow: inset 0 0 0 1px var(--hair), 0 0 0 2px var(--toki), 0 14px 34px -14px rgb(255 79 168 / 55%); }
+  .cassette-play { border: 0; box-shadow: 0 0 0 3px var(--card); }
+  .cassette-label {
+    border-radius: 10px;
+    box-shadow: 0 0 0 1px var(--hair);
+    h3 { font-size: 1rem; }
+    .cassette-meta { font: .68rem/1.5 var(--mono); }
+  }
+
+  /* the liner notes are the album's booklet: set in Instrument Serif, with the video's end credits under them */
+  .liner-body {
+    padding: 1.8rem 2rem 1.5rem;
+    border-radius: 20px;
+    background: var(--card);
+    color: var(--ink);
+    font: 1.2rem/1.5 var(--serif);
+    rotate: 0deg;
+    box-shadow: 0 0 0 1px var(--hair), var(--lift);
+    a { color: var(--ink); }
+    p:not(.credits) { max-width: 44em; }
+    @media (max-width: 640px) { padding: 1.4rem 1.25rem 1.2rem; font-size: 1.12rem; }
   }
   .credits {
-    font: .72rem/1.4 var(--display);
-    gap: .5rem;
-    span { padding: .3em .9em; border-radius: 999px; background: var(--toki-lt); }
-    span:nth-child(2) { background: var(--relu-lt); }
-    span:nth-child(3) { background: var(--ada-lt); }
-    span:nth-child(4) { background: var(--logi-lt); }
+    gap: .5rem 1.5rem;
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--hair);
+    color: var(--ink-soft);
+    font: .8rem/1.5 var(--ui);
+    span::before {
+      content: "";
+      display: inline-block;
+      width: .6em;
+      height: .6em;
+      margin-right: .6em;
+      border-radius: 50%;
+      background: var(--chrome);
+    }
+    span:nth-child(1)::before { background: var(--toki); }
+    span:nth-child(2)::before { background: var(--relu); }
+    span:nth-child(3)::before { background: var(--ada); }
+    span:nth-child(4)::before { background: var(--logi); }
   }
-  .colophon { font-family: var(--type); }
+  .colophon { color: var(--ink-soft); font: 9.5px/1.4 var(--wide); letter-spacing: .24em; text-transform: uppercase; a { color: var(--ink); } }
+
+  /* docked: beside the lyrics, the same card; at the bottom of a phone, frosted glass over the page */
+  .player.docked-side { border-radius: 18px; }
+  .player.docked-bottom {
+    border-radius: 18px;
+    background: rgb(255 255 255 / 86%);
+    backdrop-filter: blur(16px) saturate(1.3);
+    box-shadow: 0 0 0 1px var(--hair), 0 14px 40px -10px rgb(42 32 70 / 40%);
+    .stage { border-radius: 10px; }
+    @media (prefers-color-scheme: dark) { background: rgb(16 13 28 / 86%); box-shadow: 0 0 0 1px rgb(244 240 250 / 12%), 0 -10px 40px -10px color-mix(in srgb, var(--a, var(--ada)) 45%, transparent); }
+  }
 }
-@keyframes k-pop-twinkle {
-  0%, 100% { scale: .55; opacity: .35; rotate: 0deg; }
-  50% { scale: 1; opacity: 1; rotate: 45deg; }
-}
-@keyframes k-pop-spring { from { scale: 0; opacity: 0; } }
+@keyframes k-pop-rise { from { translate: 0 .35em; opacity: 0; } }
+@keyframes k-pop-column { from { opacity: .45; } to { opacity: 1; } }
+@keyframes k-pop-glint { 0%, 100% { opacity: .15; scale: .6; } 50% { opacity: 1; scale: 1; } }
+@keyframes k-pop-foil { to { background-position: 100% 100%; } }
 
 /* ---------- anisong: the Scaling Club's TV-anime opening ----------
    Light is an airy spring sky with sakura; dark is the same sky at night. The verses follow the video's school year
@@ -3281,835 +3554,657 @@ button.lyric {
 }
 @keyframes anisong-note-in { from { opacity: 0; translate: 0 -6px; scale: .96; } }
 
-/* ---------- Eurodance: hype★TV, a late-90s music channel ----------
-   The page is the channel's broadcast of DJ Clawd pres. Softmax feat. MC Token: a chroma-key sky with laser fans over a
-   checkerboard floor, chrome lettering, the chart show's hit-parade bars for the verses, karaoke for the line being sung, and
-   Windows 98 for everything with buttons. Light is the daylight studio set; dark is the club at night. */
+/* ---------- Eurodance: FRONTIER CREW presents WE DIDN'T START THE SCALING, a PC demo ----------
+   The page is the demo's release, the way a 1996 demo group put one out: text mode for everything you read (the release's NFO,
+   the CGA's colours, double-line boxes, a blinking cursor) and the demo's 256-colour VGA art for everything else, all in the
+   demo's own 8×8 font, plain for labels and Scale2x-smoothed chrome for titles (the Frontier Crew fonts, made from its font.js),
+   with copper bars between. The crew's colours carry the song as they do in the video: MC Token's cyan for the verses, Softmax's
+   magenta for the choruses, DJ Clawd's orange for the buttons. The line being sung is his scroller, each word lit as it's rapped,
+   with the text-mode cursor hopping along it. Dark only: a VGA screen is black. (The pixel fonts are 8 and 16 pixels to the em, so
+   they're set in multiples of 8 px wherever they can be, where every font pixel lands on whole screen pixels.) */
 :root[data-theme="eurodance"] {
-  color-scheme: light;
-  --line: rgb(26 15 51);
-  --ultra: rgb(22 51 255);
-  --uv: rgb(91 31 224);
-  --cyan: rgb(18 231 255);
-  --magenta: rgb(255 31 163);
-  --hot: rgb(214 0 128);
-  --yellow: rgb(255 232 31);
-  --laser: rgb(59 255 74);
-  --w98: rgb(192 192 192);
-  --w98-dk: rgb(128 128 128);
-  --w98-lt: rgb(223 223 223);
-  --raised: inset -1px -1px rgb(10 10 10), inset 1px 1px white, inset -2px -2px rgb(128 128 128), inset 2px 2px rgb(223 223 223);
-  --sunken: inset -1px -1px white, inset 1px 1px rgb(128 128 128), inset -2px -2px rgb(223 223 223), inset 2px 2px rgb(10 10 10);
-  --titlebar: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14'%3E%3Cg transform='translate(0 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='4' y='9' width='6' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(16 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='3' y='2' width='9' height='9' fill='none' stroke='%23000'/%3E%3Crect x='3' y='2' width='9' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(36 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Cpath d='M4 3l2 0 2 2 2-2 2 0-3 3.5 3 3.5-2 0-2-2-2 2-2 0 3-3.5z' fill='%23000'/%3E%3C/g%3E%3C/svg%3E") right 3px center / 52px 14px no-repeat, linear-gradient(90deg, rgb(0 0 128), rgb(16 132 208));
-  --paper: rgb(238 238 255);
-  --ink: var(--line);
-  --ink-soft: rgb(26 15 51 / 78%);
-  --link: rgb(22 40 210);
-  --display: "Archivo Black", "Arial Black", sans-serif;
-  --heavy: "Archivo Black", "Arial Black", sans-serif;
-  --type: Verdana, Tahoma, "DejaVu Sans", system-ui, sans-serif;
-  --win: Tahoma, Verdana, "DejaVu Sans", system-ui, sans-serif;
-  --code: "Space Mono", "Courier New", monospace;
-  --logo: "Rammetto One", "Arial Rounded MT Bold", sans-serif;
-  /* the video's chrome lettering: sky-to-sunset chrome, gold and hot pink, each with a horizon line through the middle */
-  --chrome: linear-gradient(rgb(255 255 255) 8%, rgb(206 226 255) 26%, rgb(104 138 230) 47%, rgb(40 24 110) 50%, rgb(255 170 100) 53%, rgb(255 226 190) 76%, white 96%);
-  --gold: linear-gradient(rgb(255 252 224) 8%, rgb(255 226 120) 30%, rgb(214 150 28) 47%, rgb(100 54 0) 50%, rgb(255 204 70) 55%, rgb(255 240 180) 92%);
-  --hot-chrome: linear-gradient(rgb(255 240 250) 8%, rgb(255 150 214) 28%, rgb(255 31 163) 47%, rgb(110 0 70) 50%, rgb(255 80 90) 56%, rgb(255 196 130) 94%);
-  --ice: linear-gradient(white 8%, rgb(200 250 255) 28%, rgb(18 200 240) 47%, rgb(0 60 110) 50%, rgb(60 220 255) 56%, rgb(220 255 255) 94%);
-  --extrude: .03em .03em 0 var(--line), .06em .06em 0 var(--line), .09em .09em 0 var(--line), .12em .12em 0 var(--line), .15em .17em .12em rgb(0 0 0 / 40%);
-  --edge: 2px 0 0 var(--line), -2px 0 0 var(--line), 0 2px 0 var(--line), 0 -2px 0 var(--line), 2px 2px 0 var(--line), -2px 2px 0 var(--line), 2px -2px 0 var(--line), -2px -2px 0 var(--line), 0 4px 0 var(--line);
-  --sky: linear-gradient(rgb(70 100 255), rgb(150 172 255) 38%, rgb(226 224 255) 70%, rgb(255 214 240));
-  --clouds:
-    radial-gradient(closest-side, white 65%, rgb(255 255 255 / 0)) 6% 22% / 20rem 6rem no-repeat,
-    radial-gradient(closest-side, white 65%, rgb(255 255 255 / 0)) 14% 12% / 11rem 7rem no-repeat,
-    radial-gradient(closest-side, white 65%, rgb(255 255 255 / 0)) 94% 18% / 22rem 6.5rem no-repeat,
-    radial-gradient(closest-side, white 65%, rgb(255 255 255 / 0)) 86% 8% / 10rem 6rem no-repeat;
-  --floor: rgb(52 72 250);
-  --tiles: white;
-  --beam-a: rgb(255 255 255 / 55%);
-  --beam-b: rgb(255 31 163 / 40%);
-  --checker: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 300' preserveAspectRatio='none'%3E%3Cpath d='M-29 0.0L0 0.0L-124 24.8L-158 24.8ZM29 0.0L57 0.0L-55 24.8L-90 24.8ZM86 0.0L114 0.0L14 24.8L-21 24.8ZM143 0.0L171 0.0L83 24.8L48 24.8ZM200 0.0L229 0.0L152 24.8L117 24.8ZM257 0.0L286 0.0L221 24.8L186 24.8ZM314 0.0L343 0.0L290 24.8L255 24.8ZM371 0.0L400 0.0L359 24.8L324 24.8ZM429 0.0L457 0.0L428 24.8L393 24.8ZM486 0.0L514 0.0L497 24.8L462 24.8ZM543 0.0L571 0.0L566 24.8L531 24.8ZM600 0.0L629 0.0L634 24.8L600 24.8ZM657 0.0L686 0.0L703 24.8L669 24.8ZM714 0.0L743 0.0L772 24.8L738 24.8ZM771 0.0L800 0.0L841 24.8L807 24.8ZM829 0.0L857 0.0L910 24.8L876 24.8ZM886 0.0L914 0.0L979 24.8L945 24.8ZM943 0.0L971 0.0L1048 24.8L1014 24.8ZM1000 0.0L1029 0.0L1117 24.8L1083 24.8ZM1057 0.0L1086 0.0L1186 24.8L1152 24.8ZM1114 0.0L1143 0.0L1255 24.8L1221 24.8ZM1171 0.0L1200 0.0L1324 24.8L1290 24.8ZM14 24.8L48 24.8L-160 79.4L-207 79.4ZM83 24.8L117 24.8L-65 79.4L-112 79.4ZM152 24.8L186 24.8L30 79.4L-17 79.4ZM221 24.8L255 24.8L125 79.4L78 79.4ZM290 24.8L324 24.8L220 79.4L173 79.4ZM359 24.8L393 24.8L315 79.4L268 79.4ZM428 24.8L462 24.8L410 79.4L363 79.4ZM497 24.8L531 24.8L505 79.4L458 79.4ZM566 24.8L600 24.8L600 79.4L553 79.4ZM634 24.8L669 24.8L695 79.4L647 79.4ZM703 24.8L738 24.8L790 79.4L742 79.4ZM772 24.8L807 24.8L885 79.4L837 79.4ZM841 24.8L876 24.8L980 79.4L932 79.4ZM910 24.8L945 24.8L1075 79.4L1027 79.4ZM979 24.8L1014 24.8L1170 79.4L1122 79.4ZM1048 24.8L1083 24.8L1265 79.4L1217 79.4ZM1117 24.8L1152 24.8L1360 79.4L1312 79.4ZM1186 24.8L1221 24.8L1455 79.4L1407 79.4ZM30 79.4L78 79.4L-66 134.3L-127 134.3ZM125 79.4L173 79.4L55 134.3L-5 134.3ZM220 79.4L268 79.4L176 134.3L116 134.3ZM315 79.4L363 79.4L297 134.3L237 134.3ZM410 79.4L458 79.4L418 134.3L358 134.3ZM505 79.4L553 79.4L539 134.3L479 134.3ZM600 79.4L647 79.4L661 134.3L600 134.3ZM695 79.4L742 79.4L782 134.3L721 134.3ZM790 79.4L837 79.4L903 134.3L842 134.3ZM885 79.4L932 79.4L1024 134.3L963 134.3ZM980 79.4L1027 79.4L1145 134.3L1084 134.3ZM1075 79.4L1122 79.4L1266 134.3L1205 134.3ZM1170 79.4L1217 79.4L1387 134.3L1327 134.3ZM55 134.3L116 134.3L34 177.0L-36 177.0ZM176 134.3L237 134.3L176 177.0L105 177.0ZM297 134.3L358 134.3L317 177.0L246 177.0ZM418 134.3L479 134.3L459 177.0L388 177.0ZM539 134.3L600 134.3L600 177.0L529 177.0ZM661 134.3L721 134.3L741 177.0L671 177.0ZM782 134.3L842 134.3L883 177.0L812 177.0ZM903 134.3L963 134.3L1024 177.0L954 177.0ZM1024 134.3L1084 134.3L1166 177.0L1095 177.0ZM1145 134.3L1205 134.3L1307 177.0L1236 177.0ZM34 177.0L105 177.0L54 207.7L-24 207.7ZM176 177.0L246 177.0L210 207.7L132 207.7ZM317 177.0L388 177.0L366 207.7L288 207.7ZM459 177.0L529 177.0L522 207.7L444 207.7ZM600 177.0L671 177.0L678 207.7L600 207.7ZM741 177.0L812 177.0L834 207.7L756 207.7ZM883 177.0L954 177.0L990 207.7L912 207.7ZM1024 177.0L1095 177.0L1146 207.7L1068 207.7ZM1166 177.0L1236 177.0L1302 207.7L1224 207.7ZM54 207.7L132 207.7L101 229.2L18 229.2ZM210 207.7L288 207.7L267 229.2L184 229.2ZM366 207.7L444 207.7L434 229.2L351 229.2ZM522 207.7L600 207.7L600 229.2L517 229.2ZM678 207.7L756 207.7L766 229.2L683 229.2ZM834 207.7L912 207.7L933 229.2L849 229.2ZM990 207.7L1068 207.7L1099 229.2L1016 229.2ZM1146 207.7L1224 207.7L1265 229.2L1182 229.2ZM-65 229.2L18 229.2L-8 244.5L-94 244.5ZM101 229.2L184 229.2L166 244.5L79 244.5ZM267 229.2L351 229.2L340 244.5L253 244.5ZM434 229.2L517 229.2L513 244.5L426 244.5ZM600 229.2L683 229.2L687 244.5L600 244.5ZM766 229.2L849 229.2L860 244.5L774 244.5ZM933 229.2L1016 229.2L1034 244.5L947 244.5ZM1099 229.2L1182 229.2L1208 244.5L1121 244.5ZM-8 244.5L79 244.5L63 255.6L-26 255.6ZM166 244.5L253 244.5L242 255.6L153 255.6ZM340 244.5L426 244.5L421 255.6L332 255.6ZM513 244.5L600 244.5L600 255.6L511 255.6ZM687 244.5L774 244.5L779 255.6L689 255.6ZM860 244.5L947 244.5L958 255.6L868 255.6ZM1034 244.5L1121 244.5L1137 255.6L1047 255.6ZM63 255.6L153 255.6L143 263.8L52 263.8ZM242 255.6L332 255.6L326 263.8L234 263.8ZM421 255.6L511 255.6L509 263.8L417 263.8ZM600 255.6L689 255.6L691 263.8L600 263.8ZM779 255.6L868 255.6L874 263.8L783 263.8ZM958 255.6L1047 255.6L1057 263.8L966 263.8ZM1137 255.6L1226 255.6L1240 263.8L1148 263.8ZM-40 263.8L52 263.8L43 270.0L-50 270.0ZM143 263.8L234 263.8L229 270.0L136 270.0ZM326 263.8L417 263.8L414 270.0L321 270.0ZM509 263.8L600 263.8L600 270.0L507 270.0ZM691 263.8L783 263.8L786 270.0L693 270.0ZM874 263.8L966 263.8L971 270.0L879 270.0ZM1057 263.8L1148 263.8L1157 270.0L1064 270.0ZM43 270.0L136 270.0L130 274.8L36 274.8ZM229 270.0L321 270.0L318 274.8L224 274.8ZM414 270.0L507 270.0L506 274.8L412 274.8ZM600 270.0L693 270.0L694 274.8L600 274.8ZM786 270.0L879 270.0L882 274.8L788 274.8ZM971 270.0L1064 270.0L1070 274.8L976 274.8ZM1157 270.0L1250 270.0L1258 274.8L1164 274.8ZM-58 274.8L36 274.8L31 278.5L-64 278.5ZM130 274.8L224 274.8L220 278.5L126 278.5ZM318 274.8L412 274.8L410 278.5L315 278.5ZM506 274.8L600 274.8L600 278.5L505 278.5ZM694 274.8L788 274.8L790 278.5L695 278.5ZM882 274.8L976 274.8L980 278.5L885 278.5ZM1070 274.8L1164 274.8L1169 278.5L1074 278.5ZM31 278.5L126 278.5L122 281.5L26 281.5ZM220 278.5L315 278.5L313 281.5L218 281.5ZM410 278.5L505 278.5L504 281.5L409 281.5ZM600 278.5L695 278.5L696 281.5L600 281.5ZM790 278.5L885 278.5L887 281.5L791 281.5ZM980 278.5L1074 278.5L1078 281.5L982 281.5ZM1169 278.5L1264 278.5L1269 281.5L1174 281.5ZM-69 281.5L26 281.5L23 283.9L-73 283.9ZM122 281.5L218 281.5L215 283.9L119 283.9ZM313 281.5L409 281.5L408 283.9L312 283.9ZM504 281.5L600 281.5L600 283.9L504 283.9ZM696 281.5L791 281.5L792 283.9L696 283.9ZM887 281.5L982 281.5L985 283.9L888 283.9ZM1078 281.5L1174 281.5L1177 283.9L1081 283.9ZM23 283.9L119 283.9L117 285.9L20 285.9ZM215 283.9L312 283.9L310 285.9L213 285.9ZM408 283.9L504 283.9L503 285.9L407 285.9ZM600 283.9L696 283.9L697 285.9L600 285.9ZM792 283.9L888 283.9L890 285.9L793 285.9ZM985 283.9L1081 283.9L1083 285.9L987 285.9ZM1177 283.9L1273 283.9L1276 285.9L1180 285.9ZM-76 285.9L20 285.9L18 287.5L-79 287.5ZM117 285.9L213 285.9L212 287.5L115 287.5ZM310 285.9L407 285.9L406 287.5L309 287.5ZM503 285.9L600 285.9L600 287.5L503 287.5ZM697 285.9L793 285.9L794 287.5L697 287.5ZM890 285.9L987 285.9L988 287.5L891 287.5ZM1083 285.9L1180 285.9L1182 287.5L1085 287.5ZM18 287.5L115 287.5L113 288.9L16 288.9ZM212 287.5L309 287.5L308 288.9L211 288.9ZM406 287.5L503 287.5L503 288.9L405 288.9ZM600 287.5L697 287.5L697 288.9L600 288.9ZM794 287.5L891 287.5L892 288.9L795 288.9ZM988 287.5L1085 287.5L1087 288.9L989 288.9ZM1182 287.5L1279 287.5L1282 288.9L1184 288.9ZM-82 288.9L16 288.9L14 290.1L-84 290.1ZM113 288.9L211 288.9L209 290.1L112 290.1ZM308 288.9L405 288.9L405 290.1L307 290.1ZM503 288.9L600 288.9L600 290.1L502 290.1ZM697 288.9L795 288.9L795 290.1L698 290.1ZM892 288.9L989 288.9L991 290.1L893 290.1ZM1087 288.9L1184 288.9L1186 290.1L1088 290.1ZM14 290.1L112 290.1L111 291.0L13 291.0ZM209 290.1L307 290.1L306 291.0L209 291.0ZM405 290.1L502 290.1L502 291.0L404 291.0ZM600 290.1L698 290.1L698 291.0L600 291.0ZM795 290.1L893 290.1L894 291.0L796 291.0ZM991 290.1L1088 290.1L1089 291.0L991 291.0ZM1186 290.1L1284 290.1L1285 291.0L1187 291.0ZM-85 291.0L13 291.0L12 291.9L-86 291.9ZM111 291.0L209 291.0L208 291.9L110 291.9ZM306 291.0L404 291.0L404 291.9L306 291.9ZM502 291.0L600 291.0L600 291.9L502 291.9ZM698 291.0L796 291.0L796 291.9L698 291.9ZM894 291.0L991 291.0L992 291.9L894 291.9ZM1089 291.0L1187 291.0L1188 291.9L1090 291.9ZM12 291.9L110 291.9L109 292.6L11 292.6ZM208 291.9L306 291.9L305 292.6L207 292.6ZM404 291.9L502 291.9L502 292.6L404 292.6ZM600 291.9L698 291.9L698 292.6L600 292.6ZM796 291.9L894 291.9L895 292.6L796 292.6ZM992 291.9L1090 291.9L1091 292.6L993 292.6ZM1188 291.9L1286 291.9L1288 292.6L1189 292.6Z' fill='white'/%3E%3C/svg%3E");
-
-  @media (prefers-color-scheme: dark) {
-    color-scheme: dark;
-    --paper: rgb(13 7 38);
-    --ink: rgb(246 242 255);
-    --ink-soft: rgb(226 216 255 / 80%);
-    --link: rgb(127 233 255);
-    --sky: radial-gradient(ellipse 70% 50% at 50% 100%, rgb(255 31 163 / 80%), rgb(255 31 163 / 0) 70%), linear-gradient(rgb(11 6 32), rgb(38 14 98) 55%, rgb(96 18 140));
-    --clouds: radial-gradient(circle, rgb(255 255 255 / 80%) 1px, transparent 1.6px) 13px 9px / 83px 71px, radial-gradient(circle, rgb(190 230 255 / 60%) 1px, transparent 1.6px) 40px 30px / 127px 109px;
-    --floor: rgb(34 12 92);
-    --tiles: rgb(236 230 255);
-    --beam-a: rgb(18 231 255 / 45%);
-    --beam-b: rgb(255 31 163 / 45%);
-  }
+  color-scheme: dark;
+  --bg: rgb(7 6 15);
+  --panel: rgb(13 11 28);
+  --panel-2: rgb(21 18 44);
+  --box: rgb(62 66 112);
+  --steel: rgb(154 164 204);
+  --steel-dk: rgb(88 96 140);
+  --white: rgb(244 242 255);
+  --cyan: rgb(90 230 255);
+  --cyan-dk: rgb(24 150 214);
+  --magenta: rgb(255 79 180);
+  --pink: rgb(255 160 220);
+  --orange: rgb(255 154 74);
+  --clawd: rgb(217 119 87);
+  --gold: rgb(255 214 122);
+  /* text mode's own: the NFO viewer's blue, its grey and its yellow */
+  --tm-blue: rgb(0 0 150);
+  --tm-grey: rgb(200 200 214);
+  --tm-yellow: rgb(255 255 85);
+  --paper: var(--bg);
+  --ink: var(--white);
+  --ink-soft: var(--steel);
+  --strip: var(--panel);
+  --link: var(--cyan);
+  --px: "Frontier Crew 8x8", "Space Mono", monospace;
+  --big: "Frontier Crew Big", "Rubik Mono One", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Space Mono", monospace;
+  /* the video's big type: a pale sky over a white horizon over the colour, darkening to the feet */
+  --chrome-m: linear-gradient(rgb(255 238 250) 12%, rgb(255 178 226) 45%, white 45% 52%, rgb(255 79 180) 52% 78%, rgb(160 16 110) 90%);
+  --chrome-c: linear-gradient(rgb(236 252 255) 12%, rgb(158 244 255) 45%, white 45% 52%, rgb(53 194 242) 52% 78%, rgb(10 80 150) 90%);
+  --chrome-o: linear-gradient(rgb(255 246 232) 12%, rgb(255 210 160) 45%, white 45% 52%, rgb(255 140 60) 52% 78%, rgb(140 50 16) 90%);
+  --chrome-s: linear-gradient(white 12%, rgb(214 222 255) 45%, white 45% 52%, rgb(125 147 216) 52% 78%, rgb(44 58 120) 90%);
+  /* copper bars: dark at their edges, white-hot through the middle */
+  --copper-m: linear-gradient(rgb(40 4 34), rgb(255 79 180) 40%, white 50%, rgb(255 79 180) 60%, rgb(40 4 34));
+  --copper-c: linear-gradient(rgb(2 22 40), rgb(53 194 242) 40%, white 50%, rgb(53 194 242) 60%, rgb(2 22 40));
+  --copper-o: linear-gradient(rgb(40 12 2), rgb(255 140 60) 40%, white 50%, rgb(255 140 60) 60%, rgb(40 12 2));
+  /* the line being sung: words filled so far, and those to come (each section sets its own) */
+  --sung: var(--cyan);
+  --unsung: rgb(150 160 205 / 55%);
+  scrollbar-color: var(--steel-dk) var(--bg);
 
   body {
+    /* the demo's starfield, far off and still */
     background:
-      radial-gradient(circle, rgb(91 31 224 / 12%) 1.2px, transparent 1.8px) 0 0 / 22px 22px,
-      linear-gradient(rgb(226 232 255), rgb(244 236 255) 50%, rgb(232 244 255));
-    font: 16px/1.6 var(--type);
-    @media (prefers-color-scheme: dark) {
-      background:
-        radial-gradient(circle, rgb(255 255 255 / 70%) 1px, transparent 1.6px) 13px 7px / 97px 89px,
-        radial-gradient(circle, rgb(18 231 255 / 50%) 1px, transparent 1.6px) 40px 60px / 131px 113px,
-        radial-gradient(circle, rgb(255 31 163 / 50%) 1px, transparent 1.6px) 71px 23px / 173px 157px,
-        linear-gradient(rgb(11 6 32), rgb(24 10 60) 50%, rgb(11 6 32));
-    }
+      radial-gradient(circle, rgb(255 255 255 / 70%) 1px, transparent 1.4px) 13px 7px / 97px 89px,
+      radial-gradient(circle, rgb(90 230 255 / 45%) 1px, transparent 1.4px) 40px 60px / 131px 113px,
+      radial-gradient(circle, rgb(255 79 180 / 45%) 1px, transparent 1.4px) 71px 23px / 173px 157px,
+      var(--bg);
+    font: 16px/1.6 var(--mono);
   }
-  /* the channel bug: translucent, top left, its star pulsing on the kick (141 BPM). It sits behind the page's content (but
-     in front of the cover's sky, which isn't isolated for that reason), so it never covers any text. */
-  body::after {
-    content: "hype★";
-    inset: 42px auto auto 14px;
-    z-index: -1;
-    opacity: 1;
-    mix-blend-mode: normal;
-    background: none;
-    color: rgb(255 255 255 / 55%);
-    font: 1.6rem/1 var(--logo);
-    text-shadow: 0 1px 2px rgb(26 15 51 / 30%);
-    letter-spacing: -.02em;
-    transform-origin: 0 50%;
-    animation: eurodance-kick calc(60s / 141) ease-out infinite;
-  }
+  body::after { content: none; }
+  ::selection { background: var(--cyan); color: var(--bg); }
 
-  /* lens-flare glints in the margins */
+  /* a few nearer stars twinkle, a pixel or two each */
   .fx { display: block; }
   .fx i {
     position: absolute;
-    left: calc(mod(var(--i) * 43, 11) * 1% + mod(var(--i), 2) * 87% + 1%);
-    top: calc(mod(var(--i) * 31 + 7, 86) * 1% + 7%);
-    width: calc(12px + mod(var(--i) * 5, 14) * 1px);
-    aspect-ratio: 1;
-    background: var(--magenta);
-    clip-path: polygon(50% 0, 56% 44%, 100% 50%, 56% 56%, 50% 100%, 44% 56%, 0 50%, 44% 44%);
-    animation: eurodance-glint 1.7s ease-in-out infinite;
-    animation-delay: calc(var(--i) * -.29s);
-    &:nth-child(3n) { background: var(--ultra); }
-    @media (prefers-color-scheme: dark) { background: white; &:nth-child(3n) { background: var(--cyan); } &:nth-child(3n + 1) { background: var(--magenta); } }
+    left: calc(mod(var(--i) * 37 + 5, 97) * 1%);
+    top: calc(mod(var(--i) * 53 + 11, 91) * 1% + 3%);
+    width: 2px;
+    height: 2px;
+    background: white;
+    box-shadow: 0 0 4px rgb(255 255 255 / 80%);
+    animation: eurodance-twinkle 2.6s steps(1) infinite;
+    animation-delay: calc(var(--i) * -.37s);
+    &:nth-child(3n) { background: var(--cyan); }
+    &:nth-child(4n + 1) { width: 3px; height: 3px; }
   }
 
-  /* the masthead is the Windows 98 taskbar: the way home is the Start button, and the channel's line is in the tray */
+  /* The masthead is the text-mode status line, over a copper bar, in text mode's own narrow type (the demo's font is too wide for
+     the whole line). Where there's no room, the strap drops its dates, then "PC demo" and the prompt, then the singers, rather than
+     cut off a name. */
   .masthead {
-    padding-inline: 3px;
-    background: var(--w98);
-    color: black;
-    box-shadow: inset 0 1px var(--w98-lt), inset 0 2px white, inset 0 -1px rgb(10 10 10);
-    font: 11px/1.2 var(--win);
+    background: var(--copper-m) 0 100% / 100% 4px no-repeat, var(--bg);
+    color: var(--steel);
+    font: 14px/1 var(--mono);
     letter-spacing: 0;
     text-transform: none;
+    @media (width < 960px) { .issue-dates { display: none; } }
+    @media (width < 820px) { .issue-more { display: none; } .home::before { content: none; } }
+    @media (width < 740px) { .issue-names { display: none; } }
     a {
-      padding: 4px 8px;
-      background: var(--w98);
-      box-shadow: var(--raised);
-      font-weight: bold;
-      &:hover { text-decoration: none; }
-      &:active { box-shadow: var(--sunken); }
-      &:focus-visible { outline: 1px dotted black; outline-offset: -4px; }
+      padding: 2px 4px;
+      color: var(--cyan);
+      &:hover, &:focus-visible { background: var(--cyan); color: var(--bg); text-decoration: none; outline: none; }
     }
-    .issue { padding: 4px 10px; box-shadow: inset 1px 1px var(--w98-dk), inset -1px -1px white; }
+    .home::before { content: "C:\\> "; color: var(--steel); }
+    .home:hover::before, .home:focus-visible::before { color: var(--bg); }
+    @media (max-width: 640px) { font-size: 13px; }
+    @media (width < 400px) { font-size: 12px; a { padding-inline: 2px; } }
   }
 
-  /* the cover is the chroma-key set: sky and laser fans, then the checkerboard floor running under the player */
+  /* The cover is the release's title screen: FRONTIER CREW PRESENTS, and the title in the demo's chrome over its copper bars; the
+     player is the VGA screen under it, in a text-mode frame. */
   .cover {
-    --horizon: 9rem;
     position: relative;
-    &::before, &::after {
+    /* the copper bars: a stack across the page behind the title, magenta and cyan in turn, fading to the edges */
+    &::before {
       content: "";
       position: absolute;
       z-index: -1;
       inset: 0 calc(50% - 50vw) auto;
-      height: calc(var(--cover-pad) + var(--cover-head-h) + var(--horizon));
-    }
-    &::before { background: var(--clouds), var(--sky); }
-    /* two fans of beams from the horizon, kept faint where the title and dek are */
-    &::after {
+      height: calc(var(--cover-pad) + var(--cover-head-h) + 4rem);
       background:
-        repeating-conic-gradient(from -86deg at 50% 100%, var(--beam-a) 0 .3deg, transparent .3deg 7deg),
-        repeating-conic-gradient(from -82.5deg at 50% 100%, var(--beam-b) 0 .3deg, transparent .3deg 7deg);
-      mask: linear-gradient(90deg, black 10%, rgb(0 0 0 / 30%) 35% 65%, black 90%), linear-gradient(transparent, black 45%);
-      mask-composite: intersect;
+        var(--copper-m) 0 calc(var(--cover-pad) + 12%) / 100% 6px no-repeat,
+        var(--copper-c) 0 calc(var(--cover-pad) + 88%) / 100% 6px no-repeat,
+        repeating-linear-gradient(rgb(255 79 180 / 7%) 0 2px, transparent 2px 22px),
+        radial-gradient(ellipse 70% 60% at 50% 55%, rgb(80 20 110 / 55%), transparent 70%);
+      mask: linear-gradient(90deg, transparent, black 18% 82%, transparent);
     }
   }
-  .player-slot {
-    &::before, &::after {
-      content: "";
-      position: absolute;
-      z-index: -1;
-      inset: var(--horizon) calc(50% - 50vw) auto;
-      height: 26rem;
-    }
-    &::before { background: var(--floor); mask: linear-gradient(black 35%, transparent); }
-    &::after {
-      background: var(--tiles);
-      mask: var(--checker) 0 0 / 100% 100%, linear-gradient(black 25%, transparent 95%);
-      mask-composite: intersect;
-    }
-  }
-
-  /* the title: extruded chrome, gold and hot pink, slanted, with a lens flare */
-  .cover h1 {
+  .cover-head {
     position: relative;
-    font-size: clamp(1.6rem, 6.6vw, 4.6rem);
-    gap: .04em;
-    .line-2 { font-size: 1.24em; }
-    &::after {
-      content: "";
-      position: absolute;
-      right: 5%;
-      top: 44%;
-      width: .9em;
-      aspect-ratio: 1;
-      background: radial-gradient(white 22%, rgb(255 255 255 / 0) 62%);
-      clip-path: polygon(50% 0, 56% 44%, 100% 50%, 56% 56%, 50% 100%, 44% 56%, 0 50%, 44% 44%);
-      animation: eurodance-glint 2.8s ease-in-out infinite;
+    /* FRONTIER CREW PRESENTS, over the title, as the video's title part has it */
+    &::before {
+      content: "F R O N T I E R   C R E W   P R E S E N T S" / "";
+      display: block;
+      margin-bottom: .9rem;
+      color: var(--gold);
+      font: 16px/1 var(--px);
+      white-space: pre;
+      @media (max-width: 640px) { content: "FRONTIER CREW PRESENTS" / ""; }
     }
   }
-  .ransom .word { gap: 0; }
-  .ransom .gap { width: .28em; }
-  .ransom .glyph {
-    --fill: var(--chrome);
-    padding: 0 .01em;
-    font-family: var(--display);
-    color: var(--line);
-    -webkit-text-stroke: .09em var(--line);
-    text-shadow: var(--extrude);
-    transform: skewX(-12deg);
-    &::before { content: none; }
-    &::after { background: var(--fill) 0 0 / 100% 1.1em; background-clip: text; color: transparent; -webkit-text-stroke: 0; text-shadow: none; }
+  .cover h1 {
+    font-size: clamp(1.6rem, 6.4vw, 4.4rem);
+    gap: .1em;
+    .line-2 { font-size: 1.3em; }
   }
-  .cover .line-2 .word:first-child .glyph { --fill: var(--gold); }
-  .cover .line-2 .word:last-child .glyph { --fill: var(--hot-chrome); }
-  .dek { max-width: 42rem; color: var(--ink); }
-  /* the hook is the karaoke's singer chip */
+  /* the chrome lettering: each glyph's own text is its dark drop shadow, `::before` its outline and `::after` the chrome */
+  .ransom .word { gap: 0; }
+  .ransom .gap { width: .5em; }
+  .ransom .glyph {
+    --fill: var(--chrome-m);
+    --lift: .08em;
+    padding: 0 .02em;
+    color: rgb(20 2 30);
+    font-family: var(--big);
+    line-height: 1;
+    transform: none;
+    &::before { color: transparent; -webkit-text-stroke: .1em rgb(20 2 30); translate: calc(var(--lift) * -1) calc(var(--lift) * -1); }
+    &::after { background: var(--fill); background-clip: text; color: transparent; translate: calc(var(--lift) * -1) calc(var(--lift) * -1); }
+  }
+  .cover .line-2 .glyph { --fill: var(--chrome-c); }
+  .dek { max-width: 42rem; margin-block: 1.4rem 1.6rem; color: var(--steel); font-size: .95rem; }
+  /* the hook, as the NFO's highlighted line, with the cursor after it */
   .tape {
     display: table;
-    margin: 0 auto .9rem;
-    padding: .25rem 1rem .3rem;
-    border-radius: 999px;
-    background: linear-gradient(rgb(226 0 138), rgb(170 0 110));
-    color: white;
-    font: 1.05rem/1.3 var(--display);
-    rotate: -2deg;
-    box-shadow: 0 0 0 2px white, 0 0 0 4px var(--line), 0 5px 0 4px var(--line);
+    margin: 0 auto .7rem;
+    padding: 4px 8px;
+    background: var(--cyan);
+    color: var(--bg);
+    font: 16px/1 var(--px);
+    rotate: 0deg;
+    box-shadow: none;
+    &::after { content: "█"; margin-left: 4px; color: var(--bg); animation: eurodance-blink 1.06s steps(1) infinite; }
   }
 
-  /* the player is a Windows 98 media player; its title bar sits just above it */
+  /* the player is the VGA screen, in a text-mode frame, its program's name in the top border */
   .player {
-    border-radius: 0;
-    background: var(--w98);
-    box-shadow: inset -1px -1px rgb(10 10 10), inset 1px 0 white, inset -2px -2px var(--w98-dk), inset 2px 0 var(--w98-lt), 0 18px 40px rgb(26 15 51 / 45%);
+    --c: var(--steel-dk);
+    background: var(--panel);
+    box-shadow: 0 0 0 2px var(--c), 0 0 0 5px var(--bg), 0 0 0 7px var(--c), 0 0 0 9px var(--bg), 0 0 60px 10px rgb(255 79 180 / 22%);
     &::before {
-      content: "hype★TV Media Player – We Didn't Start the Scaling";
-      inset: -26px 0 auto;
+      content: "═[ SCALING.EXE ]═" / "";
+      inset: -11px auto auto 50%;
+      translate: -50% 0;
       width: auto;
-      height: 26px;
-      padding: 0 64px 0 9px;
+      height: auto;
+      padding: 0 6px;
       rotate: 0deg;
-      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14'%3E%3Cg transform='translate(0 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='4' y='9' width='6' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(16 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='3' y='2' width='9' height='9' fill='none' stroke='%23000'/%3E%3Crect x='3' y='2' width='9' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(36 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Cpath d='M4 3l2 0 2 2 2-2 2 0-3 3.5 3 3.5-2 0-2-2-2 2-2 0 3-3.5z' fill='%23000'/%3E%3C/g%3E%3C/svg%3E") right 6px top 6px / 52px 14px no-repeat, linear-gradient(90deg, rgb(0 0 128), rgb(16 132 208)) 3px 3px / calc(100% - 6px) 20px no-repeat, var(--w98);
-      box-shadow: inset 1px 1px white, inset 2px 2px var(--w98-lt), inset -1px 0 rgb(10 10 10), inset -2px 0 var(--w98-dk);
-      color: white;
-      font: bold 12px/26px var(--win);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      background: var(--bg);
+      color: var(--gold);
+      font: 16px/1 var(--px);
+      white-space: pre;
     }
     &::after { content: none; }
+    &.docked-side::before { content: "═[ SCALING.EXE ]═" / ""; left: 50%; width: auto; }
   }
-  .stage {
-    background: black;
-    &::before { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; box-shadow: var(--sunken); }
-  }
+  .stage { background: black; }
+  /* Play: the demo's own prompt, in Clawd's orange */
   .big-play {
-    z-index: 2;
-    border: 4px solid white;
-    background: radial-gradient(circle at 35% 30%, white 0 6%, rgb(255 120 210) 16%, rgb(214 0 128) 55%, rgb(110 0 70));
-    color: white;
-    font-family: var(--display);
+    border: 0;
+    border-radius: 0;
+    background: rgb(7 6 15 / 82%);
+    color: var(--orange);
+    font-family: var(--px);
     rotate: 0deg;
-    box-shadow: 0 0 0 3px var(--line), 0 0 40px rgb(255 31 163 / 70%);
-    text-shadow: 0 2px 0 rgb(90 0 60);
+    box-shadow: 0 0 0 3px var(--orange), 0 0 0 6px rgb(7 6 15 / 82%), 0 0 30px rgb(255 154 74 / 55%);
+    .big-play-label { letter-spacing: .06em; }
+    &:hover, &:focus-visible { background: var(--orange); color: var(--bg); outline: none; }
   }
+  .player:is([data-loading], [data-no-video]):not([data-state="idle"]) .screen::after { background: var(--tm-blue); color: var(--tm-yellow); font: 16px/1.2 var(--px); }
+  .load-error { background: rgb(0 0 150 / 88%); color: var(--tm-grey); font-family: var(--px); .retry { border: 0; background: var(--orange); color: var(--bg); font-family: var(--px); box-shadow: none; } }
+
+  /* the deck: text-mode controls, their frames drawn as shadows */
   .deck {
-    color: black;
+    color: var(--steel);
     button {
       border: 0;
       border-radius: 0;
-      background: var(--w98);
-      color: black;
-      box-shadow: var(--raised);
-      &:active { box-shadow: var(--sunken); }
-      &:focus-visible { outline: 1px dotted black; outline-offset: -5px; }
+      background: var(--panel-2);
+      color: var(--white);
+      box-shadow: inset 0 0 0 2px var(--steel-dk);
+      &:hover { box-shadow: inset 0 0 0 2px var(--cyan); color: var(--cyan); }
+      &:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
     }
-    /* the CD player's LCD */
-    .time {
-      background: black;
-      color: var(--laser);
-      box-shadow: 0 0 0 .25rem black, 0 0 0 calc(.25rem + 1px) var(--w98-dk);
-      text-shadow: 0 0 6px rgb(59 255 74 / 60%);
-    }
-    /* a combo box */
+    .deck-play { background: var(--orange); color: var(--bg); box-shadow: inset 0 -3px rgb(140 50 16); &:hover { background: var(--gold); color: var(--bg); box-shadow: inset 0 -3px rgb(140 50 16); } }
+    .time { color: var(--cyan); text-shadow: 0 0 6px rgb(90 230 255 / 55%); }
     .version select {
-      appearance: none;
-      padding: 0 22px 0 5px;
+      color-scheme: dark;
       border: 0;
       border-radius: 0;
-      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='17'%3E%3Crect width='17' height='17' fill='%230a0a0a'/%3E%3Crect width='16' height='16' fill='%23dfdfdf'/%3E%3Crect x='1' y='1' width='15' height='15' fill='%23808080'/%3E%3Crect x='1' y='1' width='14' height='14' fill='%23fff'/%3E%3Crect x='2' y='2' width='13' height='13' fill='%23c0c0c0'/%3E%3Cpath d='M5 7h7l-3.5 4z' fill='%23000'/%3E%3C/svg%3E") right 2px center / 17px 17px no-repeat, white;
-      color: black;
-      box-shadow: var(--sunken);
-      font: 13px var(--win);
+      background: var(--panel-2);
+      color: var(--cyan);
+      box-shadow: inset 0 0 0 2px var(--steel-dk);
+      &:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
     }
   }
-  .check input { border: 0; border-radius: 0; background: white; color: black; box-shadow: var(--sunken); }
-  /* a trackbar */
+  .check input { border-color: var(--steel); background: var(--panel); color: var(--cyan); }
+  /* the seek bar is the demo's loading bar: the part played a copper bar, the thumb a block */
   .scrub input {
-    &::-webkit-slider-runnable-track { height: 6px; border: 1px solid; border-color: var(--w98-dk) white white var(--w98-dk); background: linear-gradient(to right, rgb(0 0 128) var(--pct, 0%), white 0); }
-    &::-moz-range-track { height: 4px; border: 1px solid; border-color: var(--w98-dk) white white var(--w98-dk); background: white; }
-    &::-moz-range-progress { height: 4px; background: rgb(0 0 128); }
-    &::-webkit-slider-thumb { width: 11px; height: 21px; margin-top: -9px; border: 0; border-radius: 0; background: var(--w98); box-shadow: var(--raised); }
-    &::-moz-range-thumb { width: 11px; height: 21px; border: 0; border-radius: 0; background: var(--w98); box-shadow: var(--raised); }
+    &::-webkit-slider-runnable-track { background: var(--copper-c) 0 0 / var(--pct, 0%) 100% no-repeat, var(--bg); border: 2px solid var(--steel-dk); }
+    &::-moz-range-track { background: var(--bg); border: 2px solid var(--steel-dk); }
+    &::-moz-range-progress { background: var(--copper-c); }
+    &::-webkit-slider-thumb { border-radius: 0; background: var(--white); border: 2px solid var(--bg); }
+    &::-moz-range-thumb { border-radius: 0; background: var(--white); border: 2px solid var(--bg); }
   }
-  .scrub .ticks span { color: rgb(34 34 34); &::before { border-color: black; } }
+  .scrub .ticks span { color: var(--steel); font-family: var(--px); font-size: 8px; &::before { border-color: var(--steel-dk); } }
 
-  /* section heads are chrome slams */
+  /* section heads are the demo's part titles: steel chrome over a copper bar */
   .lyrics-head h2, .album h2, .jukebox h2, .liner h2 {
-    display: inline-block;
-    padding: 0 .2em .1em 0;
-    background: var(--chrome) 0 0 / 100% 1.15em;
+    position: relative;
+    display: table;
+    padding-bottom: 12px;
+    background: var(--chrome-s) 0 0 / 100% 1.15em;
     background-clip: text;
     color: transparent;
-    font: 2.2rem/1.15 var(--display);
-    font-style: italic;
+    font: clamp(24px, 5vw, 48px)/1.15 var(--big);
     text-transform: uppercase;
-    -webkit-text-stroke: .025em var(--line);
-    filter: drop-shadow(.035em .035em 0 var(--line)) drop-shadow(.035em .035em 0 var(--line)) drop-shadow(.02em .03em 0 var(--line));
+    letter-spacing: 0;
+    filter: drop-shadow(3px 3px 0 rgb(20 2 30));
+    &::after { content: ""; position: absolute; inset: auto 0 0; height: 4px; background: var(--copper-o); }
   }
-  .album h2 { background-image: var(--hot-chrome); }
-  .jukebox h2 { background-image: var(--ice); }
-  .liner h2 { background-image: var(--gold); }
-  .lyrics-head .inline-play { border-color: var(--ink-soft); }
+  .lyrics-head {
+    h2 { margin-inline: auto; }
+    p { color: var(--steel); }
+    .all-notes { color: var(--cyan); font: 16px/1.4 var(--px); text-decoration-thickness: 2px; }
+    .inline-play { border-radius: 0; border-color: var(--cyan); color: var(--cyan); }
+  }
 
-  /* verse heads: a chrome title card, the dates in the date cube, and a sticker for the span */
-  #v1 { --verse: var(--chrome); }
-  #v2 { --verse: var(--gold); }
-  #v3 { --verse: var(--hot-chrome); }
-  #v4 { --verse: var(--ice); }
+  /* verse heads: the part's title in cyan chrome (MC Token's), its name as the demo has it, the dates in the NFO's grey */
   .verse-head {
     align-items: center;
-    gap: .5rem 1.1rem;
-    h3 { font-size: 2.3rem; }
-    .glyph { --fill: var(--verse); }
-    .era { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; font-family: var(--display); }
-    .era-dates {
-      padding: .2rem .7rem;
-      border: 2px solid rgb(200 204 222);
-      border-radius: 4px;
-      background: linear-gradient(rgb(52 58 170), rgb(16 12 70));
-      color: var(--yellow);
-      font-size: .85rem;
-      box-shadow: 0 0 0 1px var(--line), inset 0 1px 0 rgb(255 255 255 / 35%);
+    h3 { font-size: 32px; .glyph { --fill: var(--chrome-c); } }
+    h3::after {
+      display: inline-block;
+      margin-left: 14px;
+      padding: 4px 6px;
+      background: var(--panel-2);
+      color: var(--gold);
+      font: 16px/1 var(--px);
+      vertical-align: 6px;
+      box-shadow: inset 0 0 0 2px var(--box);
     }
+    .era { color: var(--steel); font: .9rem/1.4 var(--mono); }
     .era-span {
-      margin: 0;
-      padding: 1.05em 1.25em;
+      margin-left: .5rem;
+      padding: 0;
       border: 0;
-      background: var(--yellow);
-      color: rgb(190 0 50);
-      font: .74rem/1.1 var(--display);
-      text-transform: uppercase;
-      rotate: -8deg;
-      clip-path: polygon(50.0% 0.0%, 54.9% 9.3%, 62.0% 1.5%, 64.5% 11.7%, 73.2% 5.7%, 73.3% 16.3%, 83.2% 12.6%, 80.7% 22.8%, 91.1% 21.6%, 86.3% 30.9%, 96.8% 32.3%, 89.8% 40.2%, 99.6% 44.0%, 91.0% 50.0%, 99.6% 56.0%, 89.8% 59.8%, 96.8% 67.7%, 86.3% 69.1%, 91.1% 78.4%, 80.7% 77.2%, 83.2% 87.4%, 73.3% 83.7%, 73.2% 94.3%, 64.5% 88.3%, 62.0% 98.5%, 54.9% 90.7%, 50.0% 100.0%, 45.1% 90.7%, 38.0% 98.5%, 35.5% 88.3%, 26.8% 94.3%, 26.7% 83.7%, 16.8% 87.4%, 19.3% 77.2%, 8.9% 78.4%, 13.7% 69.1%, 3.2% 67.7%, 10.2% 59.8%, 0.4% 56.0%, 9.0% 50.0%, 0.4% 44.0%, 10.2% 40.2%, 3.2% 32.3%, 13.7% 30.9%, 8.9% 21.6%, 19.3% 22.8%, 16.8% 12.6%, 26.7% 16.3%, 26.8% 5.7%, 35.5% 11.7%, 38.0% 1.5%, 45.1% 9.3%);
-      &::after { content: "!"; }
+      color: var(--orange);
+      font: 16px/1 var(--px);
+      text-transform: none;
+      rotate: 0deg;
+      &::before { content: "[ "; color: var(--steel-dk); }
+      &::after { content: " ]"; color: var(--steel-dk); }
     }
   }
+  #v1 .verse-head h3::after { content: "PART 1: IGNITION" / ""; }
+  #v2 .verse-head h3::after { content: "PART 2: THE MONEY YEAR" / ""; }
+  #v3 .verse-head h3::after { content: "PART 3: UNDERGROUND" / ""; }
+  #v4 .verse-head h3::after { content: "PART 4: HARDCORE" / ""; }
 
-  /* dates are the date cube: a glass prism in a chrome frame, with a CD, and the year in yellow */
+  /* dates are the video's date plate: month and day over the year, on a near-black plate that lights up on the line being sung */
   .stamp {
-    display: inline-flex;
-    align-items: center;
-    gap: .35em;
-    padding: .12rem .45rem .12rem .3rem;
-    border: 2px solid rgb(200 204 222);
-    border-radius: 4px;
-    background: linear-gradient(rgb(52 58 170), rgb(16 12 70));
-    color: white;
-    font: .66rem/1.35 var(--display);
-    letter-spacing: .03em;
+    display: inline-grid;
+    justify-items: end;
+    gap: 3px;
+    padding: 5px 6px 4px;
+    border: 0;
+    background: rgb(8 10 22);
+    color: var(--steel);
+    font: 8px/1 var(--px);
     rotate: 0deg;
     opacity: 1;
-    mask-image: none;
-    box-shadow: 0 0 0 1px var(--line), inset 0 1px 0 rgb(255 255 255 / 35%);
-    &::before {
-      content: "";
-      flex: none;
-      width: 1.1em;
-      aspect-ratio: 1;
-      border-radius: 50%;
-      background: radial-gradient(circle, rgb(16 12 70) 0 14%, rgb(230 230 240) 15% 24%, transparent 25%), conic-gradient(rgb(255 150 220), rgb(150 220 255), rgb(255 245 150), rgb(170 255 180), rgb(255 150 220));
-    }
+    mask: none;
+    box-shadow: inset 0 0 0 1px var(--box);
+    @media (max-width: 640px) { display: inline-flex; align-items: baseline; gap: 8px; }
   }
-  .stamp-y { color: var(--yellow); }
-  .line.now .stamp {
-    scale: 1;
-    box-shadow: 0 0 0 1px var(--line), 0 0 14px rgb(18 231 255 / 70%);
-    transform: perspective(12em) rotateX(calc(-90deg * pow(max(0, 1 - var(--line-t, 1) / .35), 2)));
-    &::before { animation: eurodance-spin 1.1s linear infinite; }
-    @media (prefers-reduced-motion: reduce) { transform: none; }
-  }
+  .stamp-y { color: var(--white); font: 16px/1 var(--big); opacity: .6; }
+  .line.now .stamp { scale: 1; box-shadow: inset 0 0 0 1px var(--cyan), 0 0 12px rgb(90 230 255 / 40%); color: var(--cyan); .stamp-y { opacity: 1; } }
 
-  /* verse lines are the chart show's hit-parade bars, numbered like chart positions */
-  .lines { counter-reset: rank; }
-  .line { counter-increment: rank; }
+  /* verse lines are text-mode rows, in the demo's font; the one open reads as selected (inverse), and the one being sung is
+     MC Token's scroller */
   .lyric {
-    padding: .42rem .5rem .44rem 2.45rem;
+    padding: 6px 10px;
     border: 0;
-    border-radius: 999px 12px 12px 999px;
-    background: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0) 50%), linear-gradient(90deg, var(--ultra), var(--uv));
-    color: white;
-    /* (the leading leaves the karaoke ball room above each row of a wrapped line) */
-    font: clamp(.98rem, 2.1vw, 1.1rem)/1.5 var(--heavy);
-    text-shadow: 0 1px 0 rgb(0 0 60 / 60%);
+    background: var(--panel);
+    color: var(--white);
+    font: 16px/1.5 var(--px);
     clip-path: none;
+    box-shadow: inset 3px 0 var(--steel-dk);
     rotate: 0deg;
-    box-shadow: 0 0 0 2px var(--line), 0 4px 0 2px var(--line);
-    &::before {
-      content: counter(rank);
-      position: absolute;
-      left: .3rem;
-      top: 50%;
-      translate: 0 -50%;
-      display: grid;
-      place-items: center;
-      width: 1.75rem;
-      aspect-ratio: 1;
-      border-radius: 50%;
-      background: radial-gradient(circle at 35% 30%, white 0 8%, rgb(255 244 130) 18%, rgb(255 204 0) 60%, rgb(190 120 0));
-      color: var(--line);
-      font: .82rem/1 var(--display);
-      text-shadow: none;
-      box-shadow: 0 0 0 1.5px var(--line);
-    }
   }
   button.lyric {
-    &:hover, &:focus-visible { background: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0) 50%), linear-gradient(90deg, rgb(40 70 255), rgb(110 50 235)); rotate: 0deg; }
-    &:focus-visible { box-shadow: 0 0 0 2px var(--line), 0 4px 0 2px var(--line), 0 0 0 5px var(--cyan); }
+    &:hover, &:focus-visible { background: var(--panel-2); box-shadow: inset 3px 0 var(--cyan); rotate: 0deg; }
+    &:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
   }
+  /* the + / − are drawn as two equal bars, exactly centred: the demo font's glyphs sit off-centre in their cells, and at
+     fractional device-pixel ratios their bars round to unequal thicknesses */
   .lyric .tab, .line:nth-child(3n + 2) .lyric .tab, .line:nth-child(3n + 3) .lyric .tab {
-    width: 1.35rem;
-    height: 1.35rem;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, white, rgb(214 218 240) 60%, rgb(160 160 190));
-    color: var(--line);
-    font: .95rem/1 var(--display);
-    text-shadow: none;
+    width: 20px;
+    height: 20px;
+    background: none;
+    color: var(--steel);
     clip-path: none;
-    box-shadow: 0 0 0 1.5px var(--line);
+    box-shadow: inset 0 0 0 2px var(--steel-dk);
+    &::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      background: linear-gradient(currentColor, currentColor) center / 100% 2px no-repeat, linear-gradient(currentColor, currentColor) center / 2px 100% no-repeat;
+    }
   }
-  .line.seed .lyric { background: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0) 50%), linear-gradient(90deg, var(--hot), rgb(130 0 150)); }
-  .line.open .lyric { background: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0) 50%), linear-gradient(90deg, rgb(0 100 130), rgb(22 51 200)); }
-  /* the line being sung is karaoke: MC Token's chip, the words filling cyan, and the bouncing ball */
+  .line.open .lyric .tab::before { content: ""; background: linear-gradient(currentColor, currentColor) center / 100% 2px no-repeat; }
+  .line.seed .lyric { box-shadow: inset 3px 0 var(--orange); }
+  .line.open .lyric { background: var(--panel-2); box-shadow: inset 3px 0 var(--cyan), inset 0 0 0 1px var(--box); .tab { color: var(--cyan); box-shadow: inset 0 0 0 2px var(--cyan); } }
   .line.now .lyric {
-    background: linear-gradient(rgb(26 16 60), rgb(8 4 24));
+    background:
+      var(--copper-c) 0 0 / 100% 2px no-repeat,
+      var(--copper-c) 0 100% / 100% 2px no-repeat,
+      rgb(4 16 34);
     scale: 1.03;
     rotate: 0deg;
-    box-shadow: 0 0 0 2px var(--cyan), 0 0 22px rgb(18 231 255 / 60%);
-    &::after {
-      content: "MC TOKEN";
-      position: absolute;
-      left: 2.2rem;
-      top: -.8rem;
-      padding: .05rem .5rem;
-      border-radius: 999px;
-      background: var(--cyan);
-      color: var(--line);
-      font: .56rem/1.6 var(--display);
-      letter-spacing: .08em;
-      text-shadow: none;
-      box-shadow: 0 0 0 2px var(--line);
-      /* on phones the date stamp sits above the line's start, so the chip goes to the other end */
-      @media (max-width: 640px) { left: auto; right: 2.4rem; }
-    }
-    /* the words fill, and the ball rides over them, in step with the audio (page.mjs sets --line-p); the ball bounces on the beat */
+    box-shadow: inset 3px 0 var(--cyan), 0 0 22px rgb(90 230 255 / 35%);
+    /* the words light as they're sung (page.mjs sets --line-p), and the cursor rides over them */
     .lyric-text {
       position: relative;
-      background: linear-gradient(90deg, var(--cyan) 50%, white 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%;
+      background: linear-gradient(90deg, var(--sung) 50%, var(--unsung) 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%;
       background-clip: text;
       color: transparent;
-      text-shadow: none;
       &::after {
-        /* the ball, sized to the words, rests just above the capitals of the row it's on: half the row's leading and the
-           font's ascent over its capitals down from the row's top */
-        --ball: max(.6rem, .42em);
+        /* the text-mode cursor, a block as wide as half a letter, resting on the top of the row it's on */
+        --ball: max(8px, .5em);
         content: "";
         position: absolute;
-        /* (over the singer's chip, which it can pass under at the line's start) */
         z-index: 1;
         left: calc(var(--line-p, 0) * 100% - var(--ball) / 2);
-        top: calc((1lh - 1em) / 2 - .04em - var(--ball));
+        top: calc((1lh - 1em) / 2 - .3em);
         width: var(--ball);
-        aspect-ratio: 1;
-        border-radius: 50%;
-        background: radial-gradient(circle at 35% 30%, white 0 18%, var(--cyan) 55%, rgb(0 90 140));
-        box-shadow: 0 0 6px var(--cyan);
-        animation: eurodance-ball-y calc(30s / 141) ease-out infinite alternate;
+        height: .19em;
+        background: var(--sung);
+        box-shadow: 0 0 8px var(--sung);
+        animation: eurodance-blink 1.06s steps(1) infinite;
       }
-      /* with its words' times, each word fills in turn as it's sung (a wrapped line fills row by row), and the ball hops from
-         each word to the next, landing as it's sung (page.mjs sets --ball-x, --ball-y and --ball-hop) */
+      /* with its words' times, each word lights in turn as it's sung (a wrapped line row by row), and the cursor hops from each
+         word to the next, landing as it's sung (page.mjs sets --ball-x, --ball-y and --ball-hop) */
       .worded & {
         background-size: 0 0;
         .w { background: inherit; background-size: 200% 100%; background-position-x: calc((1 - var(--w-p)) * 100%); }
         &::after {
           left: 0;
-          translate: calc(var(--ball-x, 0px) - var(--ball) / 2) calc(var(--ball-y, 0px) - var(--ball-hop, 0) * 1.4 * var(--ball));
+          translate: calc(var(--ball-x, 0px) - var(--ball) / 2) calc(var(--ball-y, 0px) - var(--ball-hop, 0) * 3 * var(--ball));
           scale: var(--ball-s, 1);
           animation: none;
         }
       }
     }
-    .tab { background: radial-gradient(circle at 35% 30%, white, var(--cyan) 60%, rgb(0 120 150)); }
+    .tab { color: var(--cyan); box-shadow: inset 0 0 0 2px var(--cyan); }
   }
-  /* the outro is Softmax's, like the choruses */
-  .outro .line.now .lyric::after { content: "SOFTMAX"; background: var(--magenta); color: white; }
-  /* the ball stops bouncing, and the CDs stop spinning, while the song isn't playing */
-  &:not([data-playback="playing"]) {
-    .line.now .lyric-text::after, .line.now .stamp::before, .tape-card.playing::after { animation-play-state: paused; }
-  }
+  /* the cursor blinks only while the song plays */
+  &:not([data-playback="playing"]) .line.now .lyric-text::after { animation-play-state: paused; }
   .from-here {
-    border: 2px solid var(--line);
-    background: radial-gradient(circle at 35% 30%, white, rgb(214 218 240) 60%, rgb(160 160 190));
-    color: var(--line);
-    opacity: .75;
-    &:hover, &:focus-visible { background: radial-gradient(circle at 35% 30%, rgb(255 150 214), var(--hot) 60%, rgb(120 0 70)); color: white; }
+    width: 2rem;
+    height: 2rem;
+    border: 0;
+    border-radius: 0;
+    background: var(--panel);
+    color: var(--orange);
+    box-shadow: inset 0 0 0 2px var(--steel-dk);
+    opacity: .55;
+    &:hover, &:focus-visible { background: var(--orange); color: var(--bg); box-shadow: none; opacity: 1; }
+    &:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
   }
 
-  /* annotations are Windows 98 message boxes */
+  /* annotations are the NFO viewer's own window: text mode's blue, in a double line, with its title in the top border. Each hangs
+     flush under its line's left edge, as if dropped open from it, a text-mode window's shadow to its lower right. */
   .note, .line:nth-child(3n + 2) .note, .line:nth-child(3n + 3) .note {
-    padding: 2.15rem 1rem .9rem;
-    border-radius: 0;
-    background: var(--w98);
-    color: black;
-    font: .9rem/1.55 var(--type);
+    --c: var(--tm-grey);
+    margin: .9rem 0 1rem;
+    padding: 1.1rem 1.1rem .9rem;
+    background: var(--tm-blue);
+    color: rgb(236 236 244);
+    font: .92rem/1.6 var(--mono);
     rotate: 0deg;
-    box-shadow: var(--raised), 6px 8px 0 rgb(26 15 51 / 25%);
+    box-shadow: inset 0 0 0 4px var(--tm-blue), inset 0 0 0 6px var(--tm-grey), inset 0 0 0 9px var(--tm-blue), inset 0 0 0 11px var(--tm-grey), 8px 8px 0 rgb(0 0 0 / 60%);
     &::before {
-      content: "hype★TV";
-      inset: 3px 3px auto;
+      content: " INFO " / "";
+      inset: -2px auto auto 22px;
       width: auto;
-      height: 20px;
-      padding: 0 60px 0 6px;
+      height: auto;
+      padding: 0 4px;
       rotate: 0deg;
-      background: var(--titlebar);
-      color: white;
-      font: bold 12px/20px var(--win);
-    }
-    > p:first-child::before {
-      content: "";
-      float: left;
-      width: 32px;
-      height: 32px;
-      margin: .1rem .8rem .3rem 0;
-      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='17' cy='17' r='14' fill='%23000' opacity='.35'/%3E%3Ccircle cx='15' cy='15' r='14' fill='%23fff' stroke='%23000' stroke-width='1'/%3E%3Ccircle cx='15' cy='15' r='12.5' fill='%231633ff'/%3E%3Ccircle cx='15' cy='8.5' r='2.2' fill='%23fff'/%3E%3Cpath d='M12 12.5h5v10h2v2h-7v-2h2v-8h-2z' fill='%23fff'/%3E%3C/svg%3E") 0 0 / 100% 100%;
-    }
-    a { color: rgb(0 0 128); }
-    .sources { clear: both; li::before { content: "▸ "; } }
-  }
-  .seed-credit { font: .95rem var(--type); color: var(--ink-soft); rotate: 0deg; }
-
-  /* choruses are Softmax's dance breaks, and the venue grows each time: the chroma-key studio, the foam party, the warehouse
-     rave, the cyberspace megarave */
-  .chorus {
-    --scene: linear-gradient(rgb(22 51 230), rgb(60 100 255) 60%, rgb(170 200 255));
-    --beams: none;
-    --floor-c: rgb(40 60 230);
-    --tiles-c: white;
-    position: relative;
-    isolation: isolate;
-    overflow: hidden;
-    margin: 2.5rem -16px;
-    padding: 2rem clamp(16px, 3vw, 2.5rem) 5.6rem;
-    background: var(--beams), var(--scene);
-    box-shadow: 0 0 0 3px var(--line), 0 10px 30px rgb(26 15 51 / 35%);
-    rotate: 0deg;
-    &::before, &::after { content: ""; position: absolute; z-index: -1; inset: auto 0 0; height: 5rem; }
-    &::before { background: var(--floor-c); }
-    &::after { background: var(--tiles-c); mask: var(--checker) 0 0 / 100% 100%; }
-    .lyric {
-      padding: .12rem .6rem;
-      border: 0;
-      border-radius: 6px;
-      background: none;
-      color: white;
-      font: clamp(1.25rem, 3vw, 1.95rem)/1.45 var(--display);
-      font-style: italic;
-      text-transform: none;
-      text-shadow: var(--edge);
-      box-shadow: none;
-      &::before { content: none; }
-    }
-    /* "We didn't start the scaling" goes up in chrome */
-    .line:nth-child(odd) .lyric-text {
-      background: var(--gold) 0 .05em / 100% 1.2em;
-      background-clip: text;
-      color: transparent;
-      text-shadow: none;
-      filter: drop-shadow(2px 0 0 var(--line)) drop-shadow(-2px 0 0 var(--line)) drop-shadow(0 2px 0 var(--line)) drop-shadow(0 -2px 0 var(--line)) drop-shadow(3px 3px 0 var(--line));
-    }
-    button.lyric:hover, button.lyric:focus-visible { background: rgb(255 255 255 / 14%); }
-    .line.open .lyric { background: rgb(8 4 24 / 55%); }
-    .line.now .lyric {
-      background: rgb(8 4 24 / 88%);
-      box-shadow: 0 0 0 2px var(--magenta), 0 0 26px rgb(255 31 163 / 70%);
-      scale: 1.02;
-      /* (at the line's start, on phones too: a chorus line has no date stamp to make way for) */
-      &::after { content: "SOFTMAX"; left: .5rem; right: auto; background: var(--magenta); color: white; }
-      .lyric-text { background: linear-gradient(90deg, rgb(255 110 200) 50%, white 50%) calc((1 - var(--line-p, 0)) * 100%) 0 / 200% 100%; background-clip: text; -webkit-text-stroke: 0; filter: none; }
-      .worded & .lyric-text { background-size: 0 0; }
-      .tab { background: radial-gradient(circle at 35% 30%, white, var(--magenta) 60%, rgb(120 0 70)); }
-      .lyric-text::after { background: radial-gradient(circle at 35% 30%, white 0 18%, var(--magenta) 55%, rgb(120 0 70)); box-shadow: 0 0 6px var(--magenta); }
-    }
-    .from-here { opacity: .85; }
-    .lyric .tab { width: 1.5rem; height: 1.5rem; }
-    .twist .lyric { color: var(--yellow); }
-  }
-  #c2 {
-    --scene:
-      radial-gradient(circle at 30% 30%, rgb(255 255 255 / 60%) 0 16%, rgb(255 255 255 / 14%) 34%, transparent 40%) 0 calc(100% - 4.4rem) / 58px 64px repeat-x,
-      radial-gradient(circle at 30% 30%, rgb(255 255 255 / 45%) 0 14%, rgb(255 255 255 / 10%) 30%, transparent 36%) 20px calc(100% - 6.2rem) / 90px 70px repeat-x,
-      linear-gradient(rgb(48 12 110), rgb(170 20 130) 55%, rgb(236 90 90) 85%, rgb(255 170 80));
-    --floor-c: rgb(0 150 170);
-    --tiles-c: rgb(210 255 250);
-  }
-  #c3 {
-    --scene:
-      radial-gradient(circle at 50% 100%, rgb(6 3 14) 0 56%, transparent 59%) 0 calc(100% - 4.6rem) / 46px 38px repeat-x,
-      radial-gradient(ellipse 70% 40% at 50% 90%, rgb(110 30 200 / 55%), transparent 70%),
-      rgb(8 4 18);
-    --beams:
-      repeating-conic-gradient(from -80deg at 12% 100%, rgb(59 255 74 / 42%) 0 .35deg, transparent .35deg 8deg),
-      repeating-conic-gradient(from -84deg at 88% 100%, rgb(59 255 74 / 42%) 0 .35deg, transparent .35deg 8deg);
-    --floor-c: rgb(18 10 36);
-    --tiles-c: rgb(80 60 120);
-  }
-  .chorus.final {
-    --scene:
-      repeating-radial-gradient(circle at 50% 42%, rgb(255 31 163 / 55%) 0 2px, transparent 2px 24px, rgb(18 231 255 / 50%) 24px 26px, transparent 26px 48px, rgb(255 232 31 / 45%) 48px 50px, transparent 50px 72px),
-      radial-gradient(circle at 50% 42%, rgb(90 30 200 / 50%), transparent 60%),
-      rgb(6 3 16);
-    --beams:
-      repeating-conic-gradient(from -80deg at 8% 100%, rgb(255 31 163 / 38%) 0 .35deg, transparent .35deg 9deg),
-      repeating-conic-gradient(from -84deg at 92% 100%, rgb(18 231 255 / 38%) 0 .35deg, transparent .35deg 9deg);
-    --floor-c: rgb(120 0 90);
-    --tiles-c: rgb(255 170 230);
-  }
-  /* the tag trails off like an echo */
-  .outro .lyric {
-    padding: .1rem .4rem;
-    background: none;
-    border: 0;
-    color: var(--ink);
-    font: clamp(1.1rem, 2.6vw, 1.5rem)/1.3 var(--display);
-    font-style: italic;
-    text-shadow: .5em 0 0 rgb(from var(--ink) r g b / 16%), 1em 0 0 rgb(from var(--ink) r g b / 8%);
-    rotate: 0deg;
-    mask-image: none;
-    box-shadow: none;
-    &::before { content: none; }
-  }
-  .outro .line.now .lyric { background: rgb(8 4 24 / 88%); color: white; text-shadow: none; }
-
-  /* the now-playing card is a Windows 98 window */
-  .now-card {
-    padding: 2.05rem .6rem .6rem;
-    border-radius: 0;
-    background: var(--w98);
-    color: black;
-    font: .86rem/1.5 var(--type);
-    rotate: 0deg;
-    box-shadow: var(--raised), 0 12px 30px rgb(26 15 51 / 35%);
-    &::before {
-      content: "Now playing – hype★TV";
-      inset: 3px 3px auto;
-      width: auto;
-      height: 20px;
-      padding: 0 60px 0 6px;
-      rotate: 0deg;
-      background: var(--titlebar);
-      color: white;
-      font: bold 12px/20px var(--win);
-    }
-    .now-hint, .now-body { padding: .6rem .7rem; background: white; box-shadow: var(--sunken); }
-    .side-play { border: 0; background: var(--w98); color: black; font: bold .85rem var(--win); box-shadow: var(--raised); &:active { box-shadow: var(--sunken); } }
-    .now-stamp:not(:empty) {
-      padding: .05rem .5rem;
-      border: 2px solid rgb(200 204 222);
-      border-radius: 4px;
-      background: linear-gradient(rgb(52 58 170), rgb(16 12 70));
-      color: var(--yellow);
-      font: .68rem/1.5 var(--display);
-      rotate: 0deg;
-    }
-    .now-line { font: 1.05rem/1.3 var(--display); }
-    a { color: rgb(0 0 128); }
-    .sources li::before { content: "▸ "; }
-  }
-
-  /* the album's tracks are CD singles in jewel cases, the one playing spinning inside its case */
-  .tapes { gap: 1.8rem 1.4rem; }
-  .tape-card {
-    --art: linear-gradient(135deg, rgb(200 0 90), rgb(110 20 130));
-    isolation: isolate;
-    padding: 2.2rem 1rem 1rem 1.7rem;
-    border: 0;
-    border-radius: 3px;
-    background:
-      linear-gradient(115deg, rgb(255 255 255 / 0) 28%, rgb(255 255 255 / 12%) 36%, rgb(255 255 255 / 0) 44%),
-      linear-gradient(90deg, rgb(16 12 36) 0 .75rem, rgb(255 255 255 / 40%) .75rem calc(.75rem + 1px), transparent 0),
-      var(--art);
-    color: white;
-    box-shadow: 0 0 0 1px rgb(255 255 255 / 60%), 0 0 0 3px rgb(26 15 51 / 70%), 0 10px 24px rgb(26 15 51 / 40%);
-    rotate: 0deg;
-    &:nth-child(2n) { rotate: 0deg; }
-    &:nth-child(2) { --art: linear-gradient(135deg, rgb(10 30 120), rgb(40 80 200)); }
-    &:nth-child(3) { --art: linear-gradient(135deg, rgb(190 20 130), rgb(100 50 200)); }
-    &:nth-child(4) { --art: linear-gradient(135deg, rgb(60 10 160), rgb(200 0 140)); }
-    &:nth-child(5) { --art: linear-gradient(135deg, rgb(30 80 200), rgb(190 30 120)); }
-    &:nth-child(6) { --art: linear-gradient(135deg, rgb(12 16 60), rgb(80 40 140)); }
-    &::after {
-      content: "";
-      position: absolute;
-      z-index: -1;
-      right: .8rem;
-      bottom: .8rem;
-      width: 3.4rem;
-      aspect-ratio: 1;
-      border-radius: 50%;
-      background: radial-gradient(circle, transparent 0 11%, rgb(230 230 240 / 80%) 12% 22%, transparent 23%), conic-gradient(rgb(255 150 220 / 70%), rgb(150 220 255 / 70%), rgb(255 245 150 / 70%), rgb(170 255 180 / 70%), rgb(255 150 220 / 70%));
-      opacity: .55;
-    }
-    .tape-label, .tape-model { top: .7rem; padding: .05rem .55rem; border-radius: 999px; font: .6rem/1.5 var(--display); letter-spacing: .06em; }
-    .tape-label { left: 1.6rem; background: var(--yellow); color: var(--line); }
-    .tape-model, .tape-model[data-model^="Suno"] { right: .8rem; background: rgb(255 255 255 / 90%); color: var(--line); }
-    h3 { position: relative; color: white; font: 1.35rem/1.15 var(--display); font-style: italic; text-shadow: 2px 2px 0 var(--line); }
-    p { color: white; font-family: var(--type); font-size: .86rem; }
-    .tape-video { color: rgb(255 255 255 / 88%); font: .78rem/1.45 var(--type); }
-    .tape-dur { font-family: var(--code); }
-    a { color: white; }
-    .play-version { border: 0; background: var(--w98); color: black; font: bold .82rem var(--win); box-shadow: var(--raised); &:active { box-shadow: var(--sunken); } }
-    &.playing {
-      outline: 3px solid var(--yellow);
-      outline-offset: 3px;
-      &::after { opacity: .9; animation: eurodance-spin 1.6s linear infinite; }
-    }
-  }
-
-  /* the jukebox: little Windows 98 players */
-  .cassettes { gap: 1.2rem; }
-  .cassette {
-    padding: 1.95rem .6rem .6rem;
-    border-radius: 0;
-    background: var(--w98);
-    color: black;
-    box-shadow: var(--raised), 4px 5px 0 rgb(26 15 51 / 30%);
-  }
-  .cassette-label {
-    padding: 0;
-    border-radius: 0;
-    background: none;
-    color: black;
-    h3 {
-      position: absolute;
-      inset: 3px 3px auto;
-      height: 20px;
-      margin: 0;
-      padding: 0 60px 0 6px;
-      background: var(--titlebar);
-      color: white;
-      font: bold 12px/20px var(--win);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .cassette-meta { color: rgb(34 34 34); font: 11px/1.6 var(--win); }
-    .cassette-blurb { font: .78rem/1.45 var(--type); }
-  }
-  .cassette-dl { color: rgb(0 0 128); }
-  .cassette-play {
-    width: 2.4rem;
-    border: 0;
-    border-radius: 0;
-    background: var(--w98);
-    color: black;
-    box-shadow: var(--raised);
-    .hub { display: none; }
-    &:focus-visible { outline: 1px dotted black; outline-offset: -5px; }
-  }
-  .cassette.playing .cassette-play { box-shadow: var(--sunken); }
-  .cassette.playing .cassette-label h3 { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14'%3E%3Cg transform='translate(0 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='4' y='9' width='6' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(16 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Crect x='3' y='2' width='9' height='9' fill='none' stroke='%23000'/%3E%3Crect x='3' y='2' width='9' height='2' fill='%23000'/%3E%3C/g%3E%3Cg transform='translate(36 0)'%3E%3Crect width='16' height='14' fill='%230a0a0a'/%3E%3Crect width='15' height='13' fill='%23fff'/%3E%3Crect x='1' y='1' width='14' height='12' fill='%23808080'/%3E%3Crect x='1' y='1' width='13' height='11' fill='%23dfdfdf'/%3E%3Crect x='2' y='2' width='12' height='10' fill='%23c0c0c0'/%3E%3Cpath d='M4 3l2 0 2 2 2-2 2 0-3 3.5 3 3.5-2 0-2-2-2 2-2 0 3-3.5z' fill='%23000'/%3E%3C/g%3E%3C/svg%3E") right 3px center / 52px 14px no-repeat, linear-gradient(90deg, rgb(150 0 100), var(--magenta)); }
-  /* a progress bar, blocks and all */
-  .cassette-seek {
-    height: 16px;
-    margin-top: .35rem;
-    &::-webkit-slider-runnable-track { height: 16px; border: 1px solid; border-color: var(--w98-dk) white white var(--w98-dk); border-radius: 0; background: repeating-linear-gradient(90deg, rgb(0 0 128) 0 8px, transparent 8px 10px) 1px 1px / var(--pct, 0%) calc(100% - 2px) no-repeat, white; }
-    &::-moz-range-track { height: 14px; border: 1px solid; border-color: var(--w98-dk) white white var(--w98-dk); border-radius: 0; background: white; }
-    &::-moz-range-progress { height: 14px; border-radius: 0; background: repeating-linear-gradient(90deg, rgb(0 0 128) 0 8px, transparent 8px 10px); }
-    &::-webkit-slider-thumb { width: 3px; height: 14px; margin-top: 0; border-radius: 0; background: black; box-shadow: none; }
-    &::-moz-range-thumb { width: 3px; height: 14px; border-radius: 0; background: black; }
-  }
-
-  /* the liner notes are open in Notepad */
-  .liner-body {
-    position: relative;
-    padding: 3.4rem 1.3rem 1.2rem;
-    border-radius: 0;
-    background:
-      linear-gradient(white, white) 5px 47px / calc(100% - 10px) calc(100% - 52px) no-repeat,
-      linear-gradient(var(--w98-dk), var(--w98-dk)) 4px 46px / calc(100% - 8px) calc(100% - 50px) no-repeat,
-      var(--w98);
-    color: black;
-    font: .92rem/1.65 "Courier Prime", var(--code);
-    rotate: 0deg;
-    box-shadow: var(--raised), 0 12px 30px rgb(26 15 51 / 30%);
-    &::before {
-      content: "liner_notes.txt – Notepad";
-      position: absolute;
-      inset: 3px 3px auto;
-      height: 20px;
-      padding: 0 60px 0 6px;
-      background: var(--titlebar);
-      color: white;
-      font: bold 12px/20px var(--win);
-    }
-    &::after {
-      content: "File    Edit    Search    Help";
-      position: absolute;
-      left: 9px;
-      top: 25px;
-      color: black;
-      font: 12px/19px var(--win);
+      background: var(--tm-blue);
+      color: var(--tm-yellow);
+      font: 16px/1 var(--px);
       white-space: pre;
     }
-    a { color: rgb(0 0 200); }
+    a { color: var(--tm-yellow); }
+    .sources { color: var(--tm-grey); li::before { content: "► "; color: var(--cyan); } }
   }
-  .credits { gap: 0 1.6rem; font: .85rem/1.6 "Courier Prime", var(--code); }
+  .seed-credit { color: var(--steel); font: .92rem/1.5 var(--mono); rotate: 0deg; }
 
-  /* the end of the broadcast */
-  .colophon {
-    padding: 2.4rem 1rem 3rem;
+  /* Choruses are Softmax's parts, in her magenta, each on the effect its part in the video is built on: the plasma, the dot
+     tunnel, the fire over the checkerboard, and the last one the starfield of the end part. Copper bars close each one. */
+  .chorus {
+    --sung: var(--pink);
+    --unsung: rgb(255 170 225 / 38%);
+    margin-inline: -16px;
+    background:
+      var(--copper-m) 0 0 / 100% 6px no-repeat,
+      var(--copper-m) 0 100% / 100% 6px no-repeat,
+      linear-gradient(rgb(7 6 15 / 55%), rgb(7 6 15 / 55%)),
+      radial-gradient(ellipse 45% 70% at 18% 30%, rgb(255 79 180 / 75%), transparent 70%),
+      radial-gradient(ellipse 40% 80% at 78% 65%, rgb(53 194 242 / 60%), transparent 70%),
+      radial-gradient(ellipse 30% 50% at 55% 20%, rgb(140 40 200 / 70%), transparent 70%),
+      rgb(26 6 40);
+    rotate: 0deg;
+    box-shadow: none;
+    .lyric {
+      padding: 4px 6px;
+      background: transparent;
+      box-shadow: none;
+      color: var(--pink);
+      font: clamp(16px, 3vw, 32px)/1.25 var(--big);
+      text-transform: uppercase;
+      text-shadow: 3px 3px 0 rgb(20 2 30);
+    }
+    button.lyric:hover, button.lyric:focus-visible { background: rgb(255 79 180 / 22%); box-shadow: none; }
+    .lyric .tab { color: var(--pink); box-shadow: inset 0 0 0 2px var(--pink); }
+    .line.open .lyric { background: rgb(255 79 180 / 26%); box-shadow: none; }
+    .line.now .lyric {
+      background: var(--copper-m) 0 100% / 100% 3px no-repeat, rgb(40 4 34 / 85%);
+      box-shadow: 0 0 24px rgb(255 79 180 / 45%);
+      scale: 1.02;
+      .lyric-text { text-shadow: none; }
+      .tab { color: var(--pink); box-shadow: inset 0 0 0 2px var(--pink); }
+    }
+    .from-here { background: rgb(7 6 15 / 70%); color: var(--pink); box-shadow: inset 0 0 0 2px var(--pink); }
+    .note { margin-top: .9rem; }
+  }
+  /* the dot tunnel: rings of dots round a point, magenta and cyan */
+  #c2 { background:
+      var(--copper-m) 0 0 / 100% 6px no-repeat,
+      var(--copper-c) 0 100% / 100% 6px no-repeat,
+      radial-gradient(ellipse 60% 70% at 50% 50%, rgb(7 6 15 / 20%), rgb(7 6 15 / 70%)),
+      repeating-radial-gradient(circle at 70% 50%, rgb(255 79 180 / 55%) 0 3px, transparent 3px 22px, rgb(53 194 242 / 45%) 22px 25px, transparent 25px 44px),
+      rgb(18 4 30); }
+  /* the fire, rising off a violet checkerboard floor */
+  #c3 { background:
+      var(--copper-o) 0 0 / 100% 6px no-repeat,
+      var(--copper-m) 0 100% / 100% 6px no-repeat,
+      linear-gradient(rgb(7 6 15 / 60%), rgb(7 6 15 / 35%) 60%, transparent),
+      linear-gradient(transparent 55%, rgb(255 80 40 / 45%) 80%, rgb(255 190 80 / 55%)),
+      repeating-conic-gradient(rgb(44 20 82) 0 25%, rgb(14 6 24) 0 50%) 0 0 / 56px 56px; }
+  /* the end part: a starfield streaking out of its middle */
+  .chorus.final {
+    background:
+      var(--copper-m) 0 0 / 100% 6px no-repeat,
+      var(--copper-c) 0 100% / 100% 6px no-repeat,
+      radial-gradient(ellipse 50% 60% at 50% 50%, rgb(7 6 15 / 30%), rgb(7 6 15 / 72%)),
+      repeating-conic-gradient(from 3deg at 50% 50%, rgb(255 210 245 / 55%) 0 .5deg, transparent .5deg 9deg),
+      rgb(20 4 34);
+    rotate: 0deg;
+    /* the last chorus's own lines, "Now we swear…" and "But when we log off…", in MC Token's cyan */
+    .line.twist { --sung: var(--cyan); --unsung: rgb(150 220 240 / 40%); .lyric { color: var(--cyan); } }
+  }
+  /* the tag trails off, dimmer and dimmer, like the dot the screen shrinks to */
+  .outro .lyric {
+    background: none;
+    box-shadow: none;
+    color: var(--steel);
+    font: 16px/1.5 var(--px);
+    rotate: 0deg;
+    mask-image: linear-gradient(to right, black 50%, transparent);
+  }
+  .outro .line.now .lyric { --sung: var(--pink); --unsung: rgb(255 170 225 / 38%); background: none; box-shadow: none; mask-image: none; scale: 1; }
+  .line.unsung .lyric-text { opacity: .45; }
+
+  /* the now-playing card is a text-mode window, its title in the top border */
+  .now-card {
+    --c: var(--steel-dk);
+    padding: 1.3rem 1.2rem 1.1rem;
+    background: var(--panel);
+    color: var(--white);
+    font: .9rem/1.55 var(--mono);
+    rotate: 0deg;
+    box-shadow: 0 0 0 2px var(--c), 0 0 0 5px var(--bg), 0 0 0 7px var(--c), 8px 8px 0 9px rgb(0 0 0 / 55%);
+    &::before {
+      content: "═[ NOW PLAYING ]═" / "";
+      left: 16px;
+      top: -9px;
+      width: auto;
+      height: auto;
+      padding: 0 4px;
+      rotate: 0deg;
+      background: var(--panel);
+      color: var(--gold);
+      font: 16px/1 var(--px);
+      white-space: pre;
+    }
+    .side-play { border: 0; background: var(--orange); color: var(--bg); font: 16px/1 var(--px); padding: 6px 10px; box-shadow: none; &:hover { background: var(--gold); } }
+    .now-stamp:not(:empty) { border: 0; padding: 3px 6px; background: rgb(8 10 22); color: var(--cyan); font: 16px/1 var(--px); rotate: 0deg; box-shadow: inset 0 0 0 1px var(--cyan); }
+    .now-line { color: var(--cyan); font: 16px/1.5 var(--px); }
+    .sources li::before { content: "► "; color: var(--orange); }
+  }
+
+  /* The album's tracks are the crew's releases, as a scene archive lists them: each a card with its track number and singer in
+     the top border, its title in the demo's font, and a copper bar across its top in its own colour. The one loaded is lit. */
+  .tapes { gap: 2rem 1.6rem; }
+  .tape-card {
+    --c: var(--box);
+    padding: 1.4rem 1.1rem 1rem;
+    border: 0;
+    background: var(--copper-c) 0 0 / 100% 4px no-repeat, var(--panel);
+    color: var(--white);
+    rotate: 0deg;
+    box-shadow: 0 0 0 2px var(--c), 0 0 0 5px var(--bg), 0 0 0 7px var(--c), 8px 8px 0 9px rgb(0 0 0 / 50%);
+    &:nth-child(2n) { rotate: 0deg; background: var(--copper-m) 0 0 / 100% 4px no-repeat, var(--panel); }
+    &:nth-child(3n) { background: var(--copper-o) 0 0 / 100% 4px no-repeat, var(--panel); }
+    &.playing { --c: var(--cyan); outline: 0; box-shadow: 0 0 0 2px var(--c), 0 0 0 5px var(--bg), 0 0 0 7px var(--c), 0 0 30px 9px rgb(90 230 255 / 25%); }
+    .tape-label, .tape-model { top: -9px; padding: 0 4px; background: var(--bg); font: 16px/1 var(--px); text-transform: none; }
+    .tape-label { left: 14px; color: var(--gold); }
+    .tape-model, .tape-model[data-model^="Suno"] { right: 14px; background: var(--bg); color: var(--steel); }
+    h3 { margin: .3rem 0 .4rem; color: var(--white); font: 24px/1.2 var(--px); }
+    &.playing h3::before { content: "► " / ""; color: var(--cyan); }
+    p { color: var(--steel); font: .88rem/1.5 var(--mono); }
+    .tape-dur { color: var(--cyan); font: 16px/1 var(--px); }
+    .tape-actions a { color: var(--cyan); }
+    .play-version { border: 0; background: var(--orange); color: var(--bg); font: 16px/1 var(--px); padding: 6px 10px; box-shadow: none; &:hover, &:focus-visible { background: var(--gold); } }
+  }
+
+  /* the bonus tracks are 3.5-inch floppies: the metal shutter plays, the label is paper, and the one in the drive is lit */
+  .cassettes {
+    --cs-shell: rgb(28 30 48);
+    --cs-screw: transparent;
+    --cs-label: rgb(222 220 234);
+    --cs-stripe: linear-gradient(90deg, var(--magenta) 0 50%, var(--cyan) 0);
+    --cs-ink: rgb(14 12 30);
+    --cs-soft: rgb(14 12 30 / 72%);
+    --cs-hub: rgb(200 206 222);
+    --cs-hub-ink: rgb(14 12 30);
+    --cs-tape: var(--cyan);
+    --cs-window: rgb(7 6 15);
+    --cs-title: var(--px);
+    --cs-text: var(--mono);
+    --cs-radius: 2px;
+  }
+  .cassette {
+    /* the corner cut that says which way up it goes */
+    clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%);
+    box-shadow: inset 0 0 0 1px rgb(90 96 140 / 60%);
+    &.playing { background: var(--cs-shell); box-shadow: inset 0 0 0 2px var(--cyan); }
+  }
+  .cassette-play {
+    width: 2.6rem;
+    aspect-ratio: .8;
+    border: 0;
+    border-radius: 2px;
+    background: linear-gradient(90deg, rgb(150 156 176), rgb(226 230 240) 45%, rgb(150 156 176));
+    box-shadow: inset 0 0 0 1px rgb(90 96 120);
+    /* the shutter's slot, where the disk shows through */
+    .hub { inset: 18% 34% 18% 34%; border-radius: 1px; background: rgb(40 44 62); mask: none; opacity: .9; }
+    .icon { color: var(--cs-hub-ink); z-index: 1; }
+    &:hover { background: linear-gradient(90deg, rgb(200 150 110), var(--gold) 45%, rgb(200 150 110)); }
+    &:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  }
+  .cassette.playing .cassette-play { background: linear-gradient(90deg, rgb(40 160 200), var(--cyan) 45%, rgb(40 160 200)); .hub { animation: none; background: rgb(4 30 50); } }
+  .cassette-label {
+    h3 { font-size: 16px; line-height: 1.5; }
+    .cassette-meta { font-size: .72rem; }
+  }
+
+  /* the liner notes are the release's NFO: text mode's grey on black, boxed, with its header in the top border */
+  .liner h2 { margin-bottom: 1.6rem; }
+  .liner-body {
+    --c: var(--box);
+    margin: 10px;
+    padding: 1.6rem 1.6rem 1.2rem;
     background: black;
-    color: rgb(255 140 26);
-    font: .95rem/1.5 var(--win);
-    &::before { content: "It's now safe to turn off your computer."; display: block; margin-bottom: .5rem; font-size: 1.15rem; }
-    a { color: rgb(255 170 80); }
+    color: var(--tm-grey);
+    font: .95rem/1.7 var(--mono);
+    rotate: 0deg;
+    box-shadow: 0 0 0 2px var(--c), 0 0 0 5px var(--bg), 0 0 0 7px var(--c);
+    position: relative;
+    &::before {
+      content: "═[ SCALING.NFO ]═" / "";
+      position: absolute;
+      left: 20px;
+      top: -9px;
+      padding: 0 4px;
+      background: black;
+      color: var(--gold);
+      font: 16px/1 var(--px);
+      white-space: pre;
+    }
+    a { color: var(--cyan); }
+    p:not(.credits) { max-width: 76ch; }
+    /* (an NFO is 80 columns wide) */
+    max-width: calc(80ch + 3.2rem);
+  }
+  .credits {
+    display: grid;
+    gap: 4px;
+    padding-top: 1rem;
+    border-top: 2px dashed var(--box);
+    color: var(--white);
+    font: 16px/1.4 var(--px);
+    span::before { content: "► " / ""; color: var(--orange); }
+  }
+
+  /* the end: back to DOS, the cursor blinking at the prompt */
+  .colophon {
+    color: var(--steel);
+    font: 16px/1 var(--px);
+    &::before { content: "C:\\DEMOS\\FC> " / ""; color: var(--tm-grey); }
+    &::after { content: "█" / ""; margin-left: 2px; color: var(--tm-grey); animation: eurodance-blink 1.06s steps(1) infinite; }
+    a { color: var(--cyan); }
   }
 }
-@keyframes eurodance-kick { from { scale: 1.08; } 45% { scale: 1; } }
-@keyframes eurodance-glint {
-  0%, 65%, 100% { opacity: 0; scale: .3; rotate: 0deg; }
-  80% { opacity: 1; scale: 1.15; rotate: 45deg; }
-}
-@keyframes eurodance-spin { to { rotate: 1turn; } }
-@keyframes eurodance-ball-y { from { translate: 0 0; } to { translate: 0 -.45rem; } }
+@keyframes eurodance-blink { 50% { opacity: 0; } }
+@keyframes eurodance-twinkle { 0%, 60% { opacity: 1; } 61%, 100% { opacity: .25; } }
 
 /* the fullscreen and follow toggles' pressed state, in each theme's own terms (the zine's is the base one, inverted) */
 :root[data-theme="piano-rock"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] {
@@ -4118,14 +4213,10 @@ button.lyric {
   box-shadow: inset 0 2px 3px rgb(0 0 0 / 55%);
 }
 :root[data-theme="indie-folk"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { border-color: var(--c-amber); background: var(--c-wine); color: var(--c-gold); }
-:root[data-theme="k-pop"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { background: var(--toki); color: rgb(43 24 56); box-shadow: inset 0 3px 0 rgb(58 33 80 / 35%); }
+:root[data-theme="k-pop"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { background: var(--ink); color: var(--paper); box-shadow: inset 0 -3px 0 -1px var(--a, var(--toki)); }
 :root[data-theme="anisong"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { border-color: var(--pink-dk); background: var(--pink-dk); color: white; box-shadow: none; }
-/* a Windows 98 toggle button, pushed in */
-:root[data-theme="eurodance"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] {
-  background: repeating-conic-gradient(white 0 25%, var(--w98) 0 50%) 0 0 / 2px 2px;
-  color: black;
-  box-shadow: var(--sunken);
-}
+/* text mode's inverse video: the selected item */
+:root[data-theme="eurodance"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { background: var(--cyan); color: var(--bg); box-shadow: none; }
 
 /* ==========================================================================
    Geometry. Switching tracks restyles the page but never moves the player:

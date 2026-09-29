@@ -67,7 +67,7 @@ blurb: A riff on “We Didn’t Start the Fire”, with every line annotated, su
 {%- endmacro -%}
 {%- macro lineItem(l, open = false) -%}
 <li class="line{% if l.note %} has-note{% endif %}{% if l.seed %} seed{% endif %}{% if l.twist %} twist{% endif %}{% if open %} open{% endif %}" id="{{ l.id }}" data-sec="{{ l.sec }}" data-n="{{ l.n }}">
-  {%- if l.stamp %}{% set sp = l.stamp.split(' ') %}<span class="stamp"{% if l.comeback %} data-comeback="{{ l.comeback }}"{% endif %}><span class="stamp-md">{{ sp.slice(0, -1).join(' ') }}</span> <span class="stamp-y">{{ sp | last }}</span></span>{% endif %}
+  {%- if l.stamp %}{% set sp = l.stamp.split(' ') %}<span class="stamp"><span class="stamp-md">{{ sp.slice(0, -1).join(' ') }}</span> <span class="stamp-y">{{ sp | last }}</span></span>{% endif %}
   <button class="from-here" type="button" aria-label="Play from “{{ l.text }}”">{{ playIcon() }}</button>
   {%- if l.note %}
   <button class="lyric" type="button" aria-expanded="{{ 'true' if open else 'false' }}" aria-controls="note-{{ l.id }}"><span class="lyric-text">{{ l.text }}</span><span class="tab" aria-hidden="true"></span></button>
@@ -113,11 +113,11 @@ blurb: A riff on “We Didn’t Start the Fire”, with every line annotated, su
   <a href="/how-we-didnt-start-the-scaling/" class="essay">How it came together</a>
   {#- each video's art director retitles the page; only the selected track's line shows #}
   <span class="issue" data-for="pop-punk">The Scaling Zine · Issue #1 · Annotated edition · September 2026</span>
-  <span class="issue" data-for="k-pop">ATTN! · 1st mini album · Comeback special · D-DAY Sep 22, 2026</span>
+  <span class="issue" data-for="k-pop">ATTN! · 2nd mini album · Comeback M/V</span>
   <span class="issue" data-for="piano-rock"><span class="live">Live</span> Channel 89 Action News · Special report · Closed captioned</span>
   <span class="issue" data-for="indie-folk">indie folk · sixteen colors · one long night</span>
   <span class="issue" data-for="anisong">The Scaling Club · Opening theme</span>
-  <span class="issue" data-for="eurodance">hype★TV · DJ Clawd pres. Softmax feat. MC Token · Scaling Hits ’26</span>
+  <span class="issue" data-for="eurodance">Frontier Crew<span class="issue-more"> · PC demo</span><span class="issue-names"> · Softmax feat. MC Token</span><span class="issue-dates"> · 1996 → 2026</span></span>
 </header>
 
 <div class="fx" aria-hidden="true">{% for i in range(0, 16) %}<i style="--i:{{ i }}"></i>{% endfor %}</div>
@@ -266,12 +266,14 @@ blurb: A riff on “We Didn’t Start the Fire”, with every line annotated, su
       <p>Domenic and Claude Fable 5 wrote the first full draft of the lyrics in August 2026, building on <a href="https://x.com/tautologer/status/2085048713014378646">a four-line post</a> by <a href="https://x.com/tautologer">@tautologer</a>. Three rounds of AI critics and revisers tightened it, and Opus 5.5 rewrote the back half in September to keep up with the news. The song is four verses in three minutes because that’s as long as Google’s Lyria 3.5 will sing, and the squeeze became the joke: verse 1 covers seven years, verse 2 one year, verse 3 seven months and verse 4 four weeks. Suno v6 isn’t held to three minutes, so its singers take their time: the indie-folk take stretches the same words to almost six.</p>
       <p>The album and its bonus tracks are the best takes from Lyria and Suno in fourteen genres. A checker lined up a Whisper transcript of every take against the lyrics to catch skipped, repeated or garbled lines, and Domenic listened to the survivors. Suno’s great advantage is its song editor, which re-sings one passage of a take and stitches it back in, so that one bad line doesn’t sink a good take. Several takes here were saved that way, often where Suno had mistaken a name at the start of a line (“Brockman:”, “Trump:”) for a speaker label and dropped it. Lyria can only sing the whole song again, so a single mispronounced acronym costs everything else the take got right.</p>
       <p>The annotations are Claude’s too. Each note links its sources: primary ones wherever they exist, original reporting where it adds something, and archived copies in place of paywalls. Audit passes checked every claim and quote against its sources and confirmed every link.</p>
-      <p>The videos were made the same way each time: Opus 5.5 wrote the engine, a Claude art director designed the look with a style guide, a storyboard and a drawing kit, and Claude subagents painted the chapters in parallel, checking their own frames. None of them is a video file here: your browser draws every frame as the song plays, in step with the lyrics, five of them entirely in code and the anime opening from stills generated with Anima on Domenic’s desktop GPU.</p>
+      <p>The videos were made the same way each time: Opus 5.5 wrote the engine, a Claude art director designed the look with a style guide, a storyboard and a drawing kit, and Claude subagents painted the chapters in parallel, checking their own frames. None of them is a video file here: your browser draws every frame as the song plays, in step with the lyrics. Four of them are drawn in code (the Eurodance demo’s one picture aside, a caricature drawn with Nano Banana Pro and digitized the way a 1996 demo would have), the anime opening from stills generated with Anima on Domenic’s desktop GPU, and the K-pop video from generated pictures and footage: its idols (down to their mouth shapes for singing) and the song’s real people are Nano Banana Pro pictures, and their dances are clips from Veo, Grok Imagine and HappyHorse, one lead dance carried onto all four members by Wan Animate on the same GPU, then cut out, packed into sprite sheets and composited live in WebGL.</p>
       <p class="credits">
         <span>Lyrics: Domenic &amp; Claude</span>
         <span>Music: Lyria 3.5 &amp; Suno v6</span>
         <span>Videos, this page &amp; these notes: Claude Opus 5.5</span>
         <span>Anime stills: Anima</span>
+        <span>K-pop pictures &amp; Eurodance caricature: Nano Banana Pro</span>
+        <span>K-pop dances: Veo, Grok Imagine, HappyHorse &amp; Wan Animate</span>
       </p>
     </div>
   </section>

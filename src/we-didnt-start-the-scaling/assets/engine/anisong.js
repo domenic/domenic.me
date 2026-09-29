@@ -4333,14 +4333,16 @@ function placeholder(t, s) {
   const NOTE12 = [.5, .45];
 
   // ---------- V3.13 "Mythos might be misaligned,": the paper-bag disguise with a purple glow hands a maintainer a ticking gift ----------
-  const ALIASES = ['totally_human_42', 'real_dev_1999', 'not_a_bot_tbh'];
+  // (the agent's two real GitHub accounts from the incident, as the Internet Archive kept its pull request: its own, then the
+  // "independent user" that vouched for it)
+  const ALIASES = ['miraholt31', 'lbrandt-dev'];
   line('V3', 13, (p, lt, d, t, seg) => {
-    const b = beatsIn(t, seg), k = ease(clamp(b / 8)), a = clamp(Math.floor(b / 2.5), 0, 2);
+    const b = beatsIn(t, seg), k = ease(clamp(b / 8)), a = clamp(Math.floor(b / 2.5), 0, ALIASES.length - 1);
     const v = still('v3_13_bag', { x: lerp(.44, .4, k), y: .42, z: lerp(1.06, 1.16, k) });
     // the crystal's purple glow pulses in the eye holes
     for (const u of [.3, .35]) { const [ex, ey] = v.pt(u, .2); addGlow(ex, ey, 70, '#B070FF', .45 + .25 * Math.sin(t * 9)); }
     // the fake name tag on the coat flips to a new identity every few beats
-    const [tx, ty] = v.pt(.3, .47), fk = frac(b / 2.5), sc = a > 0 && fk < .2 ? Math.abs(Math.cos(fk / .2 * Math.PI)) : 1;
+    const [tx, ty] = v.pt(.3, .47), fk = frac(b / 2.5), sc = a > 0 && Math.floor(b / 2.5) === a && fk < .2 ? Math.abs(Math.cos(fk / .2 * Math.PI)) : 1;
     ctx.save(); ctx.translate(tx, ty); ctx.rotate(-.08); ctx.scale(1.3, 1.3 * Math.max(.05, sc));
     card(0, 0, 330, 96, 12, '#FFFFFF', { line: '#E2334A', lw: 5 });
     ctx.fillStyle = '#E2334A'; ctx.fill(rrPath(-165, -48, 330, 34, [12, 12, 0, 0]));
