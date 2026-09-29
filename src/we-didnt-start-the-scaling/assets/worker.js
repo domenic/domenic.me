@@ -3,8 +3,8 @@
 // frame drew as stand-ins), STYLE_STALE (set here: call it when a stand-in's picture arrives), QUALITY_LEVELS and setQuality(level)
 // (the quality levels the page's controller steps through: 0 the video as designed, each cheaper than the last, its type always at
 // full resolution), STYLE_FINISH() (finish the GPU's work for the frame just drawn, so that the page's measure of it includes that)
-// and STYLE_INFO() (what the frame was, for the page's ?debug overlay), and STYLE_ALL (a promise that settles once a style that
-// loads more as it plays has everything: every picture, or its scenes warmed up; the page lets its reader seek from then on).
+// and STYLE_INFO() (what the frame was, for the page's ?debug overlay), and STYLE_WARM (a promise that settles once a style that
+// warms up after its first frame, building what its scenes need between frames, has finished: until then the page holds the song).
 self.onmessage = async (e) => {
   const m = e.data;
   try {
@@ -32,7 +32,7 @@ self.onmessage = async (e) => {
       await fonts;
       if (self.STYLE_READY) await self.STYLE_READY;
       self.postMessage({ type: 'ready', levels: self.QUALITY_LEVELS ?? 0 });
-      Promise.resolve(self.STYLE_ALL).catch(() => {}).then(() => self.postMessage({ type: 'all' }));
+      Promise.resolve(self.STYLE_WARM).catch(() => {}).then(() => self.postMessage({ type: 'warm' }));
     } else if (m.type === 'frame') {
       const t0 = performance.now();
       renderFrame(m.t);

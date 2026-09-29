@@ -191,16 +191,16 @@ function workerRenderer(el, style, tm, scale) {
   const worker = new Worker(new URL('worker.js', import.meta.url));
   let busy = false;
   let queued = null;
-  let resolveReady, rejectReady, resolveDrawn, resolveAll;
+  let resolveReady, rejectReady, resolveDrawn, resolveWarm;
   const ready = new Promise((ok, bad) => { resolveReady = ok; rejectReady = bad; });
   const drawn = new Promise(ok => { resolveDrawn = ok; });
-  const all = new Promise(ok => { resolveAll = ok; });
+  const warm = new Promise(ok => { resolveWarm = ok; });
   let sentAt = 0;
   const send = t => { busy = true; sentAt = performance.now(); worker.postMessage({ type: 'frame', t, info: !!debugHUD }); };
   worker.onmessage = e => {
     const m = e.data;
     if (m.type === 'ready') { engineLevels = m.levels ?? 0; resolveReady(); }
-    else if (m.type === 'all') resolveAll();
+    else if (m.type === 'warm') resolveWarm();
     else if (m.type === 'drawn') {
       busy = false;
       resolveDrawn();
@@ -232,7 +232,7 @@ function workerRenderer(el, style, tm, scale) {
     worker,
     ready,
     drawn,
-    all,
+    warm,
     frame(t) { if (busy) queued = t; else send(t); },
     setScale(s) { worker.postMessage({ type: 'scale', scale: s }); },
     setQuality(level) { worker.postMessage({ type: 'quality', level }); },
@@ -281,7 +281,7 @@ async function frameRenderer(el, style, tm, scale) {
     kind: 'main',
     ready: Promise.resolve(),
     drawn: Promise.resolve(),
-    all: Promise.resolve(win.STYLE_ALL).catch(() => {}),
+    warm: Promise.resolve(win.STYLE_WARM).catch(() => {}),
     frame(t) {
       const t0 = performance.now();
       win.renderFrame(t);
@@ -384,7 +384,7 @@ function startRenderer() {
       swapCanvas(el);
       old.terminate();
     }
-    r.all.then(() => {
+    r.warm.then(() => {
       if (renderer !== r) return;
       delete player.dataset.loading;
       setSeekable();
@@ -396,10 +396,11 @@ function startRenderer() {
 function drawNow() {
   renderer?.frame(audio.currentTime);
 }
-// The song waits for its video. While the track's video is loading, from its engine starting until a style that loads more as it
-// plays has everything (its pictures, or its scenes warmed up), the reader can't seek (the scrub bar and the ▶ beside each line
-// are off), and Play shows the video loading and starts the song once it's in; otherwise the song would run on while the video
-// stood still.
+// The song waits for its video. While the track's video is loading, from its engine starting until it has drawn its first frame
+// and, in a style that warms up after that (the demoscene), finished warming up, the reader can't seek (the scrub bar and the ▶
+// beside each line are off), and Play shows the video loading and starts the song once it's in; otherwise the song would run on
+// while the video stood still. (A style that streams its pictures, K-pop's, keeps up from its first frame: it loads the pictures
+// by the playhead first, and draws low-resolution stand-ins for any still on their way.)
 const fromHereButtons = document.querySelectorAll('.from-here');
 let loadedWaiters = [];
 const videoLoaded = () => ('loading' in player.dataset ? new Promise(ok => loadedWaiters.push(ok)) : Promise.resolve());

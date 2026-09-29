@@ -9046,10 +9046,11 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
   // first beat. So after the first frame (when the page or the worker has its fonts, which the caches may draw with), each modern
   // window runs once at its start, its middle and its end (a build that a word triggers lasts to the end), a window at a time
   // between frames, from the start time on round the song. (Not in render mode, where a script drives the frames.)
-  // STYLE_ALL settles once every window is warm (the site's page lets its reader seek from then on).
+  // STYLE_WARM settles once every window is warm: until then the warm-up's builds come between frames, and the site's page holds the
+  // song (and seeking) rather than let it run ahead of the video.
   const rendering = HAS_DOM && /[?&]render\b/.test(location.search);
   let warming = rendering || typeof setTimeout !== 'function' || noGL, warmed;
-  self.STYLE_ALL = new Promise(ok => { warmed = ok; });
+  self.STYLE_WARM = new Promise(ok => { warmed = ok; });
   if (warming) warmed();
   function warmScenes() {
     const list = SEGS.filter(s => MOD.SCENES[s.key] && (VERSION === 'B' || eraAt(s.start + .01, s).fx >= 2));
