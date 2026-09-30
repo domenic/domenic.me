@@ -277,6 +277,32 @@ blurb: A riff on “We Didn’t Start the Fire”, with every line annotated, su
       </p>
     </div>
   </section>
+
+  {#- each track's video and page have their own version and history (the song project's changelog.json); only the track
+      that's on shows its own, and a link to #changelog (the YouTube videos' descriptions have one) opens it #}
+  <section class="changelog" id="changelog" aria-label="Changelog">
+    {%- for v in album %}{% set log = changelog[v.id] %}
+    <details class="log" data-for="{{ v.id }}">
+      <summary><span class="log-title">{{ log.title }}</span> <span class="log-now">v{{ log.current }}</span></summary>
+      <div class="log-body">
+        <ol class="releases">
+          {%- for r in log.releases %}{% set vp = r.version.split('.') %}
+          {#- (a release is major (a new video, "2.0"), minor ("1.2") or a patch ("1.2.1")) #}
+          <li class="release {{ 'patch' if vp.length > 2 else ('major' if vp[1] == '0' else 'minor') }}">
+            <p class="release-head"><span class="release-v">v{{ r.version }}</span>{% if r.name %} <span class="release-name">{{ r.name }}</span>{% endif %} <time datetime="{{ r.date }}">{{ r.shown }}</time></p>
+            <ul class="release-notes">
+              {%- for n in r.notes %}
+              <li>{{ n }}</li>
+              {%- endfor %}
+            </ul>
+          </li>
+          {%- endfor %}
+        </ol>
+        <p class="log-about">Each video keeps its own version, sentimentally: a new video is a new major version, something you’d see or hear differently a minor one, and a fix you’d feel but not see a patch.</p>
+      </div>
+    </details>
+    {%- endfor %}
+  </section>
 </main>
 
 <footer class="colophon">

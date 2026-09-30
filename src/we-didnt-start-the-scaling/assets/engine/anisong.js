@@ -6,7 +6,9 @@ const W = 1920, H = 1080, TAU = Math.PI * 2;
 // In a page the canvas is #out; in a Web Worker the host sets self.OUT_CANVAS (an OffscreenCanvas) before loading the engine.
 const HAS_DOM = typeof document !== 'undefined';
 const canvas = HAS_DOM ? document.getElementById('out') : self.OUT_CANVAS;
-let ctx = canvas.getContext('2d');
+// (a style that draws its frames with WebGL2 on the canvas itself takes that context before this script runs, as self.CANVAS_GL:
+// then `ctx` is a 1×1 stand-in, which the frame code every style shares (the paper, the error bar) draws on harmlessly)
+let ctx = self.CANVAS_GL ? makeCanvas(1, 1).getContext('2d') : canvas.getContext('2d');
 // Scratch canvases for caches: DOM canvases in pages, OffscreenCanvas in workers.
 function makeCanvas(w, h) {
   if (!HAS_DOM) return new OffscreenCanvas(w, h);
@@ -1561,19 +1563,26 @@ const STILL_USE = {
 // </still-use>
 
 // IMGS[name] is what a still draws with: its full picture, decoded, or else its low-res stand-in (LO[name], cut from img/lowres.webp,
-// drawn scaled up). The full pictures load in the background a few at a time, soonest needed first: from the playhead on, in the order
-// the song shows them (STILL_USE), then the ones it has already shown. A frame far from the last one (a seek, or this video starting
-// mid-song) reorders the queue, and a still that a frame drew low-res goes to the front. STYLE_READY, which the studio and the site's
-// worker wait for before the first frame, settles once the stand-ins and the pictures for the first few seconds from STYLE_START (the
-// host's playhead, default 0) are in; STYLE_ALL once every picture is (offline renders wait for that, so they never draw a stand-in).
-// When a picture the last frame drew low-res arrives, the kit calls the host's STYLE_STALE(), so that a paused player can redraw.
-// Decoded, all the pictures would take 680 MB (5.3 MB for a 1536 × 864 frame), enough to get a phone's tab killed. So only the ones on
-// screen from KEEP_BEHIND s before the playhead to KEEP_AHEAD s after it, and any drawn in the last KEEP_DRAWN s, stay decoded, up to
-// KEEP_BYTES (soonest needed first); the others go back to their stand-ins. Their files stay (FILES, 10 MB in all), so a picture needed
-// again decodes without another download. Offline renders (studio.html?render) keep every picture decoded.
+// drawn scaled up). The full pictures download in the background, soonest needed first: from the playhead on, in the order the song
+// shows them (STILL_USE), then the ones it has already shown. A frame far from the last one (a seek, or this video starting mid-song)
+// reorders the queue, and a still that a frame drew low-res goes to the front. STYLE_READY, which the studio and the site's worker wait
+// for before the first frame, settles once the stand-ins and the pictures for the first few seconds from STYLE_START (the host's
+// playhead, default 0) are in, and until then nothing else downloads, so that on a slow connection they have it to themselves;
+// STYLE_ALL once every picture is (offline renders wait for that, so they never draw a stand-in). When a picture the last frame drew
+// low-res arrives, the kit calls the host's STYLE_STALE(), so that a paused player can redraw.
+// Downloading and decoding are separate stages. LOAD_PARALLEL pictures download at once: the site's host (Netlify) starts sending a file
+// its edge server hasn't cached, which for a page this rarely visited is most of them, 0.3 to 0.8 s after it's asked, whatever the
+// file's size (these are 65 KB, most of them), so with a few requests in flight the connection mostly waits: four at a time, the song's
+// 150 pictures took 18 s on a fast connection. The pictures near the playhead decode (DECODE_PARALLEL at a time, soonest needed first),
+// and the files of the rest wait, downloaded. Decoded, all the pictures would take 680 MB (5.3 MB for a 1536 × 864 frame), enough to get
+// a phone's tab killed. So only the ones on screen from KEEP_BEHIND s before the playhead to KEEP_AHEAD s after it, and any drawn in the
+// last KEEP_DRAWN s, stay decoded, up to KEEP_BYTES (soonest needed first); the others go back to their stand-ins. Their files stay
+// (FILES, 10 MB in all), so a picture needed again decodes without another download. Offline renders (studio.html?render) keep every
+// picture decoded.
 const IMGS = {}, LO = {}, FULL = new Set(), FILES = {};
-// (seconds of pictures STYLE_READY waits for; loads at a time; tries per picture, 2 s then 4 s apart, before it stays low-res)
-const LOAD_LEAD = 5, LOAD_PARALLEL = 4, LOAD_TRIES = 3;
+// (seconds of pictures STYLE_READY waits for; seconds ahead that count as needed now (see rushing); downloads at a time; decodes at a
+// time; tries per picture, 2 s then 4 s apart, before it stays low-res)
+const LOAD_LEAD = 5, NOW_LEAD = 2, LOAD_PARALLEL = 16, DECODE_PARALLEL = 4, LOAD_TRIES = 3;
 const KEEP_ALL = typeof location !== 'undefined' && new URLSearchParams(location.search).has('render');
 const KEEP_BEHIND = 10, KEEP_AHEAD = 30, KEEP_DRAWN = 3, KEEP_BYTES = 150e6;
 // A picture's file: a Blob, or on pages that can't fetch (opened from file://, like the offline renderer's), its URL
@@ -1595,8 +1604,9 @@ async function decodeFile(file) {
   return createImageBitmap(im);
 }
 // the stills with work to do (a download, or a decode for the playhead's window), soonest needed first; the stills to keep decoded
-let _queue = Object.keys(STILLS), _keep = new Set(_queue);
-const _loading = new Map(), _tries = new Map(), _retryAt = new Map();   // name → its load's AbortController; failures; next try
+let _queue = Object.keys(STILLS), _keep = new Set(_queue), _key = () => 0;
+// name → its download's AbortController; the stills decoding; failures; next try
+const _fetching = new Map(), _decoding = new Set(), _tries = new Map(), _retryAt = new Map();
 const _drawnAt = new Map();   // name → when a frame last drew it (performance.now())
 let _lowIn = false, _drawn = new Set(), _lowLast = [], _segLast = null, _tLast = -1;
 const needsWork = n => !FULL.has(n) && (_keep.has(n) || !FILES[n]);
@@ -1637,54 +1647,86 @@ function releaseStill(n) {
   for (const k of [..._tints.keys()]) if (k.startsWith(`${n}|`)) dropTint(k);
   b.close();
 }
-function reorderStills(t) {
-  const key = neededFrom(t);
+// (jump: the playhead moved (a seek), and the downloads for where it was give way; see requeueStills)
+function reorderStills(t, jump = false) {
+  const key = _key = neededFrom(t);
   if (!KEEP_ALL) {
     _keep = keepFrom(t);
     for (const n of FULL) if (!_keep.has(n)) releaseStill(n);
   }
   _queue = Object.keys(STILLS).filter(needsWork).sort((a, b) => key(a) - key(b));
-  // a load that isn't among the soonest needed any more makes way (its still stays in the queue)
-  for (const [n, ac] of _loading) if (_queue.indexOf(n) >= LOAD_PARALLEL * 2) { ac.abort(); _loading.delete(n); }
+  if (jump) requeueStills(); else pumpStills();
+}
+const pending = n => !FILES[n] && !(_tries.get(n) >= LOAD_TRIES), urgent = n => _key(n) <= NOW_LEAD || _lowLast.includes(n);
+// (while a still that the next NOW_LEAD s draw hasn't downloaded, the downloads are for such stills alone: after a seek, or on a
+// connection too slow to keep ahead of the song, the ones needed now get it to themselves. Not before STYLE_READY, whose stills are
+// few, and download alone anyway.)
+const rushing = () => _ready && _queue.some(n => pending(n) && urgent(n));
+// After a seek, or a frame that drew stills low-res: a download that's no longer among the ones the queue wants first gives up its
+// place, and its share of the connection, to one the new order puts ahead of it (its still stays in the queue).
+function requeueStills() {
+  const rush = rushing();
+  const want = new Set(_queue.filter(n => pending(n) && (!rush || urgent(n))).slice(0, LOAD_PARALLEL));
+  for (const [n, ac] of _fetching) if (!want.has(n)) { ac.abort(); _fetching.delete(n); }
   pumpStills();
 }
+// Starts the downloads and decodes the queue has room for, in its order. Before STYLE_READY, only the stills it waits for download.
 function pumpStills() {
-  const now = performance.now();
+  const now = performance.now(), rush = rushing();
   for (const n of _queue) {
-    if (_loading.size >= LOAD_PARALLEL) break;
-    if (!_loading.has(n) && !(_tries.get(n) >= LOAD_TRIES) && !(_retryAt.get(n) > now)) loadStill(n);
+    if (_fetching.size >= LOAD_PARALLEL && _decoding.size >= DECODE_PARALLEL) break;
+    if (_fetching.has(n) || _decoding.has(n) || _tries.get(n) >= LOAD_TRIES || _retryAt.get(n) > now) continue;
+    if (!FILES[n]) { if (_fetching.size < LOAD_PARALLEL && (_ready || _firstLeft.has(n)) && (!rush || urgent(n))) fetchStill(n); }
+    // (a still that isn't needed on screen soon just downloads)
+    else if (_keep.has(n) && _decoding.size < DECODE_PARALLEL) decodeStill(n);
   }
 }
-async function loadStill(n) {
+async function fetchStill(n) {
   const ac = new AbortController();
-  _loading.set(n, ac);
+  _fetching.set(n, ac);
   try {
-    const file = FILES[n] ??= await loadFile(`${n}.webp`, ac.signal);
-    // (a still that isn't needed on screen soon just downloads)
-    if (FULL.has(n) || !_keep.has(n)) { _firstLeft.delete(n); return; }
-    const b = await decodeFile(file);
+    FILES[n] = await loadFile(`${n}.webp`, ac.signal);
+  } catch (e) {
+    if (!ac.signal.aborted) failStill(n, e);
+  } finally {
+    if (_fetching.get(n) === ac) _fetching.delete(n);
+    doneStill(n);
+  }
+}
+async function decodeStill(n) {
+  _decoding.add(n);
+  try {
+    const b = await decodeFile(FILES[n]);
     if (FULL.has(n) || !_keep.has(n)) { b.close(); return; }
-    IMGS[n] = b; FULL.add(n); _firstLeft.delete(n);
+    IMGS[n] = b; FULL.add(n);
     if (_lowLast.includes(n)) self.STYLE_STALE?.();
   } catch (e) {
-    if (ac.signal.aborted) return;
-    const k = (_tries.get(n) ?? 0) + 1;
-    _tries.set(n, k); _firstLeft.delete(n);
-    console.warn(`still ${n}: ${e}`);
-    if (k < LOAD_TRIES) { _retryAt.set(n, performance.now() + 2000 * k); setTimeout(pumpStills, 2000 * k + 10); }
+    // (a file that doesn't decode is downloaded again)
+    delete FILES[n];
+    failStill(n, e);
   } finally {
-    if (_loading.get(n) === ac) _loading.delete(n);
-    if (!needsWork(n) && _queue.includes(n)) _queue.splice(_queue.indexOf(n), 1);
-    pumpStills(); settleStills();
+    _decoding.delete(n);
+    doneStill(n);
   }
 }
-let _firstLeft, _readyOK, _readyBad, _allOK, _allBad;
+function failStill(n, e) {
+  const k = (_tries.get(n) ?? 0) + 1;
+  _tries.set(n, k); _firstLeft.delete(n);
+  console.warn(`still ${n}: ${e}`);
+  if (k < LOAD_TRIES) { _retryAt.set(n, performance.now() + 2000 * k); setTimeout(pumpStills, 2000 * k + 10); }
+}
+function doneStill(n) {
+  if (FULL.has(n) || (FILES[n] && !_keep.has(n))) _firstLeft.delete(n);
+  if (!needsWork(n) && _queue.includes(n)) _queue.splice(_queue.indexOf(n), 1);
+  settleStills(); pumpStills();
+}
+let _firstLeft = new Set(), _ready = false, _readyOK, _readyBad, _allOK, _allBad;
 self.STYLE_READY = new Promise((ok, bad) => { _readyOK = ok; _readyBad = bad; });
 self.STYLE_ALL = new Promise((ok, bad) => { _allOK = ok; _allBad = bad; });
 self.STYLE_ALL.catch(() => {});
 function settleStills() {
   if (!_lowIn) return;
-  if (!_firstLeft.size) _readyOK();
+  if (!_firstLeft.size && !_ready) { _ready = true; _readyOK(); pumpStills(); }
   if (!_queue.length) _allOK();
   else if (_queue.every(n => _tries.get(n) >= LOAD_TRIES)) _allBad(new Error(`stills failed to load: ${_queue.join(', ')}`));
 }
@@ -1708,23 +1750,26 @@ function settleStills() {
   reorderStills(t0);
   _tLast = t0;
 }
-// Each frame: after a jump or into a new window, the queue is reordered from there (and the stills kept decoded change); the stills
-// it drew low-res go to the front.
+// Each frame: after a jump, into a new window, or every REPLAN s of play, the queue is reordered from there (and the stills kept
+// decoded change: a chorus is one window, half a minute long, so planned only from its start, the stills that count as needed now
+// would be the first few seconds'); the stills it drew low-res go to the front.
+const REPLAN = .5;
+let _tPlan = -1;
 {
   const draw = renderFrame;
   renderFrame = t => {
     const s = segAt(t);
-    if (s !== _segLast || Math.abs(t - _tLast) > 1) reorderStills(t);
+    if (s !== _segLast || Math.abs(t - _tLast) > 1 || Math.abs(t - _tPlan) >= REPLAN) { reorderStills(t, Math.abs(t - _tLast) > 1); _tPlan = t; }
     _segLast = s; _tLast = t;
     _drawn.clear();
     draw(t);
     const now = performance.now();
     for (const n of _drawn) _drawnAt.set(n, now);
     _lowLast = [..._drawn].filter(n => STILLS[n] && !FULL.has(n));
-    if (_lowLast.some(n => !_loading.has(n) && !_queue.slice(0, LOAD_PARALLEL).includes(n))) {
+    if (_lowLast.some(n => !_fetching.has(n) && !_decoding.has(n) && !_queue.slice(0, LOAD_PARALLEL).includes(n))) {
       for (const n of _lowLast) _keep.add(n);
       _queue = [..._lowLast, ..._queue.filter(n => !_lowLast.includes(n))];
-      pumpStills();
+      requeueStills();
     }
   };
 }

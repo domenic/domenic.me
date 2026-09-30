@@ -88,31 +88,39 @@ function lineAt(t) {
 // ---------- renderer: a worker drawing to an OffscreenCanvas, else the main thread ----------
 // Quality has one controller, the page's. It measures how long each frame really takes to reach the screen: from asking the
 // engine for it to its being drawn, the GPU's work included (an engine that draws with WebGL finishes it in its STYLE_FINISH
-// hook). When frames run late it steps down a ladder, quickly; when they're comfortably quick for a long while it steps back up,
-// slowly; and a step it had to leave again after climbing back to it isn't tried again, so it settles rather than oscillating. The
-// ladder is the engine's own quality levels, if it has any (QUALITY_LEVELS of them, chosen with setQuality(level): 0 the video as
-// designed, each cheaper than the last, simplified effects before any drop in resolution, its type always at the canvas's full
-// resolution), then the canvas's own scale (QUALITY). An engine without levels has just the scale, as before.
+// hook), while the song plays. It leaves out frames that did one-off work (an engine's STYLE_ONEOFF() says so: compiling a
+// program, building a scene's caches, sizing its buffers), which say nothing about how fast the video goes, and it goes by frames
+// over a stretch rather than any one, so that a stall it wasn't told of (a garbage collection) doesn't count either. When the
+// median of the last dozen frames is over the budget (28 ms, under about 35 frames a second), it steps down a ladder, several
+// steps at once the further over it is (each step saves very roughly a third). When the frames at a step have had room to spare
+// for three seconds (nine in ten under two-thirds of the budget, room for the step up's third more), it steps back up one. A
+// step it has to leave again soon after climbing to it is tried again only after a while, twice as long each time, so that it
+// settles rather than oscillating. The ladder is the engine's own quality levels, if it has any (QUALITY_LEVELS of them, chosen
+// with setQuality(level): 0 the video as designed, each cheaper than the last, its type always at the canvas's full resolution),
+// then the canvas's own scale (QUALITY). An engine without levels has just the scale.
 const QUALITY = [1, .75, .5];
+const BUDGET = 28;
 let renderer = null;
 let rendererStarting = null;
 let qi = 0;
-let slowFrames = 0;
-let fastFrames = 0;
 let appliedScale = 0;
 let lastDrawMs = 0;
 let lastLowRes = 0;
 let engineLevels = 0;       // (the running engine's QUALITY_LEVELS)
 let step = 0;               // (where on the ladder: the engine's levels first, then the canvas's scale steps)
-let settling = 0;           // (frames to leave out after a step, while the engine settles into it)
-const leftAfterClimb = new Set();
-let climbedTo = -1;
+let settling = 0;           // (frames to leave out after a step, while the engine settles into it: at least this many,
+let settleUntil = 0;        //  and all those drawn before this time)
+let frames = [];            // (the frames measured at this step: [ms, when drawn])
+let stepAt = 0;             // (when the ladder last moved)
+let climbedTo = -1;         // (the step last climbed to, and when)
+let climbedAt = 0;
+const backoff = new Map();  // (step → { until, wait }: a step that was left soon after climbing to it, not tried again until then)
 const ladderLength = () => Math.max(1, engineLevels) + QUALITY.length - 1;
 function applyStep() {
   const top = Math.max(0, engineLevels - 1);
   renderer?.setQuality?.(Math.min(step, top));
   qi = Math.max(0, step - top);
-  settling = 12;
+  settling = 2; settleUntil = performance.now() + 250; frames = []; stepAt = performance.now();
   updateScale();
 }
 
@@ -131,24 +139,46 @@ function updateScale() {
   }
 }
 // (ms: how long the frame took to reach the screen, as the page measured it; lowRes: how many pictures the frame drew as low-res
-// stand-ins, in a style whose pictures are still loading; info: what the engine says the frame was, for the debug overlay)
-function onDrawn(ms, lowRes = 0, info = null) {
+// stand-ins, in a style whose pictures are still loading; info: what the engine says the frame was, for the debug overlay;
+// oneOff: whether it did one-off work, which the engine says in STYLE_ONEOFF())
+function onDrawn(ms, lowRes = 0, info = null, oneOff = false) {
   lastDrawMs = ms;
   lastLowRes = lowRes;
   player.dataset.drawn = '';
   debugHUD?.(ms, info);
   if (S.playback !== 'playing') return;
-  if (settling > 0) { settling--; return; }
-  // late: over 28 ms (under about 35 frames a second); comfortably quick: under 12 ms
-  if (ms > 28) { slowFrames++; fastFrames = 0; } else if (ms < 12) { fastFrames++; slowFrames = Math.max(0, slowFrames - 1); }
-  if (slowFrames > 10 && step < ladderLength() - 1) {
-    // (leaving a step it climbed back to: it's not tried again)
-    if (step === climbedTo) leftAfterClimb.add(step);
-    step++; slowFrames = 0; fastFrames = 0; climbedTo = -1; applyStep();
-  } else if (fastFrames > 600 && step > 0 && !leftAfterClimb.has(step - 1)) {
-    step--; fastFrames = 0; climbedTo = step; applyStep();
+  if (settling > 0 || performance.now() < settleUntil) { settling--; return; }
+  if (oneOff) return;
+  const now = performance.now();
+  frames.push([ms, now]);
+  if (frames.length > 600) frames.splice(0, 300);
+  const move = qualityStep(frames, now);
+  if (move) {
+    // (leaving a step soon after climbing to it: it's tried again only after a while, twice as long each time)
+    if (move > 0 && step === climbedTo && now - climbedAt < 15000) {
+      const wait = Math.min(300000, (backoff.get(step)?.wait ?? 10000) * 2);
+      backoff.set(step, { until: now + wait, wait });
+    }
+    step += move;
+    if (move < 0) { climbedTo = step; climbedAt = now; }
+    applyStep();
   }
 }
+// (the steps to move, from the frames measured at this step: down by one or more when the median of the last dozen is over the
+// budget; up by one when for three seconds or more nine in ten have been under two-thirds of it, and the step above isn't waiting
+// out a backoff; else 0)
+function qualityStep(frames, now) {
+  if (frames.length >= 12 && step < ladderLength() - 1) {
+    const m = median(frames.slice(-12).map(f => f[0]));
+    if (m > BUDGET) return clamp(Math.floor(Math.log(m / BUDGET) / Math.log(1.6)), 1, ladderLength() - 1 - step);
+  }
+  if (step > 0 && now - stepAt > 3000 && !(now < (backoff.get(step - 1)?.until ?? 0))) {
+    const last = frames.filter(f => now - f[1] < 3000).map(f => f[0]).sort((a, b) => a - b);
+    if (last.length >= 20 && last[Math.floor(last.length * .9)] < BUDGET * 2 / 3) return -1;
+  }
+  return 0;
+}
+const median = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
 // ?debug: an overlay on the player with what the video is drawing and how fast it reaches the screen
 const debugHUD = new URLSearchParams(location.search).has('debug') ? (() => {
   const el = document.createElement('pre');
@@ -204,7 +234,7 @@ function workerRenderer(el, style, tm, scale) {
     else if (m.type === 'drawn') {
       busy = false;
       resolveDrawn();
-      if (renderer?.worker === worker) onDrawn(performance.now() - sentAt, m.lowRes, m.info);
+      if (renderer?.worker === worker) onDrawn(performance.now() - sentAt, m.lowRes, m.info, m.oneOff);
       if (queued !== null) { const t = queued; queued = null; send(t); }
     } else if (m.type === 'stale') {
       // a picture the last frame drew as a stand-in has loaded: a paused video redraws (a playing one is about to anyway)
@@ -222,6 +252,7 @@ function workerRenderer(el, style, tm, scale) {
     type: 'init',
     canvas: off,
     scale,
+    dpr: devicePixelRatio,
     timing: tm,
     ...engineOf(style),
     // (a style that loads pictures loads the ones for the playhead first)
@@ -234,7 +265,7 @@ function workerRenderer(el, style, tm, scale) {
     drawn,
     warm,
     frame(t) { if (busy) queued = t; else send(t); },
-    setScale(s) { worker.postMessage({ type: 'scale', scale: s }); },
+    setScale(s) { worker.postMessage({ type: 'scale', scale: s, dpr: devicePixelRatio }); },
     setQuality(level) { worker.postMessage({ type: 'quality', level }); },
     setTiming(t) { worker.postMessage({ type: 'timing', timing: t }); },
     terminate() { worker.terminate(); }
@@ -253,6 +284,7 @@ async function frameRenderer(el, style, tm, scale) {
   const doc = host.contentDocument;
   win.TIMING = tm;
   win.RENDER_SCALE = scale;
+  win.STYLE_DPR = devicePixelRatio;
   const engine = engineOf(style);
   win.STYLE_BASE = engine.images;
   win.STYLE_START = audio.currentTime;
@@ -288,9 +320,9 @@ async function frameRenderer(el, style, tm, scale) {
       win.STYLE_FINISH?.();
       if (el.width !== out.width || el.height !== out.height) { el.width = out.width; el.height = out.height; }
       g.drawImage(out, 0, 0);
-      onDrawn(performance.now() - t0, win.STYLE_LOWRES?.() ?? 0, debugHUD && win.STYLE_INFO?.());
+      onDrawn(performance.now() - t0, win.STYLE_LOWRES?.() ?? 0, debugHUD && win.STYLE_INFO?.(), win.STYLE_ONEOFF?.() ?? false);
     },
-    setScale(s) { win.setRenderScale(s); },
+    setScale(s) { win.STYLE_DPR = devicePixelRatio; win.setRenderScale(s); },
     setQuality(level) { win.setQuality?.(level); },
     setTiming(t) { win.setTiming(t); },
     terminate() { host.remove(); }
@@ -373,7 +405,7 @@ function startRenderer() {
     if (S.timing && S.timing !== tm) r.setTiming(S.timing);
     renderer = r;
     // (a new engine starts at the top of the ladder)
-    step = 0; climbedTo = -1; leftAfterClimb.clear(); slowFrames = fastFrames = 0; qi = 0;
+    step = 0; climbedTo = -1; backoff.clear(); qi = 0; frames = []; stepAt = performance.now();
     // the canvas may have been resized while the engine started (say, into fullscreen)
     updateScale();
     // Draw the first frame (underneath the previous style's video, if any), then uncover it. (A style that warms up after its first
@@ -397,10 +429,10 @@ function drawNow() {
   renderer?.frame(audio.currentTime);
 }
 // The song waits for its video. While the track's video is loading, from its engine starting until it has drawn its first frame
-// and, in a style that warms up after that (the demoscene), finished warming up, the reader can't seek (the scrub bar and the ▶
-// beside each line are off), and Play shows the video loading and starts the song once it's in; otherwise the song would run on
-// while the video stood still. (A style that streams its pictures, K-pop's, keeps up from its first frame: it loads the pictures
-// by the playhead first, and draws low-resolution stand-ins for any still on their way.)
+// and, in a style that warms up after that (the demoscene), warmed up what the first few seconds need, the reader can't seek (the
+// scrub bar and the ▶ beside each line are off), and Play shows the video loading and starts the song once it's in; otherwise the
+// song would run on while the video stood still. (A style that streams its pictures, K-pop's, keeps up from its first frame: it
+// loads the pictures by the playhead first, and draws low-resolution stand-ins for any still on their way.)
 const fromHereButtons = document.querySelectorAll('.from-here');
 let loadedWaiters = [];
 const videoLoaded = () => ('loading' in player.dataset ? new Promise(ok => loadedWaiters.push(ok)) : Promise.resolve());
@@ -882,7 +914,10 @@ async function switchVersion(id) {
   if (poster.getAttribute('src') !== v.poster) poster.src = v.poster;
   for (const card of document.querySelectorAll('.tape-card')) card.classList.toggle('playing', card.dataset.version === id);
   versionReady = (async () => {
-    S.timing = await loadTiming(v);
+    const tm = await loadTiming(v);
+    // (a switch to another track meanwhile has taken over)
+    if (S.version !== v) return;
+    S.timing = tm;
     const loaded = new Promise(ok => audio.addEventListener('loadedmetadata', ok, { once: true }));
     audio.src = abs(v.audioMP3 && !audio.canPlayType('audio/mp4; codecs="mp4a.40.2"') ? v.audioMP3 : v.audio);
     await loaded;
@@ -891,6 +926,7 @@ async function switchVersion(id) {
     audio.currentTime = 0;
   })();
   await versionReady;
+  if (S.version !== v) return;
   // a version in another style needs that style's engine; otherwise the current one just re-times itself
   if (rendererStarting && styleOf(v) !== rendererStyle) startRenderer().then(drawNow);
   else if (renderer && S.timing) renderer.setTiming(S.timing);
@@ -1182,9 +1218,21 @@ const canvasObserver = new ResizeObserver(() => { updateScale(); if (S.dock === 
 canvasObserver.observe(canvas);
 addEventListener('resize', updateScale);
 
-// Warm up once the page is idle, so pressing play is instant.
-(window.requestIdleCallback ?? (f => setTimeout(f, 1500)))(async () => {
-  await switchVersion(select.value);
+// A link to #changelog (the YouTube videos' descriptions have one, to each track's page) opens the track's history, which is
+// otherwise folded, and brings it into view.
+function openLinkedChangelog() {
+  if (location.hash !== '#changelog') return;
+  const log = document.querySelector(`.changelog .log[data-for="${select.value}"]`);
+  if (!log) return;
+  log.open = true;
+  log.scrollIntoView({ block: 'start' });
+}
+openLinkedChangelog();
+addEventListener('hashchange', openLinkedChangelog);
+
+// Warm up once the page is idle, so pressing play is instant: the track's audio and its video's engine load side by side.
+(window.requestIdleCallback ?? (f => setTimeout(f, 1500)))(() => {
+  switchVersion(select.value);
   startRenderer();
 });
 

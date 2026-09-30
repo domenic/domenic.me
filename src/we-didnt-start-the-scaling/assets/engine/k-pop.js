@@ -1283,18 +1283,24 @@ const PIC_USE = {
 // </pic-use>
 
 // Loading, playhead first (the anime style's loader, with GL textures). pic(name) is what a shot draws with: the full picture, decoded,
-// or else its low-res stand-in (cut from img/lowres.webp, 1/16 the size, drawn scaled up). The full pictures load a few at a time,
-// soonest needed first: from the playhead on, in the order the song shows them (PIC_USE, written by tools/pic_use.mjs), then the ones
-// it has already shown. A frame far from the last one (a seek, or the video starting mid-song) reorders the queue, and a picture a frame
-// drew low-res goes to the front. STYLE_READY, which the studio and the site's worker wait for before the first frame, settles once the
-// stand-ins and the pictures for the first few seconds from STYLE_START (the host's playhead) are in; STYLE_ALL once every picture is
-// (offline renders, studio.html?render, wait for that and keep everything decoded, so they never draw a stand-in). When a picture the last
-// frame drew low-res arrives, the kit calls the host's STYLE_STALE(), so that a paused player can redraw.
-// Only the pictures on screen from KEEP_BEHIND s before the playhead to KEEP_AHEAD s after it (and any drawn in the last KEEP_DRAWN s)
-// stay decoded, up to KEEP_BYTES; the others go back to their stand-ins, and their GL textures are freed with them. Their files stay, so
-// a picture needed again decodes without another download.
+// or else its low-res stand-in (cut from img/lowres.webp, 1/16 the size, drawn scaled up). The pictures download soonest needed first:
+// from the playhead on, in the order the song shows them (PIC_USE, written by tools/pic_use.mjs), then the ones it has already shown.
+// A frame far from the last one (a seek, or the video starting mid-song) reorders the queue, and a picture a frame drew low-res goes to
+// the front. STYLE_READY, which the studio and the site's worker wait for before the first frame, settles once the stand-ins and the
+// pictures for the first few seconds from STYLE_START (the host's playhead) are in, and until then nothing else downloads, so that on a
+// slow connection they have it to themselves; STYLE_ALL settles once every picture is (offline renders, studio.html?render, wait for that
+// and keep everything decoded, so they never draw a stand-in). When a picture the last frame drew low-res arrives, the kit calls the
+// host's STYLE_STALE(), so that a paused player can redraw.
+// Downloading and decoding are separate stages. LOAD_PARALLEL pictures download at once: the site's host (Netlify) starts sending a file
+// its edge server hasn't cached, which for a page this rarely visited is most of them, 0.3 to 0.8 s after it's asked, whatever the
+// file's size or the connection's speed, so with a few requests in flight the connection mostly waits (four at a time, the song's 170
+// pictures took 25 to 50 s on a fast connection; sixteen, 15 to 28 s, or 3 to 5 s from an edge server that has them). The pictures
+// near the playhead decode (DECODE_PARALLEL at a time, soonest needed first), and the files of the rest wait, downloaded: only the
+// pictures on screen from KEEP_BEHIND s before the playhead to KEEP_AHEAD s after it (and any drawn in the last KEEP_DRAWN s) stay
+// decoded, up to KEEP_BYTES; the others go back to their stand-ins, and their GL textures are freed with them. Their files stay, so a
+// picture needed again decodes without another download.
 const PIC = {}, LO = {}, FULL = new Set(), FILES = {};
-const LOAD_LEAD = 5, LOAD_PARALLEL = 4, LOAD_TRIES = 3;
+const LOAD_LEAD = 5, NOW_LEAD = 2, LOAD_PARALLEL = 16, DECODE_PARALLEL = 4, LOAD_TRIES = 3;
 const KEEP_ALL = typeof location !== 'undefined' && new URLSearchParams(location.search).has('render');
 const KEEP_BEHIND = 8, KEEP_AHEAD = 20, KEEP_DRAWN = .5, KEEP_BYTES = 160e6;
 let _drawn = new Set(), _lowLast = [], _segLast = null, _tLast = -1;
@@ -1317,8 +1323,8 @@ async function decodeFile(file) {
   const im = new Image(); im.src = file.href; await im.decode();
   return createImageBitmap(im, { premultiplyAlpha: 'premultiply' });
 }
-let _queue = Object.keys(PICS), _keep = new Set(_queue);
-const _loading = new Map(), _tries = new Map(), _retryAt = new Map(), _drawnAt = new Map();
+let _queue = Object.keys(PICS), _keep = new Set(_queue), _key = () => 0;
+const _fetching = new Map(), _decoding = new Set(), _tries = new Map(), _retryAt = new Map(), _drawnAt = new Map();
 const needsWork = n => !FULL.has(n) && (_keep.has(n) || !FILES[n]);
 // how soon each picture is next on screen from t (0 while it is); after those, the ones already shown for the last time; last, the rest
 function neededFrom(t) {
@@ -1354,52 +1360,85 @@ function releasePic(n) {
   PIC[n] = LO[n]; FULL.delete(n);
   if (b && b !== LO[n]) { dropTex(b); b.close(); }
 }
-function reorderPics(t) {
-  const key = neededFrom(t);
+// (jump: the playhead moved (a seek), and the downloads for where it was give way; see requeuePics)
+function reorderPics(t, jump = false) {
+  const key = _key = neededFrom(t);
   if (!KEEP_ALL) {
     _keep = keepFrom(t);
     for (const n of FULL) if (!_keep.has(n)) releasePic(n);
   }
   _queue = Object.keys(PICS).filter(needsWork).sort((a, b) => key(a) - key(b));
-  for (const [n, ac] of _loading) if (_queue.indexOf(n) >= LOAD_PARALLEL * 2) { ac.abort(); _loading.delete(n); }
+  if (jump) requeuePics(); else pumpPics();
+}
+const pending = n => !FILES[n] && !(_tries.get(n) >= LOAD_TRIES), urgent = n => _key(n) <= NOW_LEAD || _lowLast.includes(n);
+// (while a picture that the next NOW_LEAD s draw hasn't downloaded, the downloads are for such pictures alone: after a seek, or on a
+// connection too slow to keep ahead of the song, the ones needed now get it to themselves. Not before STYLE_READY, whose pictures are
+// few, and download alone anyway.)
+const rushing = () => _ready && _queue.some(n => pending(n) && urgent(n));
+// After a seek, or a frame that drew pictures low-res: a download that's no longer among the ones the queue wants first gives up its
+// place, and its share of the connection, to one the new order puts ahead of it.
+function requeuePics() {
+  const rush = rushing();
+  const want = new Set(_queue.filter(n => pending(n) && (!rush || urgent(n))).slice(0, LOAD_PARALLEL));
+  for (const [n, ac] of _fetching) if (!want.has(n)) { ac.abort(); _fetching.delete(n); }
   pumpPics();
 }
+// Starts the downloads and decodes the queue has room for, in its order. Before STYLE_READY, only the pictures it waits for download.
 function pumpPics() {
-  const now = performance.now();
+  const now = performance.now(), rush = rushing();
   for (const n of _queue) {
-    if (_loading.size >= LOAD_PARALLEL) break;
-    if (!_loading.has(n) && !(_tries.get(n) >= LOAD_TRIES) && !(_retryAt.get(n) > now)) loadPic(n);
+    if (_fetching.size >= LOAD_PARALLEL && _decoding.size >= DECODE_PARALLEL) break;
+    if (_fetching.has(n) || _decoding.has(n) || _tries.get(n) >= LOAD_TRIES || _retryAt.get(n) > now) continue;
+    if (!FILES[n]) { if (_fetching.size < LOAD_PARALLEL && (_ready || _firstLeft.has(n)) && (!rush || urgent(n))) fetchPic(n); }
+    else if (_keep.has(n) && _decoding.size < DECODE_PARALLEL) decodePic(n);
   }
 }
-async function loadPic(n) {
+async function fetchPic(n) {
   const ac = new AbortController();
-  _loading.set(n, ac);
+  _fetching.set(n, ac);
   try {
-    const file = FILES[n] ??= await loadFile(`${n}.webp`, ac.signal);
-    if (FULL.has(n) || !_keep.has(n)) { _firstLeft.delete(n); return; }
-    const b = await decodeFile(file);
+    FILES[n] = await loadFile(`${n}.webp`, ac.signal);
+  } catch (e) {
+    if (!ac.signal.aborted) failPic(n, e);
+  } finally {
+    if (_fetching.get(n) === ac) _fetching.delete(n);
+    donePic(n);
+  }
+}
+async function decodePic(n) {
+  _decoding.add(n);
+  try {
+    const b = await decodeFile(FILES[n]);
     if (FULL.has(n) || !_keep.has(n)) { b.close(); return; }
-    PIC[n] = b; FULL.add(n); _firstLeft.delete(n);
+    PIC[n] = b; FULL.add(n);
     if (_lowLast.includes(n)) self.STYLE_STALE?.();
   } catch (e) {
-    if (ac.signal.aborted) return;
-    const k = (_tries.get(n) ?? 0) + 1;
-    _tries.set(n, k); _firstLeft.delete(n);
-    console.warn(`picture ${n}: ${e}`);
-    if (k < LOAD_TRIES) { _retryAt.set(n, performance.now() + 2000 * k); setTimeout(pumpPics, 2000 * k + 10); }
+    // (a file that doesn't decode is downloaded again)
+    delete FILES[n];
+    failPic(n, e);
   } finally {
-    if (_loading.get(n) === ac) _loading.delete(n);
-    if (!needsWork(n) && _queue.includes(n)) _queue.splice(_queue.indexOf(n), 1);
-    pumpPics(); settlePics();
+    _decoding.delete(n);
+    donePic(n);
   }
 }
-let _firstLeft, _lowIn = false, _readyOK, _readyBad, _allOK, _allBad;
+function failPic(n, e) {
+  const k = (_tries.get(n) ?? 0) + 1;
+  _tries.set(n, k); _firstLeft.delete(n);
+  console.warn(`picture ${n}: ${e}`);
+  if (k < LOAD_TRIES) { _retryAt.set(n, performance.now() + 2000 * k); setTimeout(pumpPics, 2000 * k + 10); }
+}
+function donePic(n) {
+  if (FULL.has(n) || (FILES[n] && !_keep.has(n))) _firstLeft.delete(n);
+  if (!needsWork(n) && _queue.includes(n)) _queue.splice(_queue.indexOf(n), 1);
+  settlePics(); pumpPics();
+}
+let _firstLeft = new Set(), _lowIn = false, _ready = false, _readyOK, _readyBad, _allOK, _allBad;
 self.STYLE_READY = new Promise((ok, bad) => { _readyOK = ok; _readyBad = bad; });
 self.STYLE_ALL = new Promise((ok, bad) => { _allOK = ok; _allBad = bad; });
 self.STYLE_ALL.catch(() => {});
 function settlePics() {
   if (!_lowIn) return;
-  if (!_firstLeft.size) _readyOK();
+  if (!_firstLeft.size && !_ready) { _ready = true; _readyOK(); pumpPics(); }
   if (!_queue.length) _allOK();
   else if (_queue.every(n => _tries.get(n) >= LOAD_TRIES)) _allBad(new Error(`pictures failed to load: ${_queue.join(', ')}`));
 }
@@ -1434,7 +1473,7 @@ function startPics() {
 const REPLAN = .5;
 let _tPlan = -1;
 FRAME_BEGIN.push((t, s) => {
-  if (s !== _segLast || Math.abs(t - _tLast) > 1 || Math.abs(t - _tPlan) >= REPLAN) { reorderPics(t); _tPlan = t; }
+  if (s !== _segLast || Math.abs(t - _tLast) > 1 || Math.abs(t - _tPlan) >= REPLAN) { reorderPics(t, Math.abs(t - _tLast) > 1); _tPlan = t; }
   _segLast = s; _tLast = t;
   _drawn.clear();
 });
@@ -1442,12 +1481,27 @@ FRAME_END.push(() => {
   const now = performance.now();
   for (const n of _drawn) if (PICS[n]) _drawnAt.set(n, now);
   _lowLast = [..._drawn].filter(n => PICS[n] && !FULL.has(n));
-  if (_lowLast.some(n => !_loading.has(n) && !_queue.slice(0, LOAD_PARALLEL).includes(n))) {
+  if (_lowLast.some(n => !_fetching.has(n) && !_decoding.has(n) && !_queue.slice(0, LOAD_PARALLEL).includes(n))) {
     for (const n of _lowLast) _keep.add(n);
     _queue = [..._lowLast, ..._queue.filter(n => !_lowLast.includes(n))];
-    pumpPics();
+    requeuePics();
   }
 });
+// A picture goes to the GPU the first time a frame draws it, and the upload is the drawing thread's work: a sprite sheet's 2 to 7
+// megapixels take 7 to 30 ms of the site's worker on agents-base, and a chorus's four dancers turn to their next sheets on the same
+// frame, every second, which cost that frame several frames' time. So between frames, a decoded sheet that the next PREP_LEAD s draw
+// goes up ahead of time, one a frame, soonest needed first (the cells its frames are drawn from: see frameTex). Not in render mode,
+// whose frames aren't live.
+const PREP_LEAD = 2, SHEET_OF = {};
+for (const S of Object.values(SPRITES)) for (const n of S.sheets) SHEET_OF[n] = S;
+let _prepping = false;
+function prepPics() {
+  _prepping = false;
+  let best = null;
+  for (const n of FULL) if (SHEET_OF[n] && !_cellTexs.has(PIC[n]) && _key(n) <= PREP_LEAD && (!best || _key(n) < _key(best))) best = n;
+  if (best) { const S = SHEET_OF[best]; cellTexs(PIC[best], S.cols, S.rows, S.per); }
+}
+if (!KEEP_ALL) FRAME_END.push(() => { if (!_prepping) { _prepping = true; setTimeout(prepPics, 0); } });
 self.STYLE_LOWRES = () => _lowLast.length;
 // The page's quality hooks (see the site's worker.js, and QUALITY_STEPS in gl.js): its levels, set with setQuality(level), held at 0
 // (the video as designed) in render mode; STYLE_FINISH, which finishes the GPU's work for the frame just drawn so that the page's

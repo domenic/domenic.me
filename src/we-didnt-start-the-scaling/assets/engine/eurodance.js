@@ -1,3 +1,23 @@
+// ---- styles/demoscene/modern/canvas.js ----
+// modern/canvas.js: the canvas's context, chosen before core.js would take a 2D one (so it loads first). The demo draws every
+// frame with WebGL2 on the canvas itself (modern/gl.js), the 1996 part's framebuffer included (kit.js's _flush()), so that a frame
+// reaches the screen without passing through a 2D canvas: in a worker, whose 2D OffscreenCanvas may live on the CPU (Firefox's
+// does), drawing the WebGL picture into it read the whole frame back from the GPU, every frame. core.js then gives `ctx` a 1×1
+// stand-in. Render mode (a script capturing frames with toDataURL) keeps core.js's 2D canvas and draws exactly as before, and so
+// does a browser without WebGL2, where the 1996 engine draws the whole song.
+self.CANVAS_GL = (() => {
+  const dom = typeof document !== 'undefined';
+  if (dom && /[?&]render\b/.test(location.search)) return null;
+  const cv = dom ? document.getElementById('out') : self.OUT_CANVAS;
+  try {
+    // (no preserved drawing buffer: every frame draws the whole canvas, and whatever reads it back does so in the same task)
+    return cv?.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, premultipliedAlpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' }) ?? null;
+  } catch {
+    return null;
+  }
+})();
+
+;
 // ---- src/core.js ----
 // core.js: canvas, time, randomness, easing, camera, shot registry, frame compositor.
 // Everything a shot draws must be a pure function of song time `t` (frames render out of order, in parallel).
@@ -6,7 +26,9 @@ const W = 1920, H = 1080, TAU = Math.PI * 2;
 // In a page the canvas is #out; in a Web Worker the host sets self.OUT_CANVAS (an OffscreenCanvas) before loading the engine.
 const HAS_DOM = typeof document !== 'undefined';
 const canvas = HAS_DOM ? document.getElementById('out') : self.OUT_CANVAS;
-let ctx = canvas.getContext('2d');
+// (a style that draws its frames with WebGL2 on the canvas itself takes that context before this script runs, as self.CANVAS_GL:
+// then `ctx` is a 1×1 stand-in, which the frame code every style shares (the paper, the error bar) draws on harmlessly)
+let ctx = self.CANVAS_GL ? makeCanvas(1, 1).getContext('2d') : canvas.getContext('2d');
 // Scratch canvases for caches: DOM canvases in pages, OffscreenCanvas in workers.
 function makeCanvas(w, h) {
   if (!HAS_DOM) return new OffscreenCanvas(w, h);
@@ -1266,8 +1288,23 @@ function _palette(t) {
     P32[i] = (0xff000000 | (Math.min(255, Math.round(b)) << 16) | (Math.min(255, Math.round(g)) << 8) | Math.min(255, Math.round(r))) >>> 0;
   }
 }
+// (the glow: a quarter-size bright pass of the frame's colours)
+function _glowPass() {
+  const d = _glowI.data, gw = SW / 4, gh = SH / 4, th = 120;
+  for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+    let r = 0, g = 0, b = 0;
+    for (let j = 0; j < 4; j++) { const row = (gy * 4 + j) * SW + gx * 4; for (let i = 0; i < 4; i++) { const c = _u32[row + i]; r += c & 255; g += (c >> 8) & 255; b += (c >> 16) & 255; } }
+    const o = (gy * gw + gx) * 4; r /= 16; g /= 16; b /= 16;
+    const l = Math.max(r, g, b), kk = l > th ? (l - th) / (255 - th) : 0;
+    d[o] = r * kk; d[o + 1] = g * kk; d[o + 2] = b * kk; d[o + 3] = 255;
+  }
+}
 function _flush() {
   for (let i = 0; i < SN; i++) _u32[i] = P32[FB[i]];
+  const glow = PFX.glow > 0 && !LOWQ;   // (phones skip the glow: at their size it can't be seen)
+  if (glow) _glowPass();
+  // (on a WebGL canvas, modern/canvas.js's, the modern engine draws the frame: see SHADERS.vga)
+  if (self.CANVAS_GL) { MOD.presentVGA(_img, glow ? _glowI : null, clamp(PFX.glow)); return; }
   _sg.putImageData(_img, 0, 0);
   const cw = canvas.width, ch = canvas.height, k = cw / SW;
   ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
@@ -1282,16 +1319,8 @@ function _flush() {
     // one-pixel lines of the type from shimmering)
     ctx.imageSmoothingEnabled = k < 1; ctx.imageSmoothingQuality = 'high'; ctx.drawImage(_scr, 0, 0, cw, ch);
   }
-  // glow: a quarter-size bright pass, smoothly upscaled and added
-  if (PFX.glow > 0 && !LOWQ) {   // (phones skip the glow: at their size it can't be seen)
-    const d = _glowI.data, gw = SW / 4, gh = SH / 4, th = 120;
-    for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
-      let r = 0, g = 0, b = 0;
-      for (let j = 0; j < 4; j++) { const row = (gy * 4 + j) * SW + gx * 4; for (let i = 0; i < 4; i++) { const c = _u32[row + i]; r += c & 255; g += (c >> 8) & 255; b += (c >> 16) & 255; } }
-      const o = (gy * gw + gx) * 4; r /= 16; g /= 16; b /= 16;
-      const l = Math.max(r, g, b), kk = l > th ? (l - th) / (255 - th) : 0;
-      d[o] = r * kk; d[o + 1] = g * kk; d[o + 2] = b * kk; d[o + 3] = 255;
-    }
+  // glow: smoothly upscaled and added
+  if (glow) {
     _glowG.putImageData(_glowI, 0, 0);
     ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = clamp(PFX.glow); ctx.imageSmoothingEnabled = true;
     ctx.drawImage(_glowC, 0, 0, cw, ch);
@@ -1671,10 +1700,11 @@ function drawPortrait(x, y, o = {}) {
   const NFO_INFO = [
     ' ┌─[ release ]──────────────────────────────────────────────────────────────┐',
     ' │  title ........ We Didn\'t Start the Scaling                              │',
-    ' │  artist ....... Softmax feat. MC Token                                    │',
-    ' │  type ......... pc demo · vga 640x360 · 256 colours · 140 bpm             │',
-    ' │  covers ....... jun 2017 → sep 2026 (64 lines, 4 choruses)                │',
-    ' │  released ..... 22 september 2026                                         │',
+    ' │  artist ....... Softmax feat. MC Token                                   │',
+    ' │  type ......... pc demo · vga 640x360 · 256 colours · 140 bpm            │',
+    ' │  covers ....... jun 2017 → sep 2026 (64 lines, 4 choruses)               │',
+    ' │  released ..... 22 september 2026                                        │',
+    ' │  final ........ 30 september 2026                                        │',
     ' └──────────────────────────────────────────────────────────────────────────┘',
     ' ┌─[ crew ]──────────────────────────┐ ┌─[ requirements ]─────────────────────┐',
     ' │  dj clawd ...... code, gfx, music │ │  486dx2/66, 8 mb ram, vga, gus/sb16  │',
@@ -1708,9 +1738,9 @@ function drawPortrait(x, y, o = {}) {
     tmPut(0, 11, '╔' + '═'.repeat(78) + '╗', 5);
     for (let r = 12; r < 18; r++) { tmPut(0, r, '║', 5); tmPut(79, r, '║', 5); }
     tmPut(0, 18, '╚' + '═'.repeat(78) + '╝', 5);
-    NFO_INFO.forEach((s, i) => tmPut(0, 20 + i, s, i === 0 || i === 6 || i === 7 || i === 11 ? 8 : 7));
+    NFO_INFO.forEach((s, i) => tmPut(0, 20 + i, s, i === 0 || i === 7 || i === 8 || i === 12 ? 8 : 7));
     // the info's labels in grey, values bright
-    for (let r = 21; r < 32; r++) for (let c = 0; c < 80; c++) { const k = r * TMC + c; if (TM.ch[k] === '.' ) TM.fg[k] = 8; }
+    for (let r = 21; r < 33; r++) for (let c = 0; c < 80; c++) { const k = r * TMC + c; if (TM.ch[k] === '.' ) TM.fg[k] = 8; }
     const [L, k] = introWord(t);
     if (L) {
       const ws = wordsOf(L), w = ws[k], age = t - w.t0, word = bigForm(w.w);
@@ -1741,10 +1771,10 @@ function drawPortrait(x, y, o = {}) {
       }
     }
     // rows not yet printed are blank
-    const scroll = kf(t, [[6.6, 0], [7.4, 136], [11.6, 136], [11.95, 152]], ease);
+    const scroll = kf(t, [[6.6, 0], [7.4, 152], [11.6, 152], [11.95, 168]], ease);
     for (let r = Math.floor(printed); r < TM.rows; r++) for (let c = 0; c < TMC; c++) { const k = r * TMC + c; TM.ch[k] = ' '; TM.bg[k] = 0; }
     const cur = Math.floor(printed);
-    if (printed < 32 && Math.floor(t * 3.7) % 2 === 0) tmPut(0, cur, '_', 7);
+    if (printed < 33 && Math.floor(t * 3.7) % 2 === 0) tmPut(0, cur, '_', 7);
     tmRender(scroll, { blinkOn: frac(t * 1.9) < .6 });
   }
 
@@ -2719,23 +2749,42 @@ self.VERSION = 'A';   // (version A, "the demo scales with the song": see modern
 
 ;
 // ---- styles/demoscene/modern/gl.js ----
-// spikes/gl.js: a small WebGL2 layer for the modern spikes. One context on its own canvas (an OffscreenCanvas in a worker), programs,
-// float render targets, full-screen passes and textures uploaded from 2D canvases. The finished frame is drawn into core.js's 2D
-// canvas, so the studio, render.mjs, the site's worker and its main-thread fallback all work unchanged (in headless Chromium without
-// a GPU, WebGL2 runs on SwiftShader: slow, but the same pictures).
+// modern/gl.js: a small WebGL2 layer for the modern engine: one context, programs, float render targets, full-screen passes and
+// textures uploaded from 2D canvases. The context is the page's canvas's own (self.CANVAS_GL, which modern/canvas.js takes), so a
+// frame's last pass draws straight to the screen; in render mode, which keeps core.js's 2D canvas for toDataURL, it's a context on
+// a canvas of its own, whose finished frame engine.js draws into the 2D one. (In headless Chromium without a GPU, WebGL2 runs on
+// SwiftShader: slow, but the same pictures.)
 const GL = (() => {
   const VS = `#version 300 es
 layout(location = 0) in vec2 aPos;
 out vec2 vUV;
 void main() { vUV = aPos * .5 + .5; gl_Position = vec4(aPos, 0., 1.); }`;
-  let gl = null, cv = null;
+  let gl = null, cv = null, par = null, vs = null, direct = false;
   const progs = new Map(), targets = new Map(), texs = new Map();
+  // What the frames cost, for the benchmark and the ?debug overlays: passes drawn, pixels shaded, textures uploaded (and their
+  // bytes), mipmaps generated and render targets (re)allocated, since the last resetStats(). With `profile` set to an array, each
+  // pass also finishes the GPU's work before and after it and records { name, w, h, ms } there (slower: for measuring only).
+  const stats = { passes: 0, pixels: 0, uploads: 0, uploadBytes: 0, mipmaps: 0, allocs: 0 };
+  let profile = null;
+  const px8 = new Uint8Array(4), pxF = new Float32Array(4);
+  // (finish the GPU's work so far: a one-pixel read waits for every command before it. It reads a target, dest's or a 1 × 1 one of
+  // its own, never the canvas: a read of the page's canvas can wait on the display, to give back the buffer it last showed)
+  function sync(dest) {
+    const t = dest ?? target('sync', 1, 1, true);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb);
+    if (t.float) gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, pxF);
+    else gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px8);
+  }
   function init() {
     if (gl) return gl;
-    cv = HAS_DOM ? document.createElement('canvas') : new OffscreenCanvas(16, 16);
-    gl = cv.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, premultipliedAlpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+    if (self.CANVAS_GL) { gl = self.CANVAS_GL; cv = canvas; direct = true; }
+    else {
+      cv = HAS_DOM ? document.createElement('canvas') : new OffscreenCanvas(16, 16);
+      gl = cv.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, premultipliedAlpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+    }
     if (!gl) throw new Error('WebGL2 is unavailable');
     gl.getExtension('EXT_color_buffer_float'); gl.getExtension('EXT_color_buffer_half_float'); gl.getExtension('OES_texture_float_linear');
+    par = gl.getExtension('KHR_parallel_shader_compile');
     const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
     const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -2743,43 +2792,62 @@ void main() { vUV = aPos * .5 + .5; gl_Position = vec4(aPos, 0., 1.); }`;
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     return gl;
   }
-  function shader(type, src) {
-    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-      const log = gl.getShaderInfoLog(s), lines = src.split('\n');
-      const m = /ERROR: \d+:(\d+)/.exec(log || ''), at = m ? +m[1] : 0;
-      throw new Error('shader: ' + log + (at ? '\n' + lines.slice(Math.max(0, at - 3), at + 2).map((l, i) => `${at - 2 + i}: ${l}`).join('\n') : ''));
-    }
-    return s;
+  function shader(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
+  function check(s, src) {
+    if (gl.getShaderParameter(s, gl.COMPILE_STATUS)) return;
+    const log = gl.getShaderInfoLog(s), lines = src.split('\n');
+    const m = /ERROR: \d+:(\d+)/.exec(log || ''), at = m ? +m[1] : 0;
+    throw new Error('shader: ' + log + (at ? '\n' + lines.slice(Math.max(0, at - 3), at + 2).map((l, i) => `${at - 2 + i}: ${l}`).join('\n') : ''));
   }
-  // program(name, fragmentSource): compiled once, cached by name.
-  function program(name, fs) {
+  // program(name, fragmentSource, async): compiled once, cached by name. With async, where the browser compiles programs in the
+  // background (KHR_parallel_shader_compile), it returns at once, and ready(p) says when the program can be drawn with; elsewhere it
+  // compiles then and there.
+  function program(name, fs, async = false) {
     let p = progs.get(name);
     if (p) return p;
     init();
-    const pr = gl.createProgram();
-    gl.attachShader(pr, shader(gl.VERTEX_SHADER, VS)); gl.attachShader(pr, shader(gl.FRAGMENT_SHADER, fs));
+    if (!vs) vs = shader(gl.VERTEX_SHADER, VS);
+    const pr = gl.createProgram(), f = shader(gl.FRAGMENT_SHADER, fs);
+    gl.attachShader(pr, vs); gl.attachShader(pr, f);
     gl.linkProgram(pr);
-    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error('link: ' + gl.getProgramInfoLog(pr));
-    p = { pr, loc: new Map() };
+    p = { pr, loc: new Map(), name, f, fs, pending: true, failed: false, t0: performance.now() };
     progs.set(name, p);
+    if (!(async && par)) linked(p);
     return p;
   }
-  // target(name, w, h): a float (RGBA16F) render target, resized as needed. Linear-filtered.
-  function target(name, w, h) {
+  // (throws if the program didn't compile or link; it waits for the compile to finish)
+  function linked(p) {
+    p.pending = false;
+    if (gl.getProgramParameter(p.pr, gl.LINK_STATUS)) { p.ms = performance.now() - p.t0; return; }
+    p.failed = true;
+    check(vs, VS); check(p.f, p.fs);
+    throw new Error('link: ' + gl.getProgramInfoLog(p.pr));
+  }
+  // (with wait, it waits for the compile to finish)
+  function ready(p, wait = false) {
+    if (p.pending) {
+      if (!wait && par && !gl.getProgramParameter(p.pr, par.COMPLETION_STATUS_KHR)) return false;
+      try { linked(p); } catch (e) { console.error(`${p.name}: ${e.message}`); }
+    }
+    return !p.failed;
+  }
+  // target(name, w, h, bytes): a float (RGBA16F) render target, resized as needed, or with bytes, an RGBA8 one. Linear-filtered.
+  function target(name, w, h, bytes = false) {
     init();
     w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h));
     let r = targets.get(name);
     if (r && r.w === w && r.h === h) return r;
     if (r) { gl.deleteTexture(r.tex); gl.deleteFramebuffer(r.fb); }
     const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    if (bytes) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    r = { tex, fb, w, h };
+    r = { tex, fb, w, h, float: !bytes };
     targets.set(name, r);
+    stats.allocs++;
     return r;
   }
   // texture(name, source, o): upload a canvas (or ImageData) as an RGBA8 texture. o: nearest, repeat, mipmap.
@@ -2798,6 +2866,7 @@ void main() { vUV = aPos * .5 + .5; gl_Position = vec4(aPos, 0., 1.); }`;
     const wr = o.repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE;
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wr); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wr);
     t.w = src.width; t.h = src.height;
+    stats.uploads++; stats.uploadBytes += t.w * t.h * 4; if (o.mipmap) stats.mipmaps++;
     return t;
   }
   // textureF(name, w, h, data): a one-channel float texture (R16F, linear), rows bottom to top.
@@ -2813,6 +2882,7 @@ void main() { vUV = aPos * .5 + .5; gl_Position = vec4(aPos, 0., 1.); }`;
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     t.w = w; t.h = h; t.data = data;
+    stats.uploads++; stats.uploadBytes += w * h * 2;
     return t;
   }
   const hasTexture = name => texs.has(name);
@@ -2830,7 +2900,10 @@ void main() { vUV = aPos * .5 + .5; gl_Position = vec4(aPos, 0., 1.); }`;
   // uniforms: {name: number | [2..4] | {m3: [9]} | {i: n} | {f: Float32Array} (float array) | {v3: Float32Array} | {v4: Float32Array}}
   // samplers: {name: target | texture record}
   function pass(p, dest, uniforms = {}, samplers = {}) {
+    let t0 = 0;
+    if (profile) { sync(); t0 = performance.now(); }
     gl.useProgram(p.pr);
+    const w = dest ? dest.w : cv.width, h = dest ? dest.h : cv.height;
     if (dest) { gl.bindFramebuffer(gl.FRAMEBUFFER, dest.fb); gl.viewport(0, 0, dest.w, dest.h); }
     else { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, cv.width, cv.height); }
     const loc = n => { if (!p.loc.has(n)) p.loc.set(n, gl.getUniformLocation(p.pr, n)); return p.loc.get(n); };
@@ -2856,9 +2929,16 @@ void main() { vUV = aPos * .5 + .5; gl_Position = vec4(aPos, 0., 1.); }`;
       gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, s.tex); gl.uniform1i(loc(n), unit); unit++;
     }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    stats.passes++; stats.pixels += w * h;
+    if (profile) { sync(dest); profile.push({ name: p.name, w, h, ms: performance.now() - t0 }); }
   }
-  function size(w, h) { init(); w = Math.round(w); h = Math.round(h); if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } }
-  return { init, program, target, texture, textureF, hasTexture, getTexture, pass, size, canvas: () => cv, get gl() { return gl; } };
+  function resetStats() { for (const k in stats) stats[k] = 0; }
+  // (the page's canvas is sized by core.js's setRenderScale(); a canvas of GL's own follows it)
+  function size(w, h) { init(); if (direct) return; w = Math.round(w); h = Math.round(h); if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } }
+  return {
+    init, program, ready, parallel: () => !!par, direct: () => (init(), direct), target, texture, textureF, hasTexture, getTexture, pass, size, canvas: () => cv, get gl() { return gl; },
+    stats, resetStats, sync, get profile() { return profile; }, set profile(a) { profile = a; }
+  };
 })();
 
 ;
@@ -2889,22 +2969,102 @@ uniform int uSphN; uniform vec4 uSph[32]; uniform vec4 uSphC[32];
 uniform float uTunOn, uTunR, uTunScroll, uTunTwist, uTunMode; uniform vec2 uTunBox; uniform sampler2D uTunTex; uniform vec3 uTunCol, uTunFloor, uTunCeil;
 uniform vec3 uLP, uLC; uniform float uVol;
 // (uTier: the 2026 era's quality tier, 0 everything … 3 the cheapest)
-uniform float uWorld, uWT, uWMetal, uPool, uTier; uniform vec4 uWP; uniform vec3 uWCol, uWCol2, uWPos;
+uniform float uWorld, uWT, uWMetal, uPool, uTier, uDepthOn; uniform vec4 uWP; uniform vec3 uWCol, uWCol2, uWPos;
 uniform sampler2D uUI; uniform float uUIGlow;
 const float PI = 3.14159265;
+// Every loop starts at ZERO, which is 0, but from a uniform (never set, so 0), not a constant. On Windows, ANGLE hands the shader
+// to Microsoft's HLSL compiler, which unrolls every loop whose count it can work out, and pastes every function into each place
+// it's called (which is why main() calls each thing once, from the stages of its loop: STYLE.md's rules have the rest); a count it
+// can't work out keeps a loop a loop. The loops still run just as many times, so the pictures are the same. (ZERO can be defined
+// as 0 beforehand, to compare.)
+uniform int uZero;
+#ifndef ZERO
+#define ZERO min(uZero, 0)
+#endif
+// The feature switches. Left undefined (as here), every feature is compiled in and the uniforms choose, frame by frame. The engine
+// also compiles variants for a frame's own set of features (engine.js's variant()), each with the code for what that frame lacks
+// taken out: a feature switched off here must be one its uniforms would have switched off anyway, so a variant draws the same
+// picture as the full shader, only sooner (a raymarcher's unused paths still cost registers, and so speed, where they're compiled
+// in). WORLD: -1 any kind (the uniform's), 0 none, 1-4 that kind; SKY: -1 any mode, 0-3 that one; the rest 0 or 1.
+#ifndef WORLD
+#define WORLD -1
+#endif
+#ifndef SKY
+#define SKY -1
+#endif
+#ifndef SHAPE
+#define SHAPE 1
+#endif
+#ifndef SPLIT
+#define SPLIT 1
+#endif
+#ifndef FLOOR
+#define FLOOR 1
+#endif
+#ifndef TUNNEL
+#define TUNNEL 1
+#endif
+#ifndef SPHERES
+#define SPHERES 1
+#endif
+#ifndef PANELS
+#define PANELS 1
+#endif
+#ifndef HALO
+#define HALO 1
+#endif
+#ifndef BEAM
+#define BEAM 1
+#endif
+// (the 2026 era's tiers: VOL its god rays in this pass (tier 0; the others draw them in their own pass, VOLPASS below), SHADOWS
+// its soft shadows (0-1), POOL the light's pool on the floor (0-2), RWORLD the set in the floor's reflection (0-2); DEPTH the depth
+// the depth of field needs, in the alpha channel. VOLPASS 1 makes this the god rays' own pass instead.)
+#ifndef VOL
+#define VOL 1
+#endif
+#ifndef VOLPASS
+#define VOLPASS 0
+#endif
+#ifndef SHADOWS
+#define SHADOWS 1
+#endif
+#ifndef POOL
+#define POOL 1
+#endif
+#ifndef RWORLD
+#define RWORLD 1
+#endif
+#ifndef DEPTH
+#define DEPTH 1
+#endif
 
 float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 vec3 lin(vec3 c) { return pow(max(c, 0.), vec3(2.2)); }
+// The UI layer (premultiplied) sampled as straight colour, bilinearly: four texels, each unpremultiplied, then blended, so that its
+// glow's edges are as they always were (a transparent texel adds no colour, where blending premultiplied colour would keep it).
+vec4 uiStraight(vec2 uv) {
+  ivec2 n = textureSize(uUI, 0); vec2 q = uv * vec2(n) - .5, f = fract(q); ivec2 i = ivec2(floor(q));
+  vec4 s = vec4(0);
+  for (int k = ZERO; k < 4; k++) {
+    ivec2 o = ivec2(k & 1, k >> 1); vec4 c = texelFetch(uUI, clamp(i + o, ivec2(0), n - 1), 0);
+    s += (o.x == 1 ? f.x : 1. - f.x) * (o.y == 1 ? f.y : 1. - f.y) * vec4(c.a > 0. ? c.rgb / c.a : vec3(0), c.a);
+  }
+  return s;
+}
 
 vec3 sky(vec3 rd) {
   vec3 c = mix(uSkyB, uSkyA, smoothstep(-.02, .55, rd.y));
+#if SKY == -1 || SKY == 1
   if (uSkyMode > .5 && uSkyMode < 1.5) {
     // plasma on the sky dome: four sines, in the accent and the second colour
     vec2 q = vec2(atan(rd.x, -rd.z), rd.y) * 3.;
     float v = sin(q.x * 1.7 + uSkyT) + sin(q.y * 2.3 - uSkyT * .7) + sin((q.x + q.y) * 1.3 + uSkyT * .5) + sin(length(q + vec2(sin(uT * .3), cos(uT * .4))) * 2.2 - uSkyT);
     float k = sin(v * 1.6) * .5 + .5;
     c = mix(c, mix(uAcc, uSkyC, k) * (.25 + .75 * k), .85 * smoothstep(-.15, .2, rd.y));
-  } else if (uSkyMode > 1.5 && uSkyMode < 2.5) {
+  }
+#endif
+#if SKY == -1 || SKY == 2
+  if (uSkyMode > 1.5 && uSkyMode < 2.5) {
     // stars rushing at the camera (uSkyK: speed; high = hyperspace streaks)
     vec2 q = rd.xy / max(.05, -rd.z);
     float a = atan(q.y, q.x), r = length(q);
@@ -2913,7 +3073,10 @@ vec3 sky(vec3 rd) {
     float rr = .02 / max(.001, z), len = .004 + uSkyK * .004 / max(.05, z);
     float ang = abs(fract(a * 60. / 6.2832) - .5);
     c += uSkyC * smoothstep(.12, .0, ang) * smoothstep(len, 0., abs(r - rr)) * (1. - z) * 2.5 * step(-rd.z, 2.);
-  } else if (uSkyMode > 2.5) {
+  }
+#endif
+#if SKY == -1 || SKY == 3
+  if (uSkyMode > 2.5) {
     // rays from the direction of the light, turning
     vec3 ld = normalize(uLP - uRo);
     vec3 ax = normalize(cross(ld, vec3(0, 1, 0))), ay = cross(ax, ld);
@@ -2921,6 +3084,7 @@ vec3 sky(vec3 rd) {
     float band = step(.5, fract(a * 16. / 6.2832));
     c += mix(uSkyC * .06, uAcc * .18, band) * smoothstep(-.2, .9, dot(rd, ld));
   }
+#endif
   return c;
 }
 vec3 env(vec3 rd) {
@@ -2940,7 +3104,9 @@ float shape2D(vec2 q) {
   float texel = 2. * uShS.x / uShTex.x;
   if (max(dq.x, dq.y) > 0.) return length(max(dq, 0.)) + .9 * uShRange * texel;
   vec2 uv = q / uShS.xy * .5 + .5;
-  return texture(uShape, uv).r * texel;
+  // (the field has no mipmaps, so level 0 is what texture() would take too; but texture() works out a level from screen
+  // derivatives, and one in a loop made ANGLE's HLSL flatten every branch around each march of the shape: every pixel ran them)
+  return textureLod(uShape, uv, 0.).r * texel;
 }
 float sdShapeL(vec3 q) {
   float rr = .025 * uShS.y;
@@ -2952,14 +3118,21 @@ float sdShapeL(vec3 q) {
 float crackX(float y) { return uShSplit.w * uShS.y * (abs(fract(y / uShS.y * 1.7 + .25) - .5) * 4. - 1.); }
 float sdShape(vec3 p) {
   vec3 q = uShRi * (p - uShP);
+#if !SPLIT
+  return sdShapeL(q);
+#else
   if (uShSplit.z < .5) return sdShapeL(q);
   float c = cos(uShSplit.y), s = sin(uShSplit.y), foot = -uShS.y;
   vec3 ql = q + vec3(uShSplit.x, 0, 0); ql.y -= foot; ql.xy = mat2(c, -s, s, c) * ql.xy; ql.y += foot;
   vec3 qr = q - vec3(uShSplit.x, 0, 0); qr.y -= foot; qr.xy = mat2(c, s, -s, c) * qr.xy; qr.y += foot;
   float dl = max(sdShapeL(ql), (ql.x - crackX(ql.y)) * .5), dr = max(sdShapeL(qr), -(qr.x - crackX(qr.y)) * .5);
   return min(dl, dr);
+#endif
 }
 float marchShape(vec3 ro, vec3 rd, float tmax, int steps) {
+#if !SHAPE
+  return -1.;
+#else
   if (uShOn < .5) return -1.;
   vec3 lro = uShRi * (ro - uShP), lrd = uShRi * rd;
   vec3 b = uShS + .06 + uShSplit.z * vec3(uShSplit.x + abs(uShSplit.y) * 2. * uShS.y + uShSplit.w * uShS.y, abs(uShSplit.y) * uShS.x, 0.);
@@ -2969,7 +3142,7 @@ float marchShape(vec3 ro, vec3 rd, float tmax, int steps) {
   float tn = max(max(tmn.x, tmn.y), tmn.z), tf = min(min(tmx.x, tmx.y), tmx.z);
   if (tf < max(tn, 0.) || tn > tmax) return -1.;
   float t = max(tn, 0.);
-  for (int i = 0; i < 110; i++) {
+  for (int i = ZERO; i < 110; i++) {
     if (i >= steps) break;
     float d = sdShape(ro + rd * t);
     if (d < .0008 * t + .001) return t;
@@ -2977,20 +3150,25 @@ float marchShape(vec3 ro, vec3 rd, float tmax, int steps) {
     if (t > tf) break;
   }
   return -1.;
+#endif
 }
 vec3 shapeNormal(vec3 p) {
-  vec2 e = vec2(.004 * uShS.y, 0.);
-  vec3 g = vec3(sdShape(p + e.xyy) - sdShape(p - e.xyy), sdShape(p + e.yxy) - sdShape(p - e.yxy), sdShape(p + e.yyx) - sdShape(p - e.yyx));
+  // (central differences along x, y and z, a step forward and one back each, in a loop: one copy of the distance function rather
+  // than six; adding the back step's negated is subtracting it, exactly)
+  vec3 g = vec3(0);
+  for (int i = ZERO; i < 6; i++) { int j = i / 2; float s = i == j * 2 ? 1. : -1.; vec3 a = vec3(j == 0, j == 1, j == 2), e = a * (.004 * uShS.y); g += a * (s * sdShape(p + s * e)); }
   // (a flat stretch of the field has no gradient: face the local z axis rather than produce a NaN)
   return dot(g, g) > 1e-12 ? normalize(g) : normalize(uShR * vec3(0, 0, 1));
 }
-vec3 shadeShape(vec3 p, vec3 rd) {
-  vec3 n = shapeNormal(p), l = normalize(uLP - p), r = reflect(rd, n);
+// (n: the normal there; r: the direction it reflects the sky from; E: the sky's light from there, env(r). main() works these out
+// once for whatever it shades, as for the spheres and the world)
+vec3 shadeShape(vec3 p, vec3 rd, vec3 n, vec3 r, vec3 E) {
+  vec3 l = normalize(uLP - p);
   float fr = pow(1. - max(dot(-rd, n), 0.), 3.);
   float dif = max(dot(n, l), 0.), spe = pow(max(dot(r, l), 0.), uFx > 2.5 ? 64. : 16.);
   vec3 c;
   if (uFx < 2.5) c = uShCol * (.25 + .75 * dif) + uLC * .08 * spe;               // a 3D card: Gouraud-ish diffuse and a hot spot
-  else c = uShCol * (.06 + .2 * dif) + env(r) * mix(.25, 1., fr) * uShMetal + uLC * .03 * spe;
+  else c = uShCol * (.06 + .2 * dif) + E * mix(.25, 1., fr) * uShMetal + uLC * .03 * spe;
   c += uShRim * fr * (uFx > 2.5 ? 1.2 : .4);
   return c;
 }
@@ -3018,26 +3196,32 @@ vec4 panelTex(int i, vec2 uv, float t, float dn) {
   float lod = log2(max(fp, 1e-3));
   return k < .5 ? textureLod(uTex0, uv, lod) : k < 1.5 ? textureLod(uTex1, uv, lod) : textureLod(uTex2, uv, lod);
 }
-vec3 applyPanels(vec3 col, vec3 ro, vec3 rd, float tMax) {
-  float ts[6]; vec2 uvs[6]; int ids[6];
-  int n = 0;
-  for (int i = 0; i < 6; i++) {
-    if (i >= uPN) break;
-    float t; vec2 uv;
-    if (hitPanel(i, ro, rd, t, uv) && t < tMax) { ts[n] = t; uvs[n] = uv; ids[n] = i; n++; }
-  }
-  for (int a = 0; a < 5; a++) for (int b = 0; b < 5; b++) if (b + 1 < n && ts[b] < ts[b + 1]) {
-    float tt = ts[b]; ts[b] = ts[b + 1]; ts[b + 1] = tt; vec2 uu = uvs[b]; uvs[b] = uvs[b + 1]; uvs[b + 1] = uu; int ii = ids[b]; ids[b] = ids[b + 1]; ids[b + 1] = ii;
-  }
-  for (int k = 0; k < 6; k++) {
-    if (k >= n) break;
-    int i = ids[k]; vec4 s = panelTex(i, uvs[k], ts[k], dot(rd, normalize(cross(uPU[i], uPV[i])))); vec4 m = uPM[i];
+// (the panels in front of tMax over col, far to near: each time the farthest not yet drawn, the first of equals, rather than an
+// array sorted, which the HLSL compiler is slow with. With nearest, tn becomes the nearest panel's distance, if it's nearer,
+// where its content is solid there, seen square on: more than .1 of alpha for a reflection (R), a quarter for the eye)
+vec3 applyPanels(vec3 col, vec3 ro, vec3 rd, float tMax, bool nearest, bool R, inout float tn) {
+#if !PANELS
+  return col;
+#else
+  int done = 0;
+  for (int k = ZERO; k < 6; k++) {
+    int i = -1; float t = 0.; vec2 uv = vec2(0);
+    for (int j = ZERO; j < 6; j++) {
+      if (j >= uPN) break;
+      float tj; vec2 uj;
+      if (((done >> j) & 1) == 0 && hitPanel(j, ro, rd, tj, uj) && tj < tMax && (i < 0 || tj > t)) { i = j; t = tj; uv = uj; }
+    }
+    if (i < 0) break;
+    done |= 1 << i;
+    vec4 s = panelTex(i, uv, t, dot(rd, normalize(cross(uPU[i], uPV[i])))); vec4 m = uPM[i];
     float a = s.a * m.x;
     col = col * (1. - a * .8) + lin(s.rgb) * a * m.y;
-    vec2 e = abs(uvs[k] - .5) * 2.;
+    vec2 e = abs(uv - .5) * 2.;
     col += m.z * (vec3(.012, .014, .022) + uAcc * .5 * smoothstep(.988, 1., max(e.x, e.y)));
+    if (nearest && t < tn && panelTex(i, uv, t, 1.).a * (R ? 1. : m.x) > (R ? .1 : .25)) tn = t;
   }
   return col;
+#endif
 }
 
 // ---------- emitters ----------
@@ -3049,11 +3233,14 @@ vec2 raySeg(vec3 ro, vec3 rd, vec3 a, vec3 b) {
   return vec2(length(ro + rd * t - a - ba * s), t);
 }
 vec3 haloGlow(vec3 ro, vec3 rd, float tMax) {
+#if !HALO
+  return vec3(0);
+#endif
   if (uHalo.w < .01) return vec3(0);
   vec3 N = normalize(uHaloN), A = normalize(cross(N, abs(N.y) < .9 ? vec3(0, 1, 0) : vec3(1, 0, 0))), B = cross(N, A);
   float best = 1e9, bt = 0.;
   vec3 prev = uHaloP + uHalo.x * A;
-  for (int i = 1; i <= 40; i++) {
+  for (int i = ZERO + 1; i <= 40; i++) {
     float a = float(i) / 40. * 2. * PI;
     vec3 q = uHaloP + uHalo.x * (cos(a) * A + sin(a) * B);
     vec2 h = raySeg(ro, rd, prev, q);
@@ -3065,6 +3252,9 @@ vec3 haloGlow(vec3 ro, vec3 rd, float tMax) {
   return uHaloCol * uHalo.z * uHalo.w * (smoothstep(r, r * .2, best) * 3. + exp(-best * best / (r * r * 6.)) * .5);
 }
 vec3 beamGlow(vec3 ro, vec3 rd, float tMax) {
+#if !BEAM
+  return vec3(0);
+#endif
   if (uBeam.w < .01) return vec3(0);
   vec2 h = raySeg(ro, rd, vec3(uBeam.x, uBeamY.x, uBeam.y), vec3(uBeamTop.x, uBeamY.y, uBeamTop.y));
   if (h.y > tMax) return vec3(0);
@@ -3075,13 +3265,13 @@ float hitSphere(vec3 ro, vec3 rd, vec4 s) {
   vec3 oc = ro - s.xyz; float b = dot(oc, rd), c = dot(oc, oc) - s.w * s.w, h = b * b - c;
   return h < 0. ? -1. : -b - sqrt(h);
 }
-vec3 shadeSphere(vec3 p, vec3 rd, vec4 s, vec4 m) {
-  vec3 n = normalize(p - s.xyz), r = reflect(rd, n), l = normalize(uLP - p);
+vec3 shadeSphere(vec3 p, vec3 rd, vec3 n, vec3 r, vec4 m, vec3 E) {
+  vec3 l = normalize(uLP - p);
   float fr = pow(1. - max(dot(-rd, n), 0.), 4.);
   if (uFx < 2.5) return m.rgb * (.3 + .7 * max(dot(n, l), 0.)) + vec3(.6) * pow(max(dot(r, l), 0.), 12.);
   if (m.w > 1.5) return m.rgb * (2.2 + 1.5 * fr);   // emissive: it glows (and blooms)
-  if (m.w > .5) return m.rgb * .04 + env(r) * (.08 + .9 * fr) + uLC * .08 * pow(max(dot(r, l), 0.), 90.);   // glass: rim and highlight
-  return m.rgb * (.1 + .9 * env(r)) * (1. + fr) + m.rgb * (.14 + .55 * max(dot(n, l), 0.)) + uLC * .06 * pow(max(dot(r, l), 0.), 80.);
+  if (m.w > .5) return m.rgb * .04 + E * (.08 + .9 * fr) + uLC * .08 * pow(max(dot(r, l), 0.), 90.);   // glass: rim and highlight
+  return m.rgb * (.1 + .9 * E) * (1. + fr) + m.rgb * (.14 + .55 * max(dot(n, l), 0.)) + uLC * .06 * pow(max(dot(r, l), 0.), 80.);
 }
 
 // ---------- the tunnel: a cylinder along z, seen from inside ----------
@@ -3128,7 +3318,8 @@ float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q, 0.)) + m
 // x: distance, y: 1 on a light, z: a coordinate the lights pattern by
 vec3 mapWorld(vec3 p) {
   vec3 q = p - uWPos;
-  if (uWorld < 1.5) {
+#if WORLD == -1 || WORLD == 1
+  if (WORLD == 1 || uWorld < 1.5) {
     float sp = uWP.x, hw = uWP.y, H = uWP.z, cz = floor(q.z / sp + .5);
     q.z -= sp * cz;
     vec3 a = vec3(abs(q.x) - hw, q.y, q.z);
@@ -3139,11 +3330,13 @@ vec3 mapWorld(vec3 p) {
     float strip = sdBox(a - vec3(-.31, H * .5, 0), vec3(.015, H * .4, .045));
     return strip < d ? vec3(strip, 1., cz) : vec3(d, 0., cz);
   }
-  if (uWorld < 2.5) {
+#endif
+#if WORLD == -1 || WORLD == 2
+  if (WORLD == 2 || uWorld < 2.5) {
     float S = uWP.x; q /= S;
     q.xz = rot2(uWT * .04) * q.xz;
     float sc = 1., trap = 1e9;
-    for (int i = 0; i < 5; i++) {
+    for (int i = ZERO; i < 5; i++) {
       if (uTier > 1.5 && i == 4) break;   // (a fold fewer at the cheaper tiers)
       q = abs(q);
       if (q.x < q.y) q.xy = q.yx;
@@ -3158,24 +3351,34 @@ vec3 mapWorld(vec3 p) {
     float d = sdBox(q, vec3(.9, .9, .9)) / sc * S;
     return vec3(d, trap < .006 ? 1. : 0., trap * 40.);
   }
-  if (uWorld < 3.5) {
+#endif
+#if WORLD == -1 || WORLD == 3
+  if (WORLD == 3 || uWorld < 3.5) {
     float B = uWP.x, st = uWP.y, H = uWP.z;
     vec2 c = floor(q.xz / B), f = q.xz - (c + .5) * B;
     float h = (.25 + .75 * hash12(c * 1.37 + 3.1)) * H * step(st, abs((c.x + .5) * B)) * (1. + .6 * step(.85, hash12(c + 9.2)));
     float d = sdBox(vec3(f.x, q.y - h * .5, f.y), vec3(B * .34, h * .5, B * .34));
     return vec3(d, 0., h);
   }
+#endif
+#if WORLD == -1 || WORLD == 4
   float sp = uWP.x, R = uWP.y, r = uWP.z, cz = min(floor(q.z / sp + .5), 0.);   // (from uWPos away down −z only)
   q.z -= sp * cz;
   vec2 w = vec2(length(q.xy) - R, q.z);
   float d = length(max(abs(w) - vec2(r, r * .45), 0.)) - r * .12;
   float lt = length(w - vec2(-r - .02, 0)) - r * .1;
   return lt < d ? vec3(lt, 1., cz) : vec3(d, 0., cz);
+#else
+  return vec3(1e9, 0., 0.);
+#endif
 }
 float marchWorld(vec3 ro, vec3 rd, float tmax, int steps, out vec3 info) {
+#if WORLD == 0
+  return -1.;
+#else
   if (uWorld < .5) return -1.;
   float t = .02, cap = uWorld > 2.5 && uWorld < 3.5 ? uWP.x * .45 : 1e9;
-  for (int i = 0; i < 140; i++) {
+  for (int i = ZERO; i < 140; i++) {
     if (i >= steps) break;
     vec3 h = mapWorld(ro + rd * t);
     if (h.x < .0012 * t + .0005) { info = h; return t; }
@@ -3183,92 +3386,93 @@ float marchWorld(vec3 ro, vec3 rd, float tmax, int steps, out vec3 info) {
     if (t > tmax) break;
   }
   return -1.;
+#endif
 }
-vec3 worldNormal(vec3 p) {
-  vec2 e = vec2(.0025, -.0025);
-  return normalize(e.xyy * mapWorld(p + e.xyy).x + e.yyx * mapWorld(p + e.yyx).x + e.yxy * mapWorld(p + e.yxy).x + e.xxx * mapWorld(p + e.xxx).x);
+// The world's normal, the gradient from four taps at a tetrahedron's corners (summed in this order), and with withAO its ambient
+// occlusion, four taps along the normal, in one loop: one copy of the distance function for both.
+const vec3 TETRA[4] = vec3[4](vec3(1, -1, -1), vec3(-1, -1, 1), vec3(-1, 1, -1), vec3(1, 1, 1));
+vec3 worldNormalAO(vec3 p, bool withAO, out float ao) {
+  vec3 g = vec3(0), n = vec3(0); float o = 0., k = 1.;
+  for (int i = ZERO; i < 8; i++) {
+    if (i == 4) { n = normalize(g); if (!withAO) break; }
+    vec3 e = .0025 * TETRA[min(i, 3)]; float h = .08 * float(i - 3);
+    float d = mapWorld(i < 4 ? p + e : p + n * h).x;
+    if (i < 4) g += e * d; else { o += (h - d) * k; k *= .6; }
+  }
+  ao = clamp(1. - 2.2 * o, 0., 1.);
+  return n;
 }
 float worldShadow(vec3 p, vec3 l, float maxt) {
+#if WORLD == 0
+  return 1.;
+#else
   if (uWorld < .5) return 1.;
   float res = 1., t = .03;
-  for (int i = 0; i < 28; i++) {
+  for (int i = ZERO; i < 28; i++) {
     float h = mapWorld(p + l * t).x;
     res = min(res, 9. * h / t);
     t += clamp(h, .03, .6);
     if (res < .02 || t > maxt) break;
   }
   return clamp(res, 0., 1.);
-}
-float worldAO(vec3 p, vec3 n) {
-  float o = 0., k = 1.;
-  for (int i = 1; i <= 4; i++) { float h = .08 * float(i); o += (h - mapWorld(p + n * h).x) * k; k *= .6; }
-  return clamp(1. - 2.2 * o, 0., 1.);
+#endif
 }
 // soft shadows from the spheres and the shape, for the world and the floor
 float sphShadow(vec3 p, vec3 l) {
   float res = 1.;
-  for (int i = 0; i < 32; i++) {
+#if SPHERES
+  for (int i = ZERO; i < 32; i++) {
     if (i >= uSphN) break;
     vec4 sp = uSph[i]; if (uSphC[i].w > 1.5) continue;   // (a glowing bob casts no shadow)
     vec3 oc = p - sp.xyz; float b = dot(oc, l); if (b > 0.) continue;
     float c = dot(oc, oc) - sp.w * sp.w, h = b * b - c, d = sqrt(max(0., sp.w * sp.w - h)) - sp.w, t = -b - sqrt(max(h, 0.));
     res = min(res, smoothstep(0., 1., 2.5 * d / max(t, 1e-3)));
   }
+#endif
   return res;
 }
 float shapeShadow(vec3 p, vec3 l, float maxt) {
+#if !SHAPE
+  return 1.;
+#else
   if (uShOn < .5) return 1.;
   float res = 1., t = .02;
-  for (int i = 0; i < 36; i++) {
+  for (int i = ZERO; i < 36; i++) {
     float h = sdShape(p + l * t);
     res = min(res, 8. * h / t);
     t += clamp(h, .02, .35);
     if (res < .02 || t > maxt) break;
   }
   return clamp(res, 0., 1.);
+#endif
 }
-vec3 shadeWorld(vec3 p, vec3 rd, float t, vec3 info, bool full) {
-  vec3 n = worldNormal(p), L = uLP - p, l = normalize(L), r = reflect(rd, n);
+// (as shadeShape(), and sha, the shadows on it, and ao, its ambient occlusion, which main() works out)
+vec3 shadeWorld(vec3 p, vec3 rd, vec3 info, vec3 n, vec3 r, vec3 E, float sha, float ao) {
+  vec3 L = uLP - p, l = normalize(L);
   float dl = length(L), att = 1. / (1. + dl * dl * .015);
-  float dif = max(dot(n, l), 0.), sha = 1., ao = 1.;
-  // (soft shadows and ambient occlusion at tier 0; the world's own shadows only at tier 1; neither below)
-  if (full && uTier < 1.5) { sha = worldShadow(p + n * .01, l, dl); if (uTier < .5) { sha *= shapeShadow(p + n * .01, l, dl) * sphShadow(p, l); ao = worldAO(p, n); } }
+  float dif = max(dot(n, l), 0.);
   float fr = pow(1. - max(dot(-rd, n), 0.), 5.);
   vec3 c = uWCol * (.035 * ao + dif * sha * att * uLC * .12);
-  c += env(r) * mix(.03, .45, fr) * uWMetal * ao;
+  c += E * mix(.03, .45, fr) * uWMetal * ao;
   c += uLC * .04 * pow(max(dot(r, l), 0.), 48.) * sha * att * uWMetal;
   // its lights: strips, fractal seams, the gates' inner rims, a city's windows
   float glow = 0.;
   if (info.y > .5) glow = 1. + .35 * sin(info.z * 1.7 + uWT * 3.);
+#if WORLD == -1 || WORLD == 3
   if (uWorld > 2.5 && uWorld < 3.5) {
     // (windows in rows on the towers' walls, a third of them lit)
     vec3 q = p - uWPos; float u = abs(n.x) > .5 ? q.z : q.x;
     vec2 wc = floor(vec2(u * 5., q.y * 3.5)), wf = fract(vec2(u * 5., q.y * 3.5));
     glow = step(.66, hash12(wc + floor(info.z * 7.) * 13.)) * step(.3, wf.x) * step(wf.x, .8) * step(.3, wf.y) * step(wf.y, .75) * step(abs(n.y), .5) * (.5 + .5 * hash12(wc + 4.));
   }
+#endif
   c += uWCol2 * uWP.w * glow;
   return c;
 }
 
-// ---------- the floor: glossy, reflecting everything above it ----------
-vec3 traceRefl(vec3 ro, vec3 rd, out float tr) {
-  tr = 60.;
-  vec3 col = env(rd);
-  int what = 0, si = 0;
-  float ts = marchShape(ro, rd, tr, uFx > 3.4 ? (uTier < .5 ? 48 : uTier < 1.5 ? 32 : 24) : 28);
-  if (ts > 0.) { tr = ts; what = 1; }
-  for (int i = 0; i < 32; i++) { if (i >= uSphN) break; float t = hitSphere(ro, rd, uSph[i]); if (t > 0. && t < tr) { tr = t; what = 2; si = i; } }
-  vec3 wi; float tw = uTier > 2.5 ? -1. : marchWorld(ro, rd, tr, uTier < .5 ? 56 : uTier < 1.5 ? 32 : 16, wi);
-  if (tw > 0.) { tr = tw; what = 5; }
-  vec3 p = ro + rd * tr;
-  if (what == 1) col = shadeShape(p, rd); else if (what == 2) col = shadeSphere(p, rd, uSph[si], uSphC[si]); else if (what == 5) col = mix(shadeWorld(p, rd, tr, wi, false), uSkyB, 1. - exp(-tr * uFogD));
-  col += haloGlow(ro, rd, tr) + beamGlow(ro, rd, tr);
-  col = applyPanels(col, ro, rd, tr);
-  // (the nearest panel counts as a hit for the floor's softening, so a reflected pane stays a pane)
-  for (int i = 0; i < 6; i++) { if (i >= uPN) break; float tp; vec2 uv; if (hitPanel(i, ro, rd, tp, uv) && tp < tr && panelTex(i, uv, tp, 1.).a > .1) tr = tp; }
-  return col;
-}
-vec3 shadeFloor(vec3 p, vec3 rd, float t) {
+// ---------- the floor: glossy, reflecting everything above it (main() traces the reflection) ----------
+// (its own colour: plain or a checker, and the grid)
+vec3 floorBase(vec3 p, float t) {
   vec3 base = uFloorCol;
   vec2 fq = p.xz + uFloorOff;
   if (uFloorMode > .5 && uFloorMode < 1.5) {   // checker
@@ -3279,96 +3483,232 @@ vec3 shadeFloor(vec3 p, vec3 rd, float t) {
     vec2 g = abs(fract(p.xz * .5) - .5);
     base += uAcc * uGrid * smoothstep(.485, .5, max(g.x, g.y)) * exp(-t * .06);
   }
-  if (uFx < 2.5) return base * (.5 + .5 * max(dot(vec3(0, 1, 0), normalize(uLP - p)), 0.)) + uLC * .01;
+  return base;
+}
+// (its normal: up, or water's rings of ripples)
+vec3 floorNormal(vec3 p) {
   vec3 nrm = vec3(0, 1, 0);
-  if (uFloorMode > 1.5) {   // water: rings of ripples
+  vec2 fq = p.xz + uFloorOff;
+  if (uFloorMode > 1.5) {
     float r1 = length(fq), w = sin(r1 * 9. - uT * 5.) * exp(-r1 * .12) + .6 * sin(fq.x * 3.1 + uT * 1.7) * sin(fq.y * 2.3 - uT * 1.3);
     nrm = normalize(vec3(fq.x / max(r1, .01) * w * uWater, 1., fq.y / max(r1, .01) * w * uWater + .3 * uWater * cos(fq.y * 2.3 - uT * 1.3)));
   }
-  vec3 rr = reflect(rd, nrm);
-  float fr = .04 + .96 * pow(1. - max(-rd.y, 0.), 5.);
-  float tr; vec3 rc = traceRefl(p + vec3(0, .002, 0), rr, tr);
-  float sharp = uFx > 3.4 ? exp(-tr * .09) : 1.;   // (a modern floor is slightly rough: far reflections soften into the sky's)
-  vec3 lit = vec3(0);
-  if (uFx > 3.4 && uPool > 0.) {
-    // a pool of the light on the floor, with the soft shadows of everything standing on it
-    vec3 L = uLP - p; float dl = length(L); vec3 l = L / dl;
-    // (the shadows in it: all of them at tier 0, the spheres' and the shape's at tier 1, none below)
-    float sh = uTier > 1.5 ? 1. : sphShadow(p, l) * shapeShadow(p + vec3(0, .01, 0), l, dl) * (uTier < .5 ? worldShadow(p + vec3(0, .01, 0), l, dl) : 1.);
-    lit = (base + .025) * uLC * max(l.y, 0.) / (1. + dl * dl * .03) * sh * uPool * .5;
-  }
-  return base + lit + mix(env(rr) * .25, rc, sharp) * mix(.3, 1., fr) * .85;
+  return nrm;
 }
 
 // ---------- volumetric light, occluded by the extruded shape (projected through its plane) ----------
 float shadowFlat(vec3 s) {
+#if !SHAPE
+  return 1.;
+#endif
   if (uShOn < .5) return 1.;
   vec3 a = uShRi * (s - uShP), b = uShRi * (uLP - uShP);
   if (sign(a.z) == sign(b.z)) return 1.;
   vec3 q = mix(a, b, a.z / (a.z - b.z));
   return shape2D(q.xy) < 0. ? 0. : 1.;
 }
+#if WORLD != 0 && WORLD != 2
+// (0 where the world stands between s and the light, L away; a function of its own, as a break in a loop inside another loop
+// makes ANGLE compile the whole shader at the HLSL compiler's slowest optimization level)
+float worldOcc(vec3 s, vec3 L, float dl) {
+  float tt = .05;
+  for (int k = ZERO; k < 10; k++) { float h = mapWorld(s + L / dl * tt).x; if (h < .01) return 0.; tt += max(h, .08); if (tt > dl) break; }
+  return 1.;
+}
+#endif
 vec3 volumetric(vec3 ro, vec3 rd, float tMax, vec2 fc) {
-  // (28 samples at tier 0, 14 at tier 1; none below, which main() skips)
+  // (28 samples at tier 0; 14 at the others, in their own pass at half the picture's resolution)
   int N = uTier < .5 ? 28 : 14;
   float jit = hash12(fc + uSeed * 17.31), dt = tMax / float(N);
   vec3 acc = vec3(0);
-  for (int i = 0; i < 28; i++) {
+  for (int i = ZERO; i < 28; i++) {
     if (i >= N) break;
     vec3 s = ro + rd * ((float(i) + jit) * dt);
     if (s.y < 0.) continue;
     vec3 L = uLP - s; float dl = length(L);
     float ph = .015 + .6 * pow(max(dot(rd, L / dl), 0.), 24.);
     float occ = shadowFlat(s);
-    if (uWorld > .5 && uWorld != 2.) { float tt = .05; for (int k = 0; k < 10; k++) { float h = mapWorld(s + L / dl * tt).x; if (h < .01) { occ = 0.; break; } tt += max(h, .08); if (tt > dl) break; } }
+#if WORLD != 0 && WORLD != 2
+    if (uWorld > .5 && uWorld != 2.) occ *= worldOcc(s, L, dl);
+#endif
     acc += occ * ph / (1. + dl * dl * .12);
   }
   return acc * dt * uVol * uLC * .02;
 }
 
+#if VOLPASS
+// The god rays alone (at tiers 1-3, at half the picture's resolution: the light they add is soft), marched as far as the scene pass
+// reached, the depth in its alpha channel (400 for the sky, where the scene pass marches 40).
+uniform sampler2D uDepth;
+void main() {
+  vec2 fc = vUV * uRes, p = (fc - .5 * uRes) / uRes.y;
+  vec3 f = normalize(uTa - uRo), r = normalize(cross(f, vec3(0, 1, 0))), u = cross(r, f);
+  float cr = cos(uRoll), sr = sin(uRoll);
+  vec2 q = vec2(p.x * cr - p.y * sr, p.x * sr + p.y * cr);
+  vec3 rd = normalize(q.x * r + q.y * u + uFov * f);
+  vec3 v = volumetric(uRo, rd, min(texture(uDepth, vUV).a, 40.), fc);
+  oC = vec4(any(isnan(v)) || any(isinf(v)) ? vec3(0) : min(v, vec3(64.)), 1.);
+}
+#else
 void main() {
   vec2 fc = vUV * uRes, p = (fc - .5 * uRes) / uRes.y;
   vec3 f = normalize(uTa - uRo), r = normalize(cross(f, vec3(0, 1, 0))), u = cross(r, f);
   float cr = cos(uRoll), sr = sin(uRoll);
   vec2 q = vec2(p.x * cr - p.y * sr, p.x * sr + p.y * cr);
   vec3 ro = uRo, rd = normalize(q.x * r + q.y * u + uFov * f);
-  float tHit = 1e9; int what = 0, si = 0;
-  vec3 col = env(rd);
-  if (uTunOn > .5) { float tt = hitTunnel(ro, rd); if (tt > 0.) { tHit = tt; what = 4; } }
-  float ts = marchShape(ro, rd, tHit, uFx > 3.4 ? (uTier < .5 ? 96 : uTier < 1.5 ? 72 : 48) : uFx > 2.5 ? 56 : 36);
-  if (ts > 0. && ts < tHit) { tHit = ts; what = 1; }
-  for (int i = 0; i < 32; i++) { if (i >= uSphN) break; float t = hitSphere(ro, rd, uSph[i]); if (t > 0. && t < tHit) { tHit = t; what = 2; si = i; } }
-  float tf = uFloorOn > .5 && rd.y < 0. ? -ro.y / rd.y : -1.;
-  if (tf > 0. && tf < tHit) { tHit = tf; what = 3; }
-  vec3 wi; float tw = marchWorld(ro, rd, min(tHit, 90.), uTier < .5 ? 120 : uTier < 1.5 ? 80 : uTier < 2.5 ? 56 : 40, wi);
-  if (tw > 0. && tw < tHit) { tHit = tw; what = 5; }
-  vec3 pos = ro + rd * tHit;
-  if (what == 5) col = shadeWorld(pos, rd, tHit, wi, true);
-  else if (what == 1) col = shadeShape(pos, rd);
-  else if (what == 2) col = shadeSphere(pos, rd, uSph[si], uSphC[si]);
-  else if (what == 3) col = shadeFloor(pos, rd, tHit);
-  else if (what == 4) col = shadeTunnel(pos, rd, tHit);
-  if (what != 0) col = mix(col, uSkyB, 1. - exp(-tHit * uFogD * (uFx < 2.5 ? 2.2 : 1.)));
-  col += haloGlow(ro, rd, tHit) + beamGlow(ro, rd, tHit);
-  col = applyPanels(col, ro, rd, tHit);
-  if (uFx > 3.4 && uVol > 0. && uTier < 1.5) col += volumetric(ro, rd, min(tHit, 40.), fc);
-  // the depth, for the depth of field: the nearest solid panel's, or what's behind
-  float depth = what == 0 ? 400. : tHit;
-  for (int i = 0; i < 6; i++) { if (i >= uPN) break; float tp; vec2 uv; if (hitPanel(i, ro, rd, tp, uv) && tp < depth && panelTex(i, uv, tp, 1.).a * uPM[i].x > .25) depth = tp; }
-  vec4 ui = texture(uUI, vUV);
+  // Three stages, in one loop, so that each thing they share is compiled once: the HLSL compiler under ANGLE pastes every call
+  // in whole, and when the floor's reflection had calls of its own, they were half of each variant's compile. Stage 0 traces the
+  // eye's ray and shades what it meets; where that's a glossy floor, stage 1 traces the ray the floor reflects (less far and less
+  // finely) and shades what that meets (without the world's shadows), and stage 2 finishes the floor with it. Each ray's last
+  // stage then adds the glows and the panels in front of what it met.
+  vec3 col = vec3(0), o = ro, d = rd;
+  float tHit = 1e9, depth = 400.;
+  // (the floor, from stage 0 to stage 2: its own colour, the light's pool on it, its Fresnel, where it was met and the reflected
+  // ray; and from stage 1, the reflection's colour and how far off it is)
+  vec3 fBase = vec3(0), fLit = vec3(0), fPos = vec3(0), fRR = vec3(0), rc = vec3(0); float fFr = 0., tr = 60.;
+  int stage = 0;
+  for (int k = ZERO; k < 3; k++) {
+    bool R = stage == 1;
+    float t = R ? 60. : 1e9; int w = 0, si = 0;
+    vec3 wi = vec3(0), pos;
+    if (stage < 2) {
+#if TUNNEL
+      if (!R && uTunOn > .5) { float tt = hitTunnel(o, d); if (tt > 0.) { t = tt; w = 4; } }
+#endif
+      float ts = marchShape(o, d, t, R ? (uFx > 3.4 ? (uTier < .5 ? 48 : uTier < 1.5 ? 32 : 24) : 28) : uFx > 3.4 ? (uTier < .5 ? 96 : uTier < 1.5 ? 72 : 48) : uFx > 2.5 ? 56 : 36);
+      if (ts > 0. && (R || ts < t)) { t = ts; w = 1; }
+#if SPHERES
+      for (int i = ZERO; i < 32; i++) { if (i >= uSphN) break; float th = hitSphere(o, d, uSph[i]); if (th > 0. && th < t) { t = th; w = 2; si = i; } }
+#endif
+#if FLOOR
+      float tf = !R && uFloorOn > .5 && d.y < 0. ? -o.y / d.y : -1.;
+      if (tf > 0. && tf < t) { t = tf; w = 3; }
+#endif
+      // (the world: for the eye's ray, up to the nearest thing met so far, and 90 at most; for the reflection, only where the
+      // reflected set is compiled in, and not at tier 3)
+#if RWORLD && WORLD != 0
+      bool wOn = !R || uTier <= 2.5;
+#else
+      bool wOn = !R;
+#endif
+      if (wOn) { float tw = marchWorld(o, d, R ? t : min(t, 90.), R ? (uTier < .5 ? 56 : uTier < 1.5 ? 32 : 16) : uTier < .5 ? 120 : uTier < 1.5 ? 80 : uTier < 2.5 ? 56 : 40, wi); if (tw > 0. && (R || tw < t)) { t = tw; w = 5; } }
+      pos = o + d * t;
+    } else { t = tHit; w = 3; pos = fPos; o = ro; d = rd; }
+    // The normal where the ray met something, and the direction it reflects the sky from (the ray's own, where it met nothing),
+    // whose light, env(), is worked out here, once, for whatever is shaded.
+    vec3 n = vec3(0, 1, 0), rv = d; float ao = 1.;
+    if (stage == 2) rv = fRR;
+#if SHAPE
+    else if (w == 1) { n = shapeNormal(pos); rv = reflect(d, n); }
+#endif
+#if SPHERES
+    else if (w == 2) { n = normalize(pos - uSph[si].xyz); rv = reflect(d, n); }
+#endif
+#if WORLD != 0
+    else if (w == 5) {
+      // (with its ambient occlusion, for the eye at tier 0)
+      bool withAO = false;
+#if SHADOWS
+      withAO = stage == 0 && uTier < .5;
+#endif
+      float a; n = worldNormalAO(pos, withAO, a); if (withAO) ao = a; rv = reflect(d, n);
+    }
+#endif
+    vec3 E = env(rv);
+    // Soft shadows, worked out once for either place they fall: on the world (for the eye; the world's own at tiers 0-1, the
+    // shape's and the spheres' at tier 0) or in the light's pool on the floor (the spheres' and the shape's at tiers 0-1, the
+    // world's at tier 0).
+    float wsh = 1., ssh = 1., psh = 1.;
+#if SHADOWS
+    bool onWorld = stage == 0 && w == 5 && uTier < 1.5, onFloor = false;
+#if POOL && FLOOR
+    onFloor = stage == 0 && w == 3 && uFx > 3.4 && uPool > 0. && uTier < 1.5;
+#endif
+    if (onWorld || onFloor) {
+      vec3 L = uLP - pos; float dl = length(L);
+      vec3 l = onWorld ? normalize(L) : L / dl, sq = onWorld ? pos + n * .01 : pos + vec3(0, .01, 0);
+      if (onWorld || uTier < .5) wsh = worldShadow(sq, l, dl);
+      if (onFloor || uTier < .5) { ssh = shapeShadow(sq, l, dl); psh = sphShadow(pos, l); }
+    }
+#endif
+    vec3 c = vec3(0);
+    if (stage == 2) {
+      // (a modern floor is slightly rough: far reflections soften into the sky's)
+      float sharp = uFx > 3.4 ? exp(-tr * .09) : 1.;
+      c = fBase + fLit + mix(E * .25, rc, sharp) * mix(.3, 1., fFr) * .85;
+    }
+    else if (w == 0) c = E;
+#if WORLD != 0
+    else if (w == 5) {
+      float sha = wsh; if (uTier < .5) sha *= ssh * psh;
+      c = shadeWorld(pos, d, wi, n, rv, E, sha, ao);
+      if (R) c = mix(c, uSkyB, 1. - exp(-t * uFogD));
+    }
+#endif
+#if SHAPE
+    else if (w == 1) c = shadeShape(pos, d, n, rv, E);
+#endif
+#if SPHERES
+    else if (w == 2) c = shadeSphere(pos, d, n, rv, uSphC[si], E);
+#endif
+#if FLOOR
+    else if (w == 3) {
+      vec3 base = floorBase(pos, t);
+      if (uFx < 2.5) c = base * (.5 + .5 * max(dot(vec3(0, 1, 0), normalize(uLP - pos)), 0.)) + uLC * .01;
+      else {
+        // a glossy floor: its colour and the light's pool on it now, with the soft shadows of everything standing on it; its
+        // reflection in stage 1
+        fBase = base; fPos = pos; tHit = t;
+        fRR = reflect(d, floorNormal(pos)); fFr = .04 + .96 * pow(1. - max(-d.y, 0.), 5.);
+#if POOL
+        if (uFx > 3.4 && uPool > 0.) {
+          vec3 L = uLP - pos; float dl = length(L); vec3 l = L / dl;
+          float sh = uTier > 1.5 ? 1. : psh * ssh * (uTier < .5 ? wsh : 1.);
+          fLit = (base + .025) * uLC * max(l.y, 0.) / (1. + dl * dl * .03) * sh * uPool * .5;
+        }
+#endif
+        o = pos + vec3(0, .002, 0); d = fRR; stage = 1;
+        continue;
+      }
+    }
+#endif
+#if TUNNEL
+    else if (w == 4) c = shadeTunnel(pos, d, t);
+#endif
+    // the eye's fog, and the glows and the panels in front of what the ray met
+    if (!R && w != 0) c = mix(c, uSkyB, 1. - exp(-t * uFogD * (uFx < 2.5 ? 2.2 : 1.)));
+    c += haloGlow(o, d, t) + beamGlow(o, d, t);
+    // (the nearest solid panel in front: in the reflection it counts as what the ray met, for the floor's softening, so that a
+    // reflected pane stays a pane; for the eye it's the depth the depth of field takes, or else what's behind)
+    float tn = R || w != 0 ? t : 400.;
+    bool nearest = R;
+#if DEPTH
+    if (uDepthOn > .5) nearest = true;
+#endif
+    c = applyPanels(c, o, d, t, nearest, R, tn);
+    if (R) { rc = c; tr = tn; stage = 2; continue; }
+    col = c; tHit = t; depth = tn;
+    break;
+  }
+#if VOL
+  if (uFx > 3.4 && uVol > 0. && uTier < .5) col += volumetric(ro, rd, min(tHit, 40.), fc);
+#endif
+  vec4 ui = uiStraight(vUV);
   col += lin(ui.rgb) * ui.a * uUIGlow;
   // (one bad pixel would spread through the bloom's mips into a black square)
   if (any(isnan(col)) || any(isinf(col))) col = vec3(0);
   oC = vec4(min(col, vec3(64.)), depth);
-}`;
+}
+#endif`;
 
 SHADERS.bright = `#version 300 es
 precision highp float;
 in vec2 vUV; out vec4 oC;
-uniform sampler2D uSrc; uniform vec2 uTexel; uniform float uTh;
+uniform sampler2D uSrc; uniform sampler2D uVol; uniform vec2 uTexel; uniform float uTh, uVolK;
 void main() {
   vec3 c = (texture(uSrc, vUV + uTexel * vec2(-.5, -.5)).rgb + texture(uSrc, vUV + uTexel * vec2(.5, -.5)).rgb
           + texture(uSrc, vUV + uTexel * vec2(-.5, .5)).rgb + texture(uSrc, vUV + uTexel * vec2(.5, .5)).rgb) * .25;
+  if (uVolK > 0.) c += texture(uVol, vUV).rgb;
   float br = max(c.r, max(c.g, c.b));
   oC = vec4(c * max(br - uTh, 0.) / max(br, 1e-4), 1.);
 }`;
@@ -3393,9 +3733,14 @@ void main() {
 SHADERS.final = `#version 300 es
 precision highp float;
 in vec2 vUV; out vec4 oC;
-uniform sampler2D uScene; uniform sampler2D uBloom; uniform sampler2D uUI;
-uniform float uBloomK, uFx, uCA, uGrain, uVig, uSeed, uExposure, uFlash, uFlareK, uSat, uDof, uFocus;
+uniform sampler2D uScene; uniform sampler2D uBloom; uniform sampler2D uUI; uniform sampler2D uVol;
+uniform float uBloomK, uFx, uCA, uGrain, uVig, uSeed, uExposure, uFlash, uFlareK, uSat, uDof, uFocus, uVolK, uCompose;
 uniform vec2 uSceneRes, uFlare; uniform vec3 uFlareCol, uFlashCol;
+// (loops from ZERO, as in the scene shader, so that the HLSL compiler keeps them loops)
+uniform int uZero;
+#ifndef ZERO
+#define ZERO min(uZero, 0)
+#endif
 float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + .03)) / (x * (2.43 * x + .59) + .14), 0., 1.); }
 float bayer4(vec2 p) { int x = int(mod(p.x, 4.)), y = int(mod(p.y, 4.)); int i = x + y * 4;
@@ -3411,21 +3756,25 @@ void main() {
     float z = texture(uScene, uv).a, coc = min(.016, uDof * abs(z - uFocus) / max(z, .05));
     if (coc > .0006) {
       vec3 acc = c; float ws = 1.;
-      for (int i = 0; i < 24; i++) {
+      // (the scene has no mipmaps: level 0 is what texture() would take, but without screen derivatives, which in a loop made
+      // ANGLE's HLSL run the whole depth of field on every pixel, whether it was on or not)
+      for (int i = ZERO; i < 24; i++) {
         float a = float(i) * 2.39996, r = sqrt((float(i) + .5) / 24.);
         vec2 o = vec2(cos(a), sin(a)) * r * coc * vec2(9. / 16., 1.);
-        vec4 sm = texture(uScene, uv + o);
+        vec4 sm = textureLod(uScene, uv + o, 0.);
         float sc = min(.016, uDof * abs(sm.a - uFocus) / max(sm.a, .05)), w = smoothstep(r * coc * .6, r * coc, sc + .0004);
         acc += sm.rgb * w; ws += w;
       }
       c = acc / ws;
     }
   }
+  // (the god rays, where they have their own pass)
+  if (uVolK > 0.) c += texture(uVol, uv).rgb;
   c += texture(uBloom, uv).rgb * uBloomK;
   // a 90s lens flare: rings and hexes strung from the light through the centre
   if (uFlareK > 0.) {
     vec2 asp = vec2(16. / 9., 1.);
-    for (int i = 0; i < 6; i++) {
+    for (int i = ZERO; i < 6; i++) {
       float f = float(i) / 5. * 1.6 - .2;
       vec2 pos = mix(uFlare, vec2(1) - uFlare, f);
       float r = .02 + .05 * fract(f * 7.31), dd = length((uv - pos) * asp);
@@ -3440,11 +3789,1658 @@ void main() {
   c *= 1. - uVig * dot(d, d) * 1.6;
   c = pow(c, vec3(1. / 2.2));
   if (uFx < 2.5) { vec2 px = floor(uv * uSceneRes); c = floor(c * vec3(31, 63, 31) + .5 + bayer4(px)) / vec3(31, 63, 31); }
-  c += (hash12(uv * 1789.3 + uSeed) - .5) * uGrain;
-  vec4 ui = texture(uUI, uv);
-  c = mix(c, ui.rgb, ui.a);
+  // (the grain and the UI, unless SHADERS.compose adds them, at the canvas's resolution, to this pass drawn at the picture's)
+  if (uCompose < .5) {
+    c += (hash12(uv * 1789.3 + uSeed) - .5) * uGrain;
+    vec4 ui = texture(uUI, uv);
+    c = c * (1. - ui.a) + ui.rgb;   // (the UI's colour is premultiplied)
+  }
   oC = vec4(c, 1.);
 }`;
+// Below level 0, where the 3D picture is smaller than the canvas, the final pass runs at the picture's resolution, and this puts it
+// on the canvas: scaled up, with the grain and the UI at the canvas's resolution. (A full-resolution pass that does less.)
+SHADERS.compose = `#version 300 es
+precision highp float;
+in vec2 vUV; out vec4 oC;
+uniform sampler2D uPic; uniform sampler2D uUI; uniform float uGrain, uSeed;
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+void main() {
+  vec3 c = texture(uPic, vUV).rgb + (hash12(vUV * 1789.3 + uSeed) - .5) * uGrain;
+  vec4 ui = texture(uUI, vUV);
+  oC = vec4(c * (1. - ui.a) + ui.rgb, 1.);
+}`;
+// The 1996 part's frame on a WebGL canvas (kit.js's _flush() hands it over): its 640×360 framebuffer, which the 2D path draws
+// nearest-neighbour up to the whole multiple above the canvas's size and then smoothly down to it (so its pixels stay even at any
+// size). Here that's one step: each output pixel takes the flat middle of the texel it's in and blends only across the edge it
+// straddles, about one output pixel wide. A canvas smaller than the framebuffer takes it filtered down (its mipmaps). Then the soft
+// CRT glow, a quarter-size bright pass, added.
+SHADERS.vga = `#version 300 es
+precision highp float;
+in vec2 vUV; out vec4 oC;
+uniform sampler2D uFB; uniform sampler2D uGlow; uniform vec2 uSrc, uDst; uniform float uGlowK;
+void main() {
+  vec3 c;
+  vec2 k = uDst / uSrc;
+  if (k.x >= 1.) {
+    vec2 p = vUV * uSrc, f = fract(p) - .5, r = .5 - .5 / k;
+    c = texture(uFB, (floor(p) + .5 + (f - clamp(f, -r, r)) * k) / uSrc).rgb;
+  } else c = texture(uFB, vUV).rgb;
+  if (uGlowK > 0.) c += texture(uGlow, vUV).rgb * uGlowK;
+  oC = vec4(min(c, vec3(1)), 1.);
+}`;
+
+;
+// ---- styles/demoscene/modern/draw2d.js ----
+// modern/draw2d.js: the modern engine's 2D layers (the UI and the three panels), drawn with WebGL.
+//
+// Scenes draw on a layer with the canvas 2D API, through a stand-in for its context (a proxy). The stand-in keeps the drawing
+// state (styles, the transform, clips, the path) and records each drawing call as an item; when the layer is flushed, the items
+// are drawn, in the order they were made and blended as their composite operations say, into the layer's own render target, a
+// texture the GPU samples: quads, drawn instanced, a few draw calls a frame. Nothing is drawn into the layer's 2D canvas, and
+// nothing it holds is uploaded. How each call is drawn:
+// - rectangles, discs, rings, convex polygons (cut to the layer: up to 32 corners) and strokes of lines and curves (flattened;
+//   the strokes' segments gathered in a coverage buffer, taking the largest, so that a stroke is painted once) are shaded
+//   analytically, with their antialiasing (each pixel's coverage) and their paint (a colour; a linear, radial or conic gradient;
+//   a pattern) worked out per pixel;
+// - everything else is a sprite, drawn once by a 2D canvas and kept in an atlas: a string of text (the 2D canvas lays it out,
+//   ligatures, kerning and spacing and all, drawn in its colour; a gradient paints its coverage), a fill of another shape (its
+//   coverage, painted by the shader), a clip that isn't a rectangle (its coverage), and anything drawn with a shadow, a filter or
+//   a style the shader can't paint (drawn whole);
+// - drawImage() samples the image as a texture, uploaded when the canvas is new or has been drawn on since (its version), or, for
+//   a layer's own canvas, that layer's target.
+// So a frame whose drawing only moves, fades or recolours what earlier frames drew uploads nothing, and one that draws something new
+// uploads just that. (In Firefox, whose 2D canvases in a worker live apart from WebGL, every upload copies its whole source canvas,
+// at some 0.4 ms a megabyte on a Surface Pro: the UI alone was 19 MB full screen there.)
+//
+// What a frame draws depends on nothing but what it draws: its pixels are the same whatever frames came before, and whatever the
+// warm-up drew between them. It holds by construction:
+// - a layer starts each frame from the 2D context's default state (as a new canvas has it), so nothing a scene leaves set carries
+//   over to another frame or scene;
+// - a sprite is named by a key that says everything its pixels depend on, exactly (its text, font state and colour, its path's
+//   commands, its transform's linear part, where it falls within a pixel), and it's drawn from what its key says alone, so that the
+//   same key is always the same pixels;
+// - where a sprite lands is worked out from the frame's own drawing: text snapped to whole pixels (a string's first glyph's origin,
+//   on its baseline; the 2D canvas places the rest), other sprites to quarter pixels; no browser's own placement is measured;
+// - sprites in the atlas are never changed once drawn: a layer's flush looks up every sprite it needs, then makes room for the new
+//   ones by emptying pages none of its sprites are on (the least lately used first), and only then draws; so a page is emptied
+//   only between draws, never under one. What doesn't fit gets a texture of its own for that draw.
+//
+// The UI's target holds premultiplied colour (SHADERS.final and compose composite it so, and the scene shader's glow samples it as
+// straight colour); a panel's is then turned into straight colour with mipmaps, as the scene shader samples panels. Render mode (a
+// script capturing frames with toDataURL) draws on the 2D canvases, as the video always was drawn, and uploads them whole.
+const D2 = (() => {
+  const RENDER_MODE = HAS_DOM && /[?&]render\b/.test(location.search);
+  const TAU = 2 * Math.PI;
+  const PAGE = 2048, PAGES = 6, BIG = 1024;   // (atlas pages; a sprite wider or taller than BIG gets a texture of its own)
+  const BIG_BYTES = 64 << 20;                 // (how much such textures may hold before those unused lately go)
+  const FLOATS = 36;                          // (per instance: 9 vec4s)
+  // (texture units: the pages are 0-5; a sprite's and a clip's textures of their own 6 and 7; textures are made and filled on the
+  // last, which the program doesn't sample)
+  const U_SPR = 6, U_MSK = 7, U_IMG = 8, U_COV = 9, U_DST = 10, U_PAINT = 11, U_SCRATCH = 12;
+
+  // ---------- 2D canvases on the CPU ----------
+  // Outside render mode, every 2D canvas made from here on (the scenes' caches among them) is drawn on the CPU, unless asked
+  // otherwise (willReadFrequently): its pixels are then the same whenever it's drawn, whereas Chromium draws some canvases on the
+  // GPU and some on the CPU, depending on how many there are and how big, with antialiasing and blending a level or two apart.
+  if (!RENDER_MODE) for (const C of [self.HTMLCanvasElement, self.OffscreenCanvas]) {
+    const f = C?.prototype.getContext;
+    if (!f || f.cpu2d) continue;
+    const w = function (type, o) { return type === '2d' && o?.willReadFrequently === undefined ? f.call(this, type, { ...o, willReadFrequently: true }) : f.call(this, type, o); };
+    w.cpu2d = true; C.prototype.getContext = w;
+  }
+  // ---------- canvases' versions ----------
+  // A canvas drawn with drawImage() (or as a pattern) is uploaded again only when it has been drawn on since: any 2D drawing on it
+  // bumps its version.
+  for (const C of [self.CanvasRenderingContext2D, self.OffscreenCanvasRenderingContext2D]) {
+    if (!C) continue;
+    for (const m of ['fillRect', 'strokeRect', 'clearRect', 'fillText', 'strokeText', 'drawImage', 'fill', 'stroke', 'putImageData', 'reset']) {
+      const f = C.prototype[m];
+      if (!f || f.bumps) continue;
+      const w = function (...a) { const c = this.canvas; if (c) c.__v = (c.__v | 0) + 1; return f.apply(this, a); };
+      w.bumps = true; C.prototype[m] = w;
+    }
+  }
+  // ---------- Path2D objects keep their commands (for their bounds, strokes and keys) ----------
+  const PATH_OPS = ['moveTo', 'lineTo', 'arc', 'arcTo', 'rect', 'roundRect', 'ellipse', 'bezierCurveTo', 'quadraticCurveTo', 'closePath'];
+  if (self.Path2D && !self.Path2D.__rec) {
+    const P0 = self.Path2D;
+    for (const m of PATH_OPS) {
+      const f = P0.prototype[m];
+      if (!f) continue;
+      P0.prototype[m] = function (...a) { (this.__ops ??= []).push({ op: m, a }); return f.apply(this, a); };
+    }
+    const add = P0.prototype.addPath;
+    if (add) P0.prototype.addPath = function (...a) { this.__opaque = true; return add.apply(this, a); };
+    // (a path made from SVG path data can't be read back: it's drawn whole, as a sprite as big as the layer)
+    class P2 extends P0 { constructor(a) { super(a); if (a instanceof P0) { if (a.__opaque) this.__opaque = true; else if (a.__ops) this.__ops = a.__ops.slice(); } else if (a !== undefined) this.__opaque = true; } }
+    P2.__rec = true;
+    self.Path2D = P2;
+  }
+
+  // ---------- keys ----------
+  // (a key's hash, for comparing a frame's drawing with the last's)
+  function strHash(s) {
+    let a = 0x811c9dc5, b = 0x9747b28c;
+    for (let i = 0; i < s.length; i++) { const w = s.charCodeAt(i); a = Math.imul(a ^ w, 16777619); b = Math.imul(b ^ (w + 0x9e3779b9 | 0), 2246822519) ^ (b >>> 15); }
+    return [a, b];
+  }
+  // (arguments, exactly: numbers as JavaScript writes them, which read back as the same numbers)
+  const num = v => typeof v === 'number' ? String(v) : Array.isArray(v) ? '[' + v.map(num).join(',') + ']' : v && typeof v === 'object' ? `{${num(v.x ?? 0)},${num(v.y ?? 0)}}` : String(v);
+  const idMap = new WeakMap();
+  let nextId = 1;
+  const IDS = o => { let i = idMap.get(o); if (!i) idMap.set(o, i = nextId++); return i; };
+
+  // ---------- colours ----------
+  const NC = makeCanvas(1, 1).getContext('2d'), COLORS = new Map();
+  // (a CSS colour → [r, g, b, a], each 0..1, or null if it isn't one)
+  const HEX = /^#([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i, RGB = /^rgba?\(\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*(?:[,/]\s*([\d.]+)(%?)\s*)?\)$/;
+  function color(s) {
+    let c = COLORS.get(s);
+    if (c !== undefined) return c;
+    // (the common forms read here; any other by the 2D canvas)
+    let m;
+    if (typeof s === 'string' && (m = HEX.exec(s))) {
+      const h = m[1], d = h.length <= 4 ? [...h].map(x => parseInt(x + x, 16)) : h.match(/../g).map(x => parseInt(x, 16));
+      c = [d[0] / 255, d[1] / 255, d[2] / 255, d.length > 3 ? d[3] / 255 : 1];
+    } else if (typeof s === 'string' && (m = RGB.exec(s)) && +m[1] <= 255 && +m[2] <= 255 && +m[3] <= 255) {
+      const a = m[4] === undefined ? 1 : Math.min(1, +m[4] / (m[5] ? 100 : 1));
+      c = [Math.round(+m[1]) / 255, Math.round(+m[2]) / 255, Math.round(+m[3]) / 255, a];
+    }
+    if (c) { if (COLORS.size > 5000) COLORS.clear(); COLORS.set(s, c); return c; }
+    NC.fillStyle = '#010203'; NC.fillStyle = s;
+    const n = NC.fillStyle;
+    if (n[0] === '#') c = [parseInt(n.slice(1, 3), 16) / 255, parseInt(n.slice(3, 5), 16) / 255, parseInt(n.slice(5, 7), 16) / 255, 1];
+    else { const m = n.match(/[\d.]+/g); c = m && m.length >= 3 ? [m[0] / 255, m[1] / 255, m[2] / 255, m.length > 3 ? +m[3] : 1] : null; }
+    if (n === '#010203' && !/^#010203$/i.test(String(s).trim())) c = null;
+    if (COLORS.size > 5000) COLORS.clear();
+    COLORS.set(s, c);
+    return c;
+  }
+  const cssOf = c => `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${c[3]})`;
+
+  // ---------- gradients and patterns made through a layer: what they are, standing in for the real ones ----------
+  const DESC = new WeakMap();   // (the real CanvasGradient or CanvasPattern, or its stand-in → its description)
+  function gradient(g, k, a) {
+    const real = g[k](...a), D = { kind: k === 'createLinearGradient' ? 1 : k === 'createRadialGradient' ? 2 : 3, a: a.map(Number), stops: [], real, id: nextId++ };
+    const w = { addColorStop(o, c) { real.addColorStop(o, c); const col = color(c); D.stops.push([+o, col]); D.avg = null; } };
+    DESC.set(w, D); DESC.set(real, D);
+    return w;
+  }
+  function pattern(g, img, rep) {
+    const real = g.createPattern(img, rep);
+    if (!real) return real;
+    const D = { kind: 4, img, rep: rep || 'repeat', m: [1, 0, 0, 1, 0, 0], real, id: nextId++ };
+    const w = { setTransform(m) { real.setTransform(m); D.m = m ? [m.a ?? 1, m.b ?? 0, m.c ?? 0, m.d ?? 1, m.e ?? 0, m.f ?? 0] : [1, 0, 0, 1, 0, 0]; } };
+    DESC.set(w, D); DESC.set(real, D);
+    return w;
+  }
+  const unwrap = v => DESC.get(v)?.real ?? v;
+  // (a style as it is now, for a sprite drawn whole: a colour, a gradient's geometry and stops, a pattern's image (and its version)
+  // and transform, or one made elsewhere; its key, exactly; and the style made from it on a sprite's own context)
+  function snapStyle(s) {
+    if (typeof s === 'string') return s;
+    const D = DESC.get(s);
+    if (!D) return { foreign: s };
+    return D.kind === 4 ? { kind: 4, img: D.img, v: D.img.__v | 0, rep: D.rep, m: D.m.slice() } : { kind: D.kind, a: D.a.slice(), stops: D.stops.slice() };
+  }
+  function styleKey(s) {
+    if (typeof s === 'string') return s;
+    if (s.foreign) return 'F' + IDS(s.foreign);
+    if (s.kind === 4) return `P${IDS(s.img)}v${s.v}:${s.rep}:${s.m.map(num)}`;
+    return `G${s.kind}:${s.a.map(num)}:${s.stops.map(t => num(t[0]) + '=' + (t[1] ? t[1].map(num).join('/') : 'x')).join(';')}`;
+  }
+  function realize(gg, s) {
+    if (typeof s === 'string') return s;
+    if (s.foreign) return s.foreign;
+    if (s.kind === 4) { const p = gg.createPattern(s.img, s.rep); if (p && p.setTransform) p.setTransform(new DOMMatrix(s.m)); return p ?? 'transparent'; }
+    const r = s.kind === 1 ? gg.createLinearGradient(...s.a) : s.kind === 2 ? gg.createRadialGradient(...s.a) : gg.createConicGradient(...s.a);
+    for (const [o, c] of s.stops) if (c) r.addColorStop(o, cssOf(c));
+    return r;
+  }
+
+  // ---------- transforms: [a, b, c, d, e, f], as canvas has them (x' = a x + c y + e, y' = b x + d y + f) ----------
+  const mmul = (m, n) => [m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1], m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3], m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5]];
+  function minv(m) { const d = m[0] * m[3] - m[1] * m[2]; if (!d || !isFinite(d)) return null; return [m[3] / d, -m[1] / d, -m[2] / d, m[0] / d, (m[2] * m[5] - m[3] * m[4]) / d, (m[1] * m[4] - m[0] * m[5]) / d]; }
+  const ID = [1, 0, 0, 1, 0, 0];
+  const lin = m => m.lk ?? (m.lk = `${m[0]},${m[1]},${m[2]},${m[3]}`);   // (its linear part, exactly; transforms are never changed in place)
+  // (a similarity, a rotation and an even scale, as strokes drawn analytically need; its scale)
+  const simScale = m => { const s2 = m[0] * m[0] + m[1] * m[1], t2 = m[2] * m[2] + m[3] * m[3]; return Math.abs(s2 - t2) <= 1e-6 * Math.max(s2, t2) && Math.abs(m[0] * m[2] + m[1] * m[3]) <= 1e-6 * Math.max(s2, t2) ? Math.sqrt(s2) : 0; };
+
+  // ---------- the drawing state ----------
+  const PROPS = ['globalAlpha', 'globalCompositeOperation', 'fillStyle', 'strokeStyle', 'lineWidth', 'lineCap', 'lineJoin', 'miterLimit', 'lineDashOffset', 'font', 'textAlign', 'textBaseline', 'direction', 'letterSpacing', 'wordSpacing', 'fontKerning', 'fontStretch', 'fontVariantCaps', 'textRendering', 'shadowBlur', 'shadowColor', 'shadowOffsetX', 'shadowOffsetY', 'imageSmoothingEnabled', 'imageSmoothingQuality', 'filter'];
+  const RAW = Object.fromEntries(PROPS.map(k => [k, k + '#']));   // (where the state keeps the value each property was last set to)
+  const TEXT_PROPS = ['font', 'textAlign', 'textBaseline', 'direction', 'letterSpacing', 'wordSpacing', 'fontKerning', 'fontStretch', 'fontVariantCaps', 'textRendering'], TEXT_SET = new Set(TEXT_PROPS);
+  // (the state a new context has)
+  const DEFAULTS = (() => { const g = makeCanvas(1, 1).getContext('2d'), D = {}; for (const k of PROPS) D[k] = g[k]; return D; })();
+  // (composite operations: the Porter-Duff ones as blend factors; * marks those that change pixels outside what's drawn)
+  const OPS = {
+    'source-over': ['ONE', 'ONE_MINUS_SRC_ALPHA'], lighter: ['ONE', 'ONE'], 'destination-out': ['ZERO', 'ONE_MINUS_SRC_ALPHA'],
+    'source-atop': ['DST_ALPHA', 'ONE_MINUS_SRC_ALPHA'], 'destination-over': ['ONE_MINUS_DST_ALPHA', 'ONE'], xor: ['ONE_MINUS_DST_ALPHA', 'ONE_MINUS_SRC_ALPHA'],
+    copy: ['ONE', 'ZERO', 1], 'source-in': ['DST_ALPHA', 'ZERO', 1], 'destination-in': ['ZERO', 'SRC_ALPHA', 1], 'source-out': ['ONE_MINUS_DST_ALPHA', 'ZERO', 1], 'destination-atop': ['ONE_MINUS_DST_ALPHA', 'SRC_ALPHA', 1],
+  };
+  // (the blend modes, drawn by reading back what's under them: the separable ones, then the others)
+  const MIX = { multiply: 1, screen: 2, overlay: 3, darken: 4, lighten: 5, 'color-dodge': 6, 'color-burn': 7, 'hard-light': 8, 'soft-light': 9, difference: 10, exclusion: 11, hue: 12, saturation: 13, color: 14, luminosity: 15 };
+  const OPN = {};
+  Object.keys(OPS).forEach((k, i) => { OPN[k] = i; });
+  Object.keys(MIX).forEach((k, i) => { OPN[k] = 100 + i; });
+  // (a drawing-state value as canvas takes it, or undefined where canvas ignores it)
+  const ENUMS = { lineCap: ['butt', 'round', 'square'], lineJoin: ['round', 'bevel', 'miter'], imageSmoothingQuality: ['low', 'medium', 'high'], globalCompositeOperation: [...Object.keys(OPS), ...Object.keys(MIX)] };
+  function accept(k, v) {
+    switch (k) {
+      case 'globalAlpha': v = +v; return isFinite(v) && v >= 0 && v <= 1 ? v : undefined;
+      case 'lineWidth': case 'miterLimit': v = +v; return isFinite(v) && v > 0 ? v : undefined;
+      case 'shadowBlur': v = +v; return isFinite(v) && v >= 0 ? v : undefined;
+      case 'shadowOffsetX': case 'shadowOffsetY': case 'lineDashOffset': v = +v; return isFinite(v) ? v : undefined;
+      case 'imageSmoothingEnabled': return !!v;
+      case 'filter': return String(v);
+      case 'fillStyle': case 'strokeStyle': case 'shadowColor':
+        if (typeof v === 'string') return color(v) ? v : undefined;
+        return k !== 'shadowColor' && v && (DESC.has(v) || (self.CanvasGradient && v instanceof CanvasGradient) || (self.CanvasPattern && v instanceof CanvasPattern)) ? v : undefined;
+      default: return ENUMS[k]?.includes(String(v)) ? String(v) : undefined;
+    }
+  }
+  const warned = new Set();
+  const warn = m => { if (!warned.has(m)) { warned.add(m); console.warn('draw2d: ' + m); } };
+
+  // ---------- paths ----------
+  // A path is a list of commands {op, a, M}: the arguments in the user space of the transform M in force when each was made.
+  // flatten(): its subpaths as polylines in the canvas's pixels [{p: [x0, y0, x1, y1, …], closed}], curves to within tol.
+  function flatten(ops, tol = .2) {
+    const subs = [];
+    let cur = null, cx = 0, cy = 0, sx = 0, sy = 0, has = false;
+    const T = (M, x, y) => [M[0] * x + M[2] * y + M[4], M[1] * x + M[3] * y + M[5]];
+    const start = (x, y) => { cur = { p: [x, y], closed: false }; subs.push(cur); cx = sx = x; cy = sy = y; has = true; };
+    const to = (x, y) => { if (!has) { start(x, y); return; } cur.p.push(x, y); cx = x; cy = y; };
+    const scaleOf = M => Math.sqrt(Math.max(M[0] * M[0] + M[1] * M[1], M[2] * M[2] + M[3] * M[3]));
+    function ellipseArc(M, x, y, rx, ry, rot, a0, a1, ccw) {
+      let sw;
+      if (!ccw) { sw = a1 - a0; if (sw >= TAU) sw = TAU; else { sw %= TAU; if (sw < 0) sw += TAU; } }
+      else { sw = a0 - a1; if (sw >= TAU) sw = TAU; else { sw %= TAU; if (sw < 0) sw += TAU; } sw = -sw; }
+      const R = Math.max(rx, ry) * scaleOf(M), n = Math.max(2, Math.ceil(Math.abs(sw) / (2 * Math.acos(Math.max(-1, 1 - tol / Math.max(R, tol))))));
+      const cr = Math.cos(rot), sr = Math.sin(rot);
+      for (let i = 0; i <= n; i++) {
+        const t = a0 + sw * i / n, ex = rx * Math.cos(t), ey = ry * Math.sin(t);
+        const [X, Y] = T(M, x + ex * cr - ey * sr, y + ex * sr + ey * cr);
+        if (i === 0 && has) to(X, Y); else if (i === 0) start(X, Y); else to(X, Y);
+      }
+    }
+    for (const o of ops) {
+      const M = o.M, a = o.a;
+      switch (o.op) {
+        case 'moveTo': { const [X, Y] = T(M, a[0], a[1]); start(X, Y); break; }
+        case 'lineTo': { const [X, Y] = T(M, a[0], a[1]); to(X, Y); break; }
+        case 'closePath': if (has && cur) { cur.closed = true; start(sx, sy); subs.pop(); cur = { p: [sx, sy], closed: false }; subs.push(cur); cx = sx; cy = sy; } break;
+        case 'rect': { const [x, y, w, h] = a; const q = [T(M, x, y), T(M, x + w, y), T(M, x + w, y + h), T(M, x, y + h)]; start(...q[0]); to(...q[1]); to(...q[2]); to(...q[3]); cur.closed = true; start(...q[0]); break; }
+        case 'roundRect': {
+          const [x, y, w, h] = a, R = cornerRadii(a[4], w, h);
+          if (!R) break;
+          const sx0 = Math.sign(w) || 1, sy0 = Math.sign(h) || 1, X0 = Math.min(x, x + w), Y0 = Math.min(y, y + h), W = Math.abs(w), H = Math.abs(h);
+          // (corners: upper left, upper right, lower right, lower left, of the normalised rectangle; mirrored as w and h are)
+          let [ul, ur, lr, ll] = R;
+          if (sx0 < 0) [ul, ur, lr, ll] = [ur, ul, ll, lr];
+          if (sy0 < 0) [ul, ur, lr, ll] = [ll, lr, ur, ul];
+          start(...T(M, X0 + ul[0], Y0));
+          to(...T(M, X0 + W - ur[0], Y0)); ellipseArc(M, X0 + W - ur[0], Y0 + ur[1], ur[0], ur[1], 0, -Math.PI / 2, 0, false);
+          to(...T(M, X0 + W, Y0 + H - lr[1])); ellipseArc(M, X0 + W - lr[0], Y0 + H - lr[1], lr[0], lr[1], 0, 0, Math.PI / 2, false);
+          to(...T(M, X0 + ll[0], Y0 + H)); ellipseArc(M, X0 + ll[0], Y0 + H - ll[1], ll[0], ll[1], 0, Math.PI / 2, Math.PI, false);
+          to(...T(M, X0, Y0 + ul[1])); ellipseArc(M, X0 + ul[0], Y0 + ul[1], ul[0], ul[1], 0, Math.PI, Math.PI * 1.5, false);
+          cur.closed = true; start(...T(M, x, y));
+          break;
+        }
+        case 'arc': ellipseArc(M, a[0], a[1], Math.abs(a[2]), Math.abs(a[2]), 0, a[3], a[4], !!a[5]); break;
+        case 'ellipse': ellipseArc(M, a[0], a[1], Math.abs(a[2]), Math.abs(a[3]), a[4], a[5], a[6], !!a[7]); break;
+        case 'bezierCurveTo': {
+          if (!has) start(...T(M, a[0], a[1]));
+          const p0 = [cx, cy], p1 = T(M, a[0], a[1]), p2 = T(M, a[2], a[3]), p3 = T(M, a[4], a[5]);
+          const L = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) + Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) + Math.hypot(p3[0] - p2[0], p3[1] - p2[1]);
+          const n = Math.max(2, Math.min(200, Math.ceil(Math.sqrt(L / tol) * .6)));
+          for (let i = 1; i <= n; i++) { const t = i / n, u = 1 - t; to(u * u * u * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t * t * t * p3[0], u * u * u * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t * t * t * p3[1]); }
+          break;
+        }
+        case 'quadraticCurveTo': {
+          if (!has) start(...T(M, a[0], a[1]));
+          const p0 = [cx, cy], p1 = T(M, a[0], a[1]), p2 = T(M, a[2], a[3]);
+          const L = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) + Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+          const n = Math.max(2, Math.min(200, Math.ceil(Math.sqrt(L / tol) * .6)));
+          for (let i = 1; i <= n; i++) { const t = i / n, u = 1 - t; to(u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0], u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1]); }
+          break;
+        }
+        case 'arcTo': {
+          if (!has) { start(...T(M, a[0], a[1])); break; }
+          const Mi = minv(M); if (!Mi) break;
+          const P0 = T(Mi, cx, cy), [x1, y1, x2, y2, r] = a;
+          const v1 = [P0[0] - x1, P0[1] - y1], v2 = [x2 - x1, y2 - y1], l1 = Math.hypot(...v1), l2 = Math.hypot(...v2);
+          const cr = v1[0] * v2[1] - v1[1] * v2[0];
+          if (!r || !l1 || !l2 || Math.abs(cr) < 1e-9) { to(...T(M, x1, y1)); break; }
+          const cosA = (v1[0] * v2[0] + v1[1] * v2[1]) / (l1 * l2), ang = Math.acos(Math.max(-1, Math.min(1, cosA))), d = r / Math.tan(ang / 2);
+          const t1 = [x1 + v1[0] / l1 * d, y1 + v1[1] / l1 * d], t2 = [x1 + v2[0] / l2 * d, y1 + v2[1] / l2 * d];
+          const bis = [v1[0] / l1 + v2[0] / l2, v1[1] / l1 + v2[1] / l2], bl = Math.hypot(...bis), h = r / Math.sin(ang / 2);
+          const c = [x1 + bis[0] / bl * h, y1 + bis[1] / bl * h];
+          const s0 = Math.atan2(t1[1] - c[1], t1[0] - c[0]), s1 = Math.atan2(t2[1] - c[1], t2[0] - c[0]);
+          to(...T(M, t1[0], t1[1]));
+          ellipseArc(M, c[0], c[1], r, r, 0, s0, s1, cr > 0);
+          break;
+        }
+      }
+    }
+    return subs.filter(s => s.p.length >= 2);
+  }
+  // (a polygon's winding, 1 or −1, if it's convex (and not all in a line); else 0)
+  function convexSign(P) {
+    if (P.length < 3) return 0;
+    let sg = 0, area = 0;
+    for (let i = 0; i < P.length; i++) {
+      const a = P[i], b = P[(i + 1) % P.length], c = P[(i + 2) % P.length], cr = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+      area += a[0] * b[1] - b[0] * a[1];
+      if (Math.abs(cr) < 1e-9) continue;
+      if (sg && Math.sign(cr) !== sg) return 0;
+      sg = Math.sign(cr);
+    }
+    return Math.abs(area) > 1e-9 ? Math.sign(area) : 0;
+  }
+  // (a convex polygon cut to a rectangle)
+  function cutPoly(P, x0, y0, x1, y1) {
+    for (const [ax, lim, keep] of [[0, x0, 1], [0, x1, -1], [1, y0, 1], [1, y1, -1]]) {
+      const out = [];
+      for (let i = 0; i < P.length; i++) {
+        const a = P[i], b = P[(i + 1) % P.length], ina = (a[ax] - lim) * keep >= 0, inb = (b[ax] - lim) * keep >= 0;
+        if (ina) out.push(a);
+        if (ina !== inb) { const k = (lim - a[ax]) / (b[ax] - a[ax]); out.push([a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k]); }
+      }
+      P = out;
+      if (P.length < 3) return P;
+    }
+    return P;
+  }
+  // (roundRect()'s radii, as the four corners' [rx, ry], scaled down where they would overlap; null if invalid)
+  function cornerRadii(r, w, h) {
+    let L = Array.isArray(r) ? r : [r ?? 0];
+    if (!L.length || L.length > 4) return null;
+    L = L.map(v => typeof v === 'number' ? [v, v] : [v?.x ?? 0, v?.y ?? 0]);
+    if (L.some(v => !(v[0] >= 0 && v[1] >= 0))) return null;
+    const C = L.length === 1 ? [L[0], L[0], L[0], L[0]] : L.length === 2 ? [L[0], L[1], L[0], L[1]] : L.length === 3 ? [L[0], L[1], L[2], L[1]] : L;
+    const W = Math.abs(w), H = Math.abs(h);
+    const k = Math.min(1, W / (C[0][0] + C[1][0] || 1), W / (C[3][0] + C[2][0] || 1), H / (C[0][1] + C[3][1] || 1), H / (C[1][1] + C[2][1] || 1));
+    return C.map(v => [v[0] * k, v[1] * k]);
+  }
+  // (a path's first point in the canvas's pixels: where its sprites are anchored)
+  function anchorOf(ops) {
+    for (const o of ops) if (o.op !== 'closePath') { const M = o.M; return [M[0] * o.a[0] + M[2] * o.a[1] + M[4], M[1] * o.a[0] + M[3] * o.a[1] + M[5]]; }
+    return null;
+  }
+  // (a path's bounds in the canvas's pixels, generously: control points and each arc's whole ellipse)
+  function pathBounds(ops) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const add = (M, x, y) => { const X = M[0] * x + M[2] * y + M[4], Y = M[1] * x + M[3] * y + M[5]; if (X < x0) x0 = X; if (X > x1) x1 = X; if (Y < y0) y0 = Y; if (Y > y1) y1 = Y; };
+    for (const o of ops) {
+      const M = o.M, a = o.a;
+      switch (o.op) {
+        case 'moveTo': case 'lineTo': add(M, a[0], a[1]); break;
+        case 'rect': case 'roundRect': add(M, a[0], a[1]); add(M, a[0] + a[2], a[1]); add(M, a[0], a[1] + a[3]); add(M, a[0] + a[2], a[1] + a[3]); break;
+        case 'arc': case 'ellipse': { const rx = Math.abs(a[2]), ry = o.op === 'arc' ? rx : Math.abs(a[3]), r = Math.max(rx, ry); add(M, a[0] - r, a[1] - r); add(M, a[0] + r, a[1] - r); add(M, a[0] - r, a[1] + r); add(M, a[0] + r, a[1] + r); break; }
+        case 'arcTo': add(M, a[0], a[1]); add(M, a[2], a[3]); break;
+        case 'bezierCurveTo': add(M, a[0], a[1]); add(M, a[2], a[3]); add(M, a[4], a[5]); break;
+        case 'quadraticCurveTo': add(M, a[0], a[1]); add(M, a[2], a[3]); break;
+      }
+    }
+    return x0 <= x1 ? [x0, y0, x1, y1] : null;
+  }
+  // (replay a path on a 2D context, each command in its own transform, moved by (dx, dy) pixels)
+  function replay(g, ops, dx, dy) {
+    g.beginPath();
+    let lastM = null;
+    for (const o of ops) {
+      if (o.M !== lastM) { const M = o.M; g.setTransform(M[0], M[1], M[2], M[3], M[4] + dx, M[5] + dy); lastM = M; }
+      g[o.op](...o.a);
+    }
+  }
+  const ops2d = (p, M) => (p.__ops ?? []).map(o => ({ op: o.op, a: o.a, M }));
+  // A sprite's paths (a fill's, or a clip's, one or more): its key (each command exactly, with its transform's linear part and its
+  // translation from the first command's), its anchor A (the first command's first point, in the canvas's pixels) and its commands
+  // in transforms about A (T: their translations made from the key's numbers alone, so that its drawing is what its key says).
+  function opsSpec(lists) {
+    let first = null;
+    for (const ops of lists) { first = ops.find(o => o.op !== 'closePath'); if (first) break; }
+    if (!first) return null;
+    const M0 = first.M, rel = [M0[0] * first.a[0] + M0[2] * first.a[1], M0[1] * first.a[0] + M0[3] * first.a[1]];
+    let key = '';
+    const T = lists.map(ops => {
+      key += '#';
+      let lastM = null, TM = null;
+      return ops.map(o => {
+        const M = o.M;
+        if (M !== lastM) {
+          const dx = M[4] - M0[4], dy = M[5] - M0[5];
+          key += '|' + lin(M) + ',' + dx + ',' + dy;
+          TM = [M[0], M[1], M[2], M[3], dx - rel[0], dy - rel[1]]; lastM = M;
+        }
+        key += o.op + ':' + num(o.a) + ';';
+        return { op: o.op, a: o.a, M: TM };
+      });
+    });
+    // (another transform about the anchor too, with its part of a key)
+    const about = M => { const dx = M[4] - M0[4], dy = M[5] - M0[5]; return { k: lin(M) + ',' + dx + ',' + dy, T: [M[0], M[1], M[2], M[3], dx - rel[0], dy - rel[1]] }; };
+    return { key, A: [M0[4] + rel[0], M0[5] + rel[1]], T, about };
+  }
+
+  // ---------- strokes, as pieces whose coverage is shaded ----------
+  // A stroke is drawn as segments with round or flat ends (an end is round where segments join, and at the path's ends if its caps
+  // are), and a wedge for each miter join; their coverages are combined by taking the largest, in a coverage buffer, and the
+  // stroke's paint is then laid through it: so a stroke that crosses itself is still painted once, as canvas paints it. (Bevel joins
+  // come out round.)
+  function strokePieces(subs, hw, cap, join, miter, dash, dashOff, out) {
+    if (dash && dash.length) subs = dashed(subs, dash, dashOff);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const box = (x, y, r) => { if (x - r < x0) x0 = x - r; if (y - r < y0) y0 = y - r; if (x + r > x1) x1 = x + r; if (y + r > y1) y1 = y + r; };
+    for (const s of subs) {
+      // (without repeated points)
+      const P = [s.p[0], s.p[1]];
+      for (let i = 2; i < s.p.length; i += 2) if (Math.abs(s.p[i] - P[P.length - 2]) > 1e-6 || Math.abs(s.p[i + 1] - P[P.length - 1]) > 1e-6) P.push(s.p[i], s.p[i + 1]);
+      let closed = s.closed;
+      if (closed && P.length > 2 && Math.abs(P[0] - P[P.length - 2]) < 1e-6 && Math.abs(P[1] - P[P.length - 1]) < 1e-6) P.length -= 2;
+      const n = P.length / 2;
+      if (n === 1) {
+        // (a subpath of no length: a dot with round caps, a square with square ones, nothing with butt ones)
+        if (closed || cap === 'butt') continue;
+        if (cap === 'round') out.push([P[0], P[1], P[0], P[1], hw, 1, 1]);
+        else out.push([P[0] - hw, P[1], P[0] + hw, P[1], hw, 0, 0]);
+        box(P[0], P[1], hw * 1.5);
+        continue;
+      }
+      if (n === 2) closed = false;
+      const nseg = closed ? n : n - 1, rc = cap === 'round' ? 1 : 0;
+      for (let i = 0; i < nseg; i++) {
+        let ax = P[2 * i], ay = P[2 * i + 1];
+        const j = (i + 1) % n;
+        let bx = P[2 * j], by = P[2 * j + 1];
+        const first = !closed && i === 0, last = !closed && i === nseg - 1;
+        if (cap === 'square' && (first || last)) {
+          const L = Math.hypot(bx - ax, by - ay) || 1, dx = (bx - ax) / L * hw, dy = (by - ay) / L * hw;
+          if (first) { ax -= dx; ay -= dy; } if (last) { bx += dx; by += dy; }
+        }
+        out.push([ax, ay, bx, by, hw, first ? rc : 1, last ? rc : 1]);
+        box(ax, ay, hw); box(bx, by, hw);
+      }
+      if (join === 'miter') {
+        for (let i = closed ? 0 : 1; i < (closed ? n : n - 1); i++) {
+          const p = (i - 1 + n) % n, q = (i + 1) % n, vx = P[2 * i], vy = P[2 * i + 1];
+          let d1x = vx - P[2 * p], d1y = vy - P[2 * p + 1], d2x = P[2 * q] - vx, d2y = P[2 * q + 1] - vy;
+          const l1 = Math.hypot(d1x, d1y), l2 = Math.hypot(d2x, d2y);
+          if (!l1 || !l2) continue;
+          d1x /= l1; d1y /= l1; d2x /= l2; d2y /= l2;
+          const cr = d1x * d2y - d1y * d2x;
+          if (Math.abs(cr) < 1e-6) continue;
+          const s = cr > 0 ? -1 : 1, n1x = -d1y * s, n1y = d1x * s, n2x = -d2y * s, n2y = d2x * s, dn = 1 + n1x * n2x + n1y * n2y;
+          if (dn < 1e-6) continue;
+          const mx = (n1x + n2x) / dn, my = (n1y + n2y) / dn;
+          if (Math.hypot(mx, my) > miter) continue;
+          out.push([vx, vy, vx + n1x * hw, vy + n1y * hw, vx + mx * hw, vy + my * hw, vx + n2x * hw, vy + n2y * hw]);
+          box(vx + mx * hw, vy + my * hw, 1);
+        }
+      }
+    }
+    return x0 <= x1 ? [x0, y0, x1, y1] : null;
+  }
+  // (a dashed stroke's dashes, as open subpaths)
+  function dashed(subs, dash, off) {
+    const out = [], total = dash.reduce((a, b) => a + b, 0);
+    if (!(total > 0)) return subs;
+    for (const s of subs) {
+      const p = s.closed ? [...s.p, s.p[0], s.p[1]] : s.p;
+      let k = 0, left = 0, on = true, ph = ((off % total) + total) % total;
+      while (ph >= dash[k]) { ph -= dash[k]; k = (k + 1) % dash.length; on = !on; }
+      left = dash[k] - ph;
+      let cur = on ? [p[0], p[1]] : null;
+      for (let i = 2; i < p.length; i += 2) {
+        let ax = p[i - 2], ay = p[i - 1];
+        const bx = p[i], by = p[i + 1];
+        let L = Math.hypot(bx - ax, by - ay);
+        while (L > 0) {
+          const step = Math.min(L, left), f = step / L, nx = ax + (bx - ax) * f, ny = ay + (by - ay) * f;
+          if (on) cur.push(nx, ny);
+          ax = nx; ay = ny; L -= step; left -= step;
+          if (left <= 1e-9) {
+            if (on && cur.length >= 4) out.push({ p: cur, closed: false });
+            on = !on; k = (k + 1) % dash.length; left = dash[k];
+            cur = on ? [ax, ay] : null;
+          }
+        }
+      }
+      if (on && cur && cur.length >= 4) out.push({ p: cur, closed: false });
+    }
+    return out;
+  }
+
+  // ---------- GL ----------
+  let gl = null, prog = null, loc = null, vao = null, cornerBuf = null, instBuf = null, instCap = 0, paintTex = null, paintRows = 0, covT = null, dstT = null, unpremul = null, EMPTY = null;
+  const VS = `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 aC;
+layout(location = 1) in vec4 iA; layout(location = 2) in vec4 iB; layout(location = 3) in vec4 iC; layout(location = 4) in vec4 iD;
+layout(location = 5) in vec4 iE; layout(location = 6) in vec4 iF; layout(location = 7) in vec4 iG; layout(location = 8) in vec4 iH;
+uniform vec2 uSize;
+flat out vec4 vB, vC, vD, vE, vF, vG, vH;
+void main() {
+  vec2 p = iA.xy + iA.zw * aC.x + iB.xy * aC.y;
+  vB = iB; vC = iC; vD = iD; vE = iE; vF = iF; vG = iG; vH = iH;
+  gl_Position = vec4(p.x / uSize.x * 2. - 1., 1. - p.y / uSize.y * 2., 0., 1.);
+}`;
+  // Kinds: 0 a sprite, 1 a coverage sprite (painted), 2 a parallelogram, 3 a disc, 4 a stroke's segment, 5 a convex quadrilateral
+  // (a miter wedge, or a fill), 6 a stroke's coverage (painted), 7 an image, 8 a ring, 11 a convex polygon of up to 32 corners (in a
+  // row of the paint table). Paint: a premultiplied colour, or (−1 − row) of the paint table. A sprite is read from atlas page 0-5,
+  // or from its own texture (6), and a clip's coverage likewise (or 7).
+  const FS = `#version 300 es
+precision highp float; precision highp int;
+uniform highp sampler2D uP0, uP1, uP2, uP3, uP4, uP5, uSpr, uMsk, uImg, uCov, uDst, uPaint;
+uniform vec2 uSize; uniform int uMode, uBlend;
+flat in vec4 vB, vC, vD, vE, vF, vG, vH;
+out vec4 oC;
+const float TAU = 6.2831853;
+vec4 page(int i, ivec2 t) {
+  if (i == 0) return texelFetch(uP0, t, 0); if (i == 1) return texelFetch(uP1, t, 0); if (i == 2) return texelFetch(uP2, t, 0);
+  if (i == 3) return texelFetch(uP3, t, 0); if (i == 4) return texelFetch(uP4, t, 0); if (i == 5) return texelFetch(uP5, t, 0);
+  if (i == 6) return texelFetch(uSpr, t, 0);
+  return texelFetch(uMsk, t, 0);
+}
+// (a pixel's overlap with the band [a, b], across it: c is the pixel's centre)
+float ov(float c, float a, float b) { return clamp(min(b, c + .5) - max(a, c - .5), 0., 1.); }
+float paraCov(vec2 p, vec2 o, vec2 u, vec2 v) {
+  vec2 nu = vec2(-u.y, u.x), nv = vec2(-v.y, v.x);
+  float lu = length(nu), lv = length(nv);
+  if (lu < 1e-9 || lv < 1e-9) return 0.;
+  nu /= lu; nv /= lv;
+  float e1 = dot(u, nv), e2 = dot(v, nu);
+  return ov(dot(p - o, nv), min(0., e1), max(0., e1)) * ov(dot(p - o, nu), min(0., e2), max(0., e2));
+}
+float segCov(vec2 p, vec2 a, vec2 b, float hw, float ra, float rb) {
+  vec2 ab = b - a; float L = length(ab);
+  vec2 dir = L > 1e-9 ? ab / L : vec2(1, 0), nrm = vec2(-dir.y, dir.x);
+  float u = dot(p - a, dir), v = dot(p - a, nrm);
+  if (ra > .5 && u < 0.) return ov(length(vec2(u, v)), -hw, hw);
+  if (rb > .5 && u > L) return ov(length(vec2(u - L, v)), -hw, hw);
+  float c = ov(v, -hw, hw);
+  if (ra < .5) c *= ov(u, 0., 1e9);
+  if (rb < .5) c *= ov(u, -1e9, L);
+  return c;
+}
+float edgeD(vec2 p, vec2 a, vec2 b, float s) { vec2 e = b - a; float l = length(e); if (l < 1e-9) return -1e9; return dot(p - a, s * vec2(e.y, -e.x) / l); }
+float polyNCov(vec2 p, int row, int n, float s) {
+  float d = -1e9;
+  vec2 a = texelFetch(uPaint, ivec2(0, row), 0).xy, v0 = a;
+  for (int i = 1; i <= 32; i++) {
+    if (i > n) break;
+    vec4 t = texelFetch(uPaint, ivec2(i >> 1, row), 0);
+    vec2 b = i == n ? v0 : (i & 1) == 0 ? t.xy : t.zw;
+    d = max(d, edgeD(p, a, b, s));
+    a = b;
+  }
+  return clamp(.5 - d, 0., 1.);
+}
+float polyCov(vec2 p, vec2 q0, vec2 q1, vec2 q2, vec2 q3) {
+  float ar = (q0.x * q1.y - q1.x * q0.y) + (q1.x * q2.y - q2.x * q1.y) + (q2.x * q3.y - q3.x * q2.y) + (q3.x * q0.y - q0.x * q3.y);
+  float s = ar > 0. ? 1. : -1.;
+  float d = max(max(edgeD(p, q0, q1, s), edgeD(p, q1, q2, s)), max(edgeD(p, q2, q3, s), edgeD(p, q3, q0, s)));
+  return clamp(.5 - d, 0., 1.);
+}
+vec4 pre(vec4 c) { return vec4(c.rgb * c.a, c.a); }
+vec4 paintAt(vec2 p) {
+  if (vE.x > -.5) return vE;
+  int row = int(-vE.x - .5);
+  vec4 h = texelFetch(uPaint, ivec2(0, row), 0), m = texelFetch(uPaint, ivec2(1, row), 0), m2 = texelFetch(uPaint, ivec2(2, row), 0);
+  vec2 u = vec2(m.x * p.x + m.z * p.y + m2.x, m.y * p.x + m.w * p.y + m2.y);
+  vec4 g0 = texelFetch(uPaint, ivec2(3, row), 0), g1 = texelFetch(uPaint, ivec2(4, row), 0);
+  int type = int(h.x + .5);
+  float t = 0.;
+  if (type == 1) { vec2 d = g0.zw - g0.xy; float dd = dot(d, d); if (dd == 0.) return vec4(0); t = dot(u - g0.xy, d) / dd; }
+  else if (type == 2) {
+    vec2 c0 = g0.xy, c1 = vec2(g0.w, g1.x); float r0 = g0.z, r1 = g1.y;
+    vec2 cd = c1 - c0, pd = u - c0; float dr = r1 - r0;
+    float a = dot(cd, cd) - dr * dr, b = dot(pd, cd) + r0 * dr, c = dot(pd, pd) - r0 * r0;
+    if (abs(a) < 1e-9) { if (abs(b) < 1e-9) return vec4(0); t = c / (2. * b); if (r0 + t * dr < 0.) return vec4(0); }
+    else {
+      float disc = b * b - a * c; if (disc < 0.) return vec4(0);
+      float s = sqrt(disc), w1 = (b + s) / a, w2 = (b - s) / a;
+      if (r0 + max(w1, w2) * dr >= 0.) t = max(w1, w2); else if (r0 + min(w1, w2) * dr >= 0.) t = min(w1, w2); else return vec4(0);
+    }
+  }
+  else if (type == 3) { t = fract((atan(u.y - g0.z, u.x - g0.y) - g0.x) / TAU); }
+  else if (type == 4) {
+    vec2 q = vec2(g0.x * u.x + g0.z * u.y + g1.x, g0.y * u.x + g0.w * u.y + g1.y) / g1.zw;
+    int rep = int(h.y + .5);
+    if (((rep & 1) == 0 && (q.x < 0. || q.x > 1.)) || ((rep & 2) == 0 && (q.y < 0. || q.y > 1.))) return vec4(0);
+    return texture(uImg, q);
+  }
+  int n = int(h.y + .5);
+  vec4 o0 = texelFetch(uPaint, ivec2(5, row), 0), o1 = texelFetch(uPaint, ivec2(6, row), 0);
+  float offs[8] = float[8](o0.x, o0.y, o0.z, o0.w, o1.x, o1.y, o1.z, o1.w);
+  vec4 c = texelFetch(uPaint, ivec2(7, row), 0);
+  if (t <= offs[0]) return pre(c);
+  for (int i = 1; i < 8; i++) {
+    if (i >= n) break;
+    vec4 c2 = texelFetch(uPaint, ivec2(7 + i, row), 0);
+    if (t < offs[i]) return pre(mix(c, c2, (t - offs[i - 1]) / max(offs[i] - offs[i - 1], 1e-9)));
+    c = c2;
+  }
+  return pre(c);
+}
+float hardL(float s, float d) { return s <= .5 ? d * 2. * s : d + (2. * s - 1.) - d * (2. * s - 1.); }
+float softL(float s, float d) { float D = d <= .25 ? ((16. * d - 12.) * d + 4.) * d : sqrt(d); return s <= .5 ? d - (1. - 2. * s) * d * (1. - d) : d + (2. * s - 1.) * (D - d); }
+float sep(float s, float d) {
+  if (uBlend == 1) return s * d; if (uBlend == 2) return s + d - s * d; if (uBlend == 3) return hardL(d, s);
+  if (uBlend == 4) return min(s, d); if (uBlend == 5) return max(s, d);
+  if (uBlend == 6) return d == 0. ? 0. : s >= 1. ? 1. : min(1., d / (1. - s));
+  if (uBlend == 7) return d >= 1. ? 1. : s <= 0. ? 0. : 1. - min(1., (1. - d) / s);
+  if (uBlend == 8) return hardL(s, d); if (uBlend == 9) return softL(s, d);
+  if (uBlend == 10) return abs(s - d); return s + d - 2. * s * d;
+}
+float lum(vec3 c) { return dot(c, vec3(.3, .59, .11)); }
+vec3 setLum(vec3 c, float l) {
+  c += l - lum(c); l = lum(c);
+  float n = min(c.r, min(c.g, c.b)), x = max(c.r, max(c.g, c.b));
+  if (n < 0.) c = l + (c - l) * l / (l - n);
+  if (x > 1.) c = l + (c - l) * (1. - l) / (x - l);
+  return c;
+}
+float sat(vec3 c) { return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b)); }
+vec3 setSat(vec3 c, float s) { float n = min(c.r, min(c.g, c.b)), x = max(c.r, max(c.g, c.b)); return x > n ? (c - n) * s / (x - n) : vec3(0); }
+vec3 blend(vec3 s, vec3 d) {
+  if (uBlend == 12) return setLum(setSat(s, sat(d)), lum(d)); if (uBlend == 13) return setLum(setSat(d, sat(s)), lum(d));
+  if (uBlend == 14) return setLum(s, lum(d)); if (uBlend == 15) return setLum(d, lum(s));
+  return vec3(sep(s.r, d.r), sep(s.g, d.g), sep(s.b, d.b));
+}
+void main() {
+  vec2 p = vec2(gl_FragCoord.x, uSize.y - gl_FragCoord.y);
+  int kind = int(vB.z + .5);
+  float cov = 1.; vec4 src = vec4(0); bool painted = true;
+  if (kind <= 1) {
+    ivec2 t = ivec2(floor(p - vC.xy));
+    if (t.x < 0 || t.y < 0 || t.x >= int(vC.z) || t.y >= int(vC.w)) { cov = 0.; painted = false; }
+    else { vec4 s = page(int(vB.w + .5), t + ivec2(vD.xy)); if (kind == 0) { src = s; painted = false; } else cov = s.a / vD.z; }
+  }
+  else if (kind == 2) cov = paraCov(p, vC.xy, vC.zw, vD.xy);
+  else if (kind == 3) cov = ov(length(p - vC.xy), -vC.z, vC.z);
+  else if (kind == 4) cov = segCov(p, vC.xy, vC.zw, vD.x, vD.y, vD.z);
+  else if (kind == 5) cov = polyCov(p, vC.xy, vC.zw, vD.xy, vD.zw);
+  else if (kind == 6) cov = p.x < vC.x || p.y < vC.y || p.x > vC.z || p.y > vC.w ? 0. : texelFetch(uCov, ivec2(gl_FragCoord.xy), 0).r;
+  else if (kind == 7) {
+    mat2 A = mat2(vC.zw, vD.xy); float det = determinant(A);
+    if (abs(det) < 1e-12) cov = 0.;
+    else { vec2 l = inverse(A) * (p - vC.xy); cov = paraCov(p, vC.xy, vC.zw, vD.xy); src = texture(uImg, mix(vE.xy, vE.zw, l)); }
+    painted = false;
+  }
+  else if (kind == 8) cov = ov(length(p - vC.xy) - vC.z, -vC.w, vC.w);
+  else if (kind == 11) cov = polyNCov(p, int(vD.x + .5), int(vD.y + .5), vD.z);
+  if (uMode == 1) { oC = vec4(cov); return; }
+  if (painted) src = paintAt(p);
+  float k = cov * vG.w * ov(p.x, vF.x, vF.z) * ov(p.y, vF.y, vF.w);
+  if (vH.z > 0.) { ivec2 t = ivec2(floor(p - vH.xy)); k *= t.x < 0 || t.y < 0 || t.x >= int(vH.z) || t.y >= int(vH.w) ? 0. : page(int(vG.z + .5), t + ivec2(vG.xy)).a; }
+  vec4 s = src * k;
+  if (uMode == 2) {
+    vec4 d = texelFetch(uDst, ivec2(gl_FragCoord.xy), 0);
+    vec3 cs = s.a > 0. ? s.rgb / s.a : vec3(0), cd = d.a > 0. ? d.rgb / d.a : vec3(0);
+    oC = vec4(s.rgb * (1. - d.a) + d.rgb * (1. - s.a) + s.a * d.a * blend(cs, cd), s.a + d.a * (1. - s.a));
+    return;
+  }
+  oC = s;
+}`;
+  const UNPREMUL = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+out vec4 oC;
+void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0. ? vec4(c.rgb / c.a, c.a) : vec4(0); }`;
+  function init() {
+    if (prog) return;
+    gl = GL.init();
+    const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error('draw2d shader: ' + gl.getShaderInfoLog(x)); return x; };
+    prog = gl.createProgram(); gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error('draw2d link: ' + gl.getProgramInfoLog(prog));
+    loc = {};
+    const UNITS = { uP0: 0, uP1: 1, uP2: 2, uP3: 3, uP4: 4, uP5: 5, uSpr: U_SPR, uMsk: U_MSK, uImg: U_IMG, uCov: U_COV, uDst: U_DST, uPaint: U_PAINT };
+    for (const n of ['uSize', 'uMode', 'uBlend', ...Object.keys(UNITS)]) loc[n] = gl.getUniformLocation(prog, n);
+    gl.useProgram(prog);
+    for (const [n, u] of Object.entries(UNITS)) gl.uniform1i(loc[n], u);
+    const prev = gl.getParameter(gl.VERTEX_ARRAY_BINDING);
+    vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    cornerBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    instBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+    for (let i = 1; i <= 8; i++) { gl.enableVertexAttribArray(i); gl.vertexAttribDivisor(i, 1); }
+    gl.bindVertexArray(prev);
+    gl.activeTexture(gl.TEXTURE0 + U_SCRATCH); paintTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, paintTex); setNearest();
+    // (a transparent pixel: a panel not drawn this frame, and any unit the program samples that has nothing of its own)
+    EMPTY = { tex: gl.createTexture(), w: 1, h: 1 };
+    gl.bindTexture(gl.TEXTURE_2D, EMPTY.tex); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4)); setNearest();
+    unpremul = GL.program('d2unpremul', UNPREMUL);
+  }
+  function setNearest(wrap = gl.CLAMP_TO_EDGE) {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+  }
+  // (an RGBA8 texture uploaded from a canvas or image data: premultiplied, top row first; counted in GL.stats)
+  function upload(tex, src, x, y, w, h, alloc) {
+    gl.activeTexture(gl.TEXTURE0 + U_SCRATCH); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    if (alloc) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, alloc[0], alloc[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    if (src) {
+      if (w === src.width && h === src.height) gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, src);
+      else gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, src);
+      GL.stats.uploads++; GL.stats.uploadBytes += w * h * 4;
+    }
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  }
+  // (the 2D canvases sprites are drawn on: on the CPU (willReadFrequently), so that a sprite's pixels come from the same rasterizer
+  // however big the canvas is (a browser may draw a big canvas on the GPU, a small one on the CPU, with different antialiasing))
+  const spriteCanvas = (w, h) => { const c = makeCanvas(w, h); return [c, c.getContext('2d', { willReadFrequently: true })]; };
+  // (a sprite is drawn at the top left of a canvas its own size, and copied from there to where it goes, so that its pixels don't
+  // depend on where it goes: a rasterizer's rounding can depend on where on its canvas a shape is drawn)
+  let scratch = null, scratchG = null;
+  function drawSprite(r) {
+    if (!scratch) [scratch, scratchG] = spriteCanvas(r.w, r.h);
+    scratch.width = r.w; scratch.height = r.h;
+    if (recent.length < 200) recent.push(`${r.w}x${r.h} ${r.key}`);
+    try { r.raster(scratchG, 0, 0); } catch (e) { warn(`a sprite couldn't be drawn (${e.message})`); }
+    stats.rasters++;
+    return scratch;
+  }
+
+  // ---------- the atlas ----------
+  // Sprites, each named by its key: in pages of 2048², filled with shelves of the blocks that flushes upload (a block holds a
+  // flush's new sprites), or, over 1024 wide or tall, in textures of their own. A sprite's pixels are never changed once drawn. A
+  // flush first looks up every sprite it draws; its new ones then go where there's room, or into a page emptied for them, the least
+  // lately used of those none of its sprites are on; or, if every page has one of its sprites, into textures of their own, for that
+  // draw only.
+  const pages = [], ATLAS = new Map();   // (key → {page, x, y, w, h, o, a0} or, in a texture of its own, {tex, …})
+  let tick = 0, bigBytes = 0;
+  const stats = { own: 0, rasters: 0, evictions: 0 }, recent = [];   // (and the keys of the sprites made lately, for looking into what a frame uploads)
+  function newPage() {
+    const t = gl.createTexture(); upload(t, null, 0, 0, 0, 0, [PAGE, PAGE]); gl.bindTexture(gl.TEXTURE_2D, t); setNearest();
+    const P = { tex: t, shelves: [], top: 0, keys: new Set(), last: 0 }; pages.push(P); return P;
+  }
+  function placeIn(P, w, h) {
+    for (const s of P.shelves) if (s.h >= h && s.h <= h * 1.5 + 8 && s.x + w <= PAGE) { const x = s.x; s.x += w; return [x, s.y]; }
+    if (P.top + h > PAGE) return null;
+    const s = { y: P.top, h, x: w }; P.shelves.push(s); P.top += h;
+    return [0, s.y];
+  }
+  // (room for a block of w × h: [page, x, y], or null if every page that has no room has a sprite in `need`)
+  function allocBlock(w, h, need) {
+    for (let i = 0; i < pages.length; i++) { const at = placeIn(pages[i], w, h); if (at) return [i, ...at]; }
+    if (pages.length < PAGES) { const at = placeIn(newPage(), w, h); return [pages.length - 1, ...at]; }
+    let v = -1;
+    for (let i = 0; i < pages.length; i++) if (!need.has(i) && (v < 0 || pages[i].last < pages[v].last)) v = i;
+    if (v < 0) return null;
+    const P = pages[v];
+    for (const k of P.keys) ATLAS.delete(k);
+    P.keys.clear(); P.shelves = []; P.top = 0; stats.evictions++;
+    return [v, ...placeIn(P, w, h)];
+  }
+  // (a sprite drawn into a texture of its own)
+  function ownTexture(r) {
+    const c = drawSprite(r), tex = gl.createTexture();
+    upload(tex, c, 0, 0, r.w, r.h, [r.w, r.h]); gl.bindTexture(gl.TEXTURE_2D, tex); setNearest();
+    return { key: r.key, tex, x: 0, y: 0, w: r.w, h: r.h, o: r.o, a0: r.a0, last: tick };
+  }
+  // settle(reqs): every sprite a draw needs (key → request {key, w, h, o, a0, raster(g, x, y)}), found or made: key → its place;
+  // and the textures made for this draw alone, to delete once it's drawn
+  function settle(reqs) {
+    tick++;
+    const got = new Map(), make = [], need = new Set(), temps = [];
+    for (const [k, r] of reqs) {
+      const a = ATLAS.get(k);
+      if (a) { got.set(k, a); if (a.tex) a.last = tick; else need.add(a.page); }
+      else make.push(r);
+    }
+    const small = [];
+    for (const r of make) {
+      if (r.w <= BIG && r.h <= BIG) { small.push(r); continue; }
+      const a = ownTexture(r);
+      ATLAS.set(r.key, a); got.set(r.key, a); bigBytes += r.w * r.h * 4;
+    }
+    small.sort((a, b) => b.h - a.h);
+    let i = 0;
+    while (i < small.length) {
+      // (shelves across a block up to 1024 wide, as tall as it takes, up to a page)
+      const W = 1024;
+      let y = 0, x = 0, sh = 0, j = i, wmax = 0;
+      const at = [];
+      for (; j < small.length; j++) {
+        const s = small[j];
+        if (x + s.w > W) { y += sh; x = 0; sh = 0; }
+        if (y + s.h > PAGE) break;
+        at.push([x, y]); x += s.w; sh = Math.max(sh, s.h); wmax = Math.max(wmax, x);
+      }
+      const H = y + sh, blk = allocBlock(wmax, H, need);
+      if (!blk) {
+        warn('the atlas has no room this frame; sprites are drawn from textures of their own');
+        for (let k = i; k < j; k++) { const a = ownTexture(small[k]); got.set(small[k].key, a); temps.push(a.tex); stats.own++; }
+      } else {
+        const [c, g] = stageCanvas(wmax, H), P = pages[blk[0]];
+        for (let k = i; k < j; k++) g.drawImage(drawSprite(small[k]), at[k - i][0], at[k - i][1]);
+        upload(P.tex, c, blk[1], blk[2], wmax, H);
+        need.add(blk[0]);
+        for (let k = i; k < j; k++) {
+          const s = small[k], a = { key: s.key, page: blk[0], x: blk[1] + at[k - i][0], y: blk[2] + at[k - i][1], w: s.w, h: s.h, o: s.o, a0: s.a0 };
+          ATLAS.set(s.key, a); P.keys.add(s.key); got.set(s.key, a);
+        }
+      }
+      i = j;
+    }
+    for (const p of need) pages[p].last = tick;
+    // (textures of their own that this draw doesn't need: the least lately used go, beyond a budget)
+    if (bigBytes > BIG_BYTES) {
+      const old = [...ATLAS.values()].filter(a => a.tex && !reqs.has(a.key)).sort((a, b) => a.last - b.last);
+      for (const a of old) { if (bigBytes <= BIG_BYTES) break; gl.deleteTexture(a.tex); ATLAS.delete(a.key); bigBytes -= a.w * a.h * 4; }
+    }
+    return { got, temps };
+  }
+  let stage = null, stageG = null;
+  function stageCanvas(w, h) {
+    if (!stage) [stage, stageG] = spriteCanvas(w, h);
+    if (stage.width !== w || stage.height !== h) { stage.width = w; stage.height = h; }
+    else { stageG.setTransform(1, 0, 0, 1, 0, 0); stageG.clearRect(0, 0, w, h); }
+    return [stage, stageG];
+  }
+
+  // ---------- images drawn with drawImage() or as patterns ----------
+  // A canvas is uploaded when it's new or has been drawn on since (its version). One drawn again in the same frame after it's
+  // changed is uploaded into a texture for that frame, so that what was drawn with it earlier in the frame keeps its pixels.
+  const IMGS = new WeakMap(), LAYERS = new WeakMap(), frameTemps = [];
+  let frameNo = 1;
+  function imageTex(img) {
+    // (a layer's target is looked up when the frame is drawn, once that layer has drawn its own)
+    const Ly = LAYERS.get(img);
+    if (Ly && !Ly.direct) return { layer: Ly, tex: null, w: Ly.w, h: Ly.h, flip: true, id: Ly.id, v: 0 };
+    let r = IMGS.get(img);
+    const w = img.width | 0, h = img.height | 0;
+    if (!w || !h) return null;
+    const v = img.__v | 0;
+    if (!r) { r = { tex: gl.createTexture(), w: 0, h: 0, v: -1, id: nextId++, fr: 0 }; IMGS.set(img, r); }
+    if (r.w !== w || r.h !== h || r.v !== v) {
+      if (r.fr === frameNo && r.w) {
+        const tex = gl.createTexture(); upload(tex, img, 0, 0, w, h, [w, h]); frameTemps.push(tex);
+        return { tex, w, h, flip: false, id: nextId++, v };
+      }
+      upload(r.tex, img, 0, 0, w, h, r.w !== w || r.h !== h ? [w, h] : null);
+      r.w = w; r.h = h; r.v = v;
+    }
+    r.fr = frameNo;
+    return { tex: r.tex, w, h, flip: false, id: r.id, v };
+  }
+
+  // ---------- a layer ----------
+  // A frame's drawing on the layers is a recording: it starts when the UI's begins (opt.frame), and a layer not drawn on since is
+  // empty that frame.
+  let nextLayer = 1, recording = 0;
+  function layer(name, w, h, opt = {}) {
+    // (in render mode the layer's 2D canvas is drawn on and uploaded; otherwise it only measures text, so it's a pixel)
+    const c = makeCanvas(RENDER_MODE ? w : 1, RENDER_MODE ? h : 1), g = c.getContext('2d');
+    const L = { name, c, g, w, h, id: nextLayer++, direct: RENDER_MODE, panel: !!opt.panel, rec: -1, flushed: -1, version: 0 };
+    LAYERS.set(c, L);
+    // ---- the state, as the context has it (kept here too, so that recording reads no properties back) ----
+    const fresh = () => ({ ...DEFAULTS, M: ID, clips: [], dash: [] });
+    let S = fresh(), stack = [], path = [], items = [], inst = new Float32Array(FLOATS * 256), n = 0, pinst = new Float32Array(FLOATS * 256), pn = 0, paints = [], reqs = new Map(), last = null, tgt = null, straight = null;
+    const fns = new Map();
+    // (the default state, as a new canvas has it; and the context's too, which measures text)
+    function resetState() {
+      S = fresh(); stack = []; path = [];
+      if (g.reset) g.reset(); else { g.setTransform(1, 0, 0, 1, 0, 0); for (const k of PROPS) g[k] = DEFAULTS[k]; }
+    }
+    // ---- instances ----
+    function slot() { if ((n + 1) * FLOATS > inst.length) { const b = new Float32Array(inst.length * 2); b.set(inst); inst = b; } return (n++) * FLOATS; }
+    function pslot() { if ((pn + 1) * FLOATS > pinst.length) { const b = new Float32Array(pinst.length * 2); b.set(pinst); pinst = b; } return (pn++) * FLOATS; }
+    // ---- sprites ----
+    // place(spec, A, steps): a sprite (spec: {key, box, a0, draw(g, X, Y)}: its bounds about its anchor, in the canvas's pixels, and
+    // its drawing with the anchor at (X, Y)) with its anchor at A, snapped to 1/steps of a pixel: {key, I: [x, y]} (the whole pixel
+    // the anchor snaps into; the key has where within it). The sprite is requested for the flush.
+    function place(spec, A, steps) {
+      let Ix = Math.floor(A[0]), Iy = Math.floor(A[1]), qx = Math.round((A[0] - Ix) * steps) / steps, qy = Math.round((A[1] - Iy) * steps) / steps;
+      if (qx >= 1) { qx -= 1; Ix++; } if (qy >= 1) { qy -= 1; Iy++; }
+      const key = spec.key + '@' + qx + ',' + qy;
+      if (!reqs.has(key)) {
+        const b = spec.box, ox = Math.floor(b[0] + qx), oy = Math.floor(b[1] + qy);
+        const w = Math.max(1, Math.ceil(b[2] + qx) - ox), h = Math.max(1, Math.ceil(b[3] + qy) - oy);
+        reqs.set(key, { key, w, h, o: [ox, oy], a0: spec.a0, h1: strHash(key), raster: (gg, x, y) => spec.draw(gg, x - ox + qx, y - oy + qy) });
+      }
+      return { key, I: [Ix, Iy], r: reqs.get(key) };
+    }
+    // (the clip, as a rectangle in the canvas's pixels and a coverage sprite for the rest; cached with the clip list)
+    const CLIPS = new WeakMap(), NOCLIP = { rect: [-1e9, -1e9, 1e9, 1e9], empty: false, mask: null };
+    function clipOf(clips) {
+      if (!clips.length) return NOCLIP;
+      let C = CLIPS.get(clips);
+      if (C && C.reqs === reqs) return C;
+      let r = [-1e9, -1e9, 1e9, 1e9];
+      const rest = [];
+      for (const e of clips) {
+        const o = e.ops;
+        // (a rectangle, in a transform without rotation, is exact as a rectangle)
+        if (o.length === 1 && o[0].op === 'rect' && Math.abs(o[0].M[1]) < 1e-9 && Math.abs(o[0].M[2]) < 1e-9) {
+          const M = o[0].M, a = o[0].a, xs = [M[0] * a[0] + M[4], M[0] * (a[0] + a[2]) + M[4]], ys = [M[3] * a[1] + M[5], M[3] * (a[1] + a[3]) + M[5]];
+          r = [Math.max(r[0], Math.min(...xs)), Math.max(r[1], Math.min(...ys)), Math.min(r[2], Math.max(...xs)), Math.min(r[3], Math.max(...ys))];
+        } else rest.push(e);
+      }
+      C = { rect: r, empty: r[0] >= r[2] || r[1] >= r[3], mask: null, reqs };
+      if (rest.length && !C.empty) {
+        // (the other clips' intersection, drawn as coverage over its bounds, within the rectangle's and the layer's)
+        const sp = opsSpec(rest.map(e => e.ops));
+        let b = [r[0], r[1], r[2], r[3]];
+        for (const e of rest) { const pb = pathBounds(e.ops); if (!pb) { C.empty = true; break; } b = [Math.max(b[0], pb[0] - 2), Math.max(b[1], pb[1] - 2), Math.min(b[2], pb[2] + 2), Math.min(b[3], pb[3] + 2)]; }
+        if (!sp) C.empty = true;
+        if (!C.empty) {
+          // (its bounds about the anchor, in whole pixels: part of its key, as the bounds can cut the coverage)
+          const A = sp.A, rel = [Math.floor(Math.max(b[0], 0) - A[0]), Math.floor(Math.max(b[1], 0) - A[1]), Math.ceil(Math.min(b[2], L.w) - A[0]), Math.ceil(Math.min(b[3], L.h) - A[1])];
+          if (rel[0] >= rel[2] || rel[1] >= rel[3]) C.empty = true;
+          else {
+            const rules = rest.map(e => e.rule).join(','), T = sp.T;
+            C.mask = place({ key: `C|${rules}|${rel}|${sp.key}`, box: rel, a0: 1, draw: (gg, X, Y) => {
+              T.forEach((ops, i) => { replay(gg, ops, X, Y); gg.clip(rest[i].rule); });
+              gg.setTransform(1, 0, 0, 1, 0, 0); gg.fillStyle = '#fff'; gg.fillRect(X + rel[0] - 1, Y + rel[1] - 1, rel[2] - rel[0] + 2, rel[3] - rel[1] + 2);
+            } }, A, 4);
+          }
+        }
+      }
+      CLIPS.set(clips, C);
+      return C;
+    }
+    // ---- items ----
+    // (the paint of a style: a premultiplied colour, or a paint table row; null for nothing)
+    function paintOf(style, M) {
+      if (typeof style === 'string') { const c = color(style); return c ? [c[0] * c[3], c[1] * c[3], c[2] * c[3], c[3]] : null; }
+      const D = DESC.get(style);
+      if (!D) return null;
+      // (a gradient used again in this recording in the same transform, with no stop added since, is the same row)
+      if (D.pr && D.pr.paints === paints && D.pr.M === M && D.pr.ns === (D.stops?.length ?? 0)) return D.pr.p;
+      const pr = paintRow(D, M);
+      D.pr = { paints, M, ns: D.stops?.length ?? 0, p: pr };
+      return pr;
+    }
+    function paintRow(D, M) {
+      const Mi = minv(M);
+      if (!Mi) return null;
+      const row = new Float32Array(64);
+      row[0] = D.kind; row[4] = Mi[0]; row[5] = Mi[1]; row[6] = Mi[2]; row[7] = Mi[3]; row[8] = Mi[4]; row[9] = Mi[5];
+      if (D.kind === 4) {
+        const t = imageTex(D.img);
+        if (!t) return null;
+        const P = minv(D.m) ?? ID;
+        row[1] = { repeat: 3, 'repeat-x': 1, 'repeat-y': 2, 'no-repeat': 0 }[D.rep] ?? 3;
+        row.set([P[0], P[1], P[2], P[3], P[4], P[5], t.w, t.h], 12);
+        paints.push(row);
+        return { row: paints.length - 1, img: t, rep: row[1] };
+      }
+      const st = D.stops.filter(s => s[1]).map((s, i) => [s[0], s[1], i]).sort((a, b) => a[0] - b[0] || a[2] - b[2]);
+      if (!st.length) return null;
+      row[1] = st.length;
+      if (D.kind === 1) row.set(D.a.slice(0, 4), 12);
+      else if (D.kind === 2) { row.set(D.a.slice(0, 4), 12); row[16] = D.a[4]; row[17] = D.a[5]; }
+      else row.set([D.a[0], D.a[1], D.a[2], 0], 12);
+      st.forEach((s, i) => { row[20 + i] = s[0]; row.set(s[1], 28 + i * 4); });
+      paints.push(row);
+      return { row: paints.length - 1 };
+    }
+    // (an item's common part: its quad, kind, clip and alpha; returns the item)
+    function put(kind, quad, clip, alpha, blend, extra) {
+      const o = slot(), I = inst;
+      I[o] = quad[0]; I[o + 1] = quad[1]; I[o + 2] = quad[2]; I[o + 3] = quad[3]; I[o + 4] = quad[4]; I[o + 5] = quad[5]; I[o + 6] = kind; I[o + 7] = 0;
+      for (let k = 8; k < 20; k++) I[o + k] = 0;
+      I[o + 20] = clip.rect[0]; I[o + 21] = clip.rect[1]; I[o + 22] = clip.rect[2]; I[o + 23] = clip.rect[3];
+      I[o + 24] = 0; I[o + 25] = 0; I[o + 26] = 0; I[o + 27] = alpha;
+      for (let k = 28; k < FLOATS; k++) I[o + k] = 0;
+      const it = { o, kind, blend, clip, ...extra };
+      if (clip.mask) it.cm = clip.mask;
+      items.push(it);
+      return it;
+    }
+    function setPaint(it, p) {
+      const I = inst, o = it.o;
+      if (p.row === undefined) { I[o + 16] = p[0]; I[o + 17] = p[1]; I[o + 18] = p[2]; I[o + 19] = p[3]; }
+      else { I[o + 16] = -1 - p.row; if (p.img) { it.img = p.img; it.rep = p.rep; it.smooth = S.imageSmoothingEnabled; } }
+    }
+    // (the quad covering a box, in the canvas's pixels, clipped to the layer and the clip's rectangle; null if nothing's left)
+    function boxQuad(b, clip, spill) {
+      let x0 = Math.floor(b[0]), y0 = Math.floor(b[1]), x1 = Math.ceil(b[2]), y1 = Math.ceil(b[3]);
+      if (spill) { x0 = -1; y0 = -1; x1 = L.w + 1; y1 = L.h + 1; }
+      const r = clip.rect;
+      x0 = Math.max(x0, Math.floor(r[0]), 0); y0 = Math.max(y0, Math.floor(r[1]), 0); x1 = Math.min(x1, Math.ceil(r[2]), L.w); y1 = Math.min(y1, Math.ceil(r[3]), L.h);
+      if (x0 >= x1 || y0 >= y1) return null;
+      return [x0, y0, x1 - x0, 0, 0, y1 - y0];
+    }
+    // (a gradient or pattern the shader can't paint (made elsewhere, or a gradient of more than 8 stops): the 2D canvas draws it)
+    const foreign = s => s !== null && typeof s === 'object' && (!DESC.has(s) || (DESC.get(s).stops?.length ?? 0) > 8);
+    const opOf = () => S.globalCompositeOperation;
+    const shadowed = () => (S.shadowBlur > 0 || S.shadowOffsetX || S.shadowOffsetY) && (color(S.shadowColor)?.[3] ?? 0) > 0;
+    const filtered = () => S.filter && S.filter !== 'none';
+    // (a sprite reaching far past what can be seen of the layer, through the clip, is cut to that: {box, key} about the anchor A;
+    // null if it needn't be)
+    function cutBox(A, box, clip) {
+      const r = clip.rect, vis = [Math.max(r[0], 0) - 2, Math.max(r[1], 0) - 2, Math.min(r[2], L.w) + 2, Math.min(r[3], L.h) + 2];
+      const bw = box[2] - box[0], bh = box[3] - box[1];
+      if (bw <= 4096 && bh <= 4096 && bw * bh <= 2 * Math.max(1, (vis[2] - vis[0]) * (vis[3] - vis[1])) + 65536) return null;
+      const rel = [Math.floor(Math.max(box[0], vis[0] - A[0])), Math.floor(Math.max(box[1], vis[1] - A[1])), Math.ceil(Math.min(box[2], vis[2] - A[0])), Math.ceil(Math.min(box[3], vis[3] - A[1]))];
+      return { box: rel, key: `|cut${rel}`, empty: rel[0] >= rel[2] || rel[1] >= rel[3] };
+    }
+    // Anything else: the drawing done by the 2D canvas into a sprite, whole (its paint, shadow and filter), anchored at pA (in user
+    // space), with bounds box about the anchor (in the canvas's pixels, before the shadow). key: all that the drawing is, exactly,
+    // in user space (the transform's linear part and the anchor are added); draw(g) draws it in user space.
+    function whole(key, pA, box, draw, op, clip) {
+      const M = S.M, rel = [M[0] * pA[0] + M[2] * pA[1], M[1] * pA[0] + M[3] * pA[1]], A = [rel[0] + M[4], rel[1] + M[5]];
+      const sh = shadowed(), pad = sh ? S.shadowBlur * 1.5 + 2 : 0;
+      const fp = filtered() ? Math.max(24, 3 * Math.max(0, ...[...S.filter.matchAll(/([\d.]+)px/g)].map(m => +m[1])) + 8) : 0;
+      let b = [box[0] - pad - fp, box[1] - pad - fp, box[2] + pad + fp, box[3] + pad + fp];
+      if (sh) { const sx = S.shadowOffsetX, sy = S.shadowOffsetY; b = [Math.min(b[0], b[0] + sx), Math.min(b[1], b[1] + sy), Math.max(b[2], b[2] + sx), Math.max(b[3], b[3] + sy)]; }
+      const st = {};
+      for (const k of PROPS) st[k] = k === 'fillStyle' || k === 'strokeStyle' ? snapStyle(S[k]) : S[k];
+      const dash = S.dash;
+      const sk = sh ? `|sh${S.shadowBlur},${S.shadowOffsetX},${S.shadowOffsetY},${S.shadowColor}` : '';
+      const ct = cutBox(A, b, clip);
+      if (ct?.empty) return;
+      if (ct) b = ct.box;
+      const k = `W|${key}|${lin(M)}|${num(pA)}|${styleKey(st.fillStyle)}/${styleKey(st.strokeStyle)}|${PROPS.filter(p => p !== 'globalAlpha' && p !== 'globalCompositeOperation' && p !== 'fillStyle' && p !== 'strokeStyle').map(p => st[p]).join('|')}|${dash}${sk}${ct ? ct.key : ''}`;
+      const sp = place({ key: k, box: b, a0: 1, draw: (gg, X, Y) => {
+        // (the sprite's canvas starts in the default state; only what differs from it is set, so a drawing without text sets no font)
+        for (const p of PROPS) if (p !== 'globalAlpha' && p !== 'globalCompositeOperation' && st[p] !== DEFAULTS[p]) gg[p] = p === 'fillStyle' || p === 'strokeStyle' ? realize(gg, st[p]) : st[p];
+        gg.setLineDash(dash);
+        gg.setTransform(M[0], M[1], M[2], M[3], X - rel[0], Y - rel[1]);
+        draw(gg);
+      } }, A, 4);
+      spriteItem(0, sp, clip, S.globalAlpha, op, null);
+    }
+    function spriteItem(kind, sp, clip, alpha, op, paint) {
+      const r = sp.r, x = sp.I[0] + r.o[0], y = sp.I[1] + r.o[1];
+      const q = OPS[op]?.[2] ? boxQuad([0, 0, L.w, L.h], clip, true) : boxQuad([x, y, x + r.w, y + r.h], clip);
+      if (!q) return null;
+      const it = put(kind, q, clip, alpha, op, { sp });
+      inst[it.o + 8] = x; inst[it.o + 9] = y; inst[it.o + 10] = r.w; inst[it.o + 11] = r.h; inst[it.o + 14] = r.a0;
+      if (paint) setPaint(it, paint);
+      return it;
+    }
+    // (a parallelogram's quad, grown by a pixel for its antialiasing)
+    function paraQuad(o, u, v) {
+      const xs = [o[0], o[0] + u[0], o[0] + v[0], o[0] + u[0] + v[0]], ys = [o[1], o[1] + u[1], o[1] + v[1], o[1] + u[1] + v[1]];
+      return [Math.min(...xs) - 1, Math.min(...ys) - 1, Math.max(...xs) + 1, Math.max(...ys) + 1];
+    }
+    // (a box in user space, [x0, y0, x1, y1], through a transform's linear part: its bounds, a pixel wider all round)
+    function boxOf(M, x0, y0, x1, y1) {
+      const ax = M[0] * x0, bx = M[0] * x1, cy = M[2] * y0, dy = M[2] * y1, ay = M[1] * x0, by = M[1] * x1, ey = M[3] * y0, fy = M[3] * y1;
+      return [Math.min(ax, bx) + Math.min(cy, dy) - 1, Math.min(ay, by) + Math.min(ey, fy) - 1, Math.max(ax, bx) + Math.max(cy, dy) + 1, Math.max(ay, by) + Math.max(ey, fy) + 1];
+    }
+    // ---- the drawing calls ----
+    function rectItem(x, y, w, h, clear) {
+      if (!(isFinite(x) && isFinite(y) && isFinite(w) && isFinite(h)) || !w || !h) return;
+      const clip = clipOf(S.clips);
+      if (clip.empty) return;
+      const M = S.M, o = [M[0] * x + M[2] * y + M[4], M[1] * x + M[3] * y + M[5]], u = [M[0] * w, M[1] * w], v = [M[2] * h, M[3] * h];
+      if (clear) {
+        const q = boxQuad(paraQuad(o, u, v), clip);
+        if (!q) return;
+        const it = put(2, q, clip, 1, 'destination-out', {});
+        inst.set([o[0], o[1], u[0], u[1], v[0], v[1], 0, 0, 0, 0, 0, 1], it.o + 8);
+        return;
+      }
+      const op = opOf();
+      if (shadowed() || filtered() || foreign(S.fillStyle)) {
+        whole(`R|${num([x, y, w, h])}`, [x, y], paraQuad([0, 0], u, v), gg => gg.fillRect(x, y, w, h), op, clip);
+        return;
+      }
+      const p = paintOf(S.fillStyle, M);
+      if (!p) return;
+      const q = boxQuad(paraQuad(o, u, v), clip, OPS[op]?.[2]);
+      if (!q) return;
+      const it = put(2, q, clip, S.globalAlpha, op, {});
+      inst[it.o + 8] = o[0]; inst[it.o + 9] = o[1]; inst[it.o + 10] = u[0]; inst[it.o + 11] = u[1]; inst[it.o + 12] = v[0]; inst[it.o + 13] = v[1];
+      setPaint(it, p);
+    }
+    // Text: each string one sprite, drawn by the 2D canvas as it lays the string out, anchored at its first glyph's origin on the
+    // alphabetic baseline and snapped to a whole pixel (as canvas snaps a glyph's baseline; across, to a whole pixel where canvas
+    // may use a quarter). In a colour: drawn in it (its glyphs' edges depend on how bright it is); with a gradient: drawn in its
+    // stops' average colour, as coverage, and painted.
+    function textItem(fill, text, x, y, maxW) {
+      text = String(text);
+      if (!text || !isFinite(x) || !isFinite(y) || (maxW !== undefined && !(maxW > 0))) return;
+      const clip = clipOf(S.clips);
+      if (clip.empty) return;
+      const M = S.M, fk = S.fk ?? (S.fk = TEXT_PROPS.map(k => S[k]).join('|')), tk = S.tk ?? (S.tk = TEXT_PROPS.filter(k => k !== 'textAlign' && k !== 'textBaseline').map(k => S[k]).join('|'));
+      const Lo = layout(fk, text), width = Lo.w, sw = Math.min(width, maxW ?? width);
+      const al = S.textAlign, rtl = S.direction === 'rtl', k = al === 'center' ? .5 : al === 'right' || (al === 'end' && !rtl) || (al === 'start' && rtl) ? 1 : 0;
+      const x0 = x - k * sw, yb = y - Lo.ab;
+      const A = [M[0] * x0 + M[2] * yb + M[4], M[1] * x0 + M[3] * yb + M[5]];
+      if (![M[0], M[1], M[2], M[3], ...A].every(isFinite) || !(M[0] * M[3] - M[1] * M[2])) return;
+      // (its ink's bounds about the anchor, in user space, then in the canvas's pixels)
+      const lw = fill ? 0 : S.lineWidth / 2 * (S.lineJoin === 'miter' ? S.miterLimit : 1), pad = lw + 2;
+      const box = boxOf(M, Math.min(0, x - Lo.l - x0) - pad, y - Lo.asc - yb - pad, Math.max(sw, x + Lo.r - x0) + pad, y + Lo.desc - yb + pad);
+      const op = opOf(), style = fill ? S.fillStyle : S.strokeStyle, D = typeof style === 'string' ? null : DESC.get(style);
+      const draw = gg => { gg.textAlign = 'left'; gg.textBaseline = 'alphabetic'; fill ? gg.fillText(text, x0, yb, maxW) : gg.strokeText(text, x0, yb, maxW); };
+      const sk = fill ? 'f' : `s${S.lineWidth},${S.lineJoin},${S.miterLimit},${S.dash},${S.lineDashOffset}`;
+      if (shadowed() || filtered() || D?.kind === 4 || foreign(style)) { whole(`T|${tk}|${sk}|${maxW}|${text}`, [x0, yb], box, draw, op, clip); return; }
+      const p = paintOf(style, M);
+      if (!p) return;
+      // (drawn in a colour: its own, or its gradient's stops' average)
+      const mc = D ? D.avg ?? (D.avg = (st => [0, 1, 2, 3].map(i => st.reduce((a, s) => a + s[1][i], 0) / st.length))(D.stops.filter(s => s[1]))) : color(style);
+      if (!mc || !(mc[3] > 0)) return;
+      const css = cssOf(mc), st = TEXT_PROPS.map(k => S[k]), ls = [S.lineWidth, S.lineJoin, S.miterLimit, S.dash, S.lineDashOffset];
+      const sp = place({ key: `T|${css}|${tk}|${sk}|${lin(M)}|${maxW}|${text}`, box, a0: D ? Math.round(mc[3] * 255) / 255 : 1, draw: (gg, X, Y) => {
+        TEXT_PROPS.forEach((k, i) => { gg[k] = st[i]; });
+        gg.textAlign = 'left'; gg.textBaseline = 'alphabetic';
+        gg.fillStyle = gg.strokeStyle = css; gg.lineWidth = ls[0]; gg.lineJoin = ls[1]; gg.miterLimit = ls[2]; gg.setLineDash(ls[3]); gg.lineDashOffset = ls[4];
+        gg.setTransform(M[0], M[1], M[2], M[3], X, Y);
+        fill ? gg.fillText(text, 0, 0, maxW) : gg.strokeText(text, 0, 0, maxW);
+      } }, A, 1);
+      spriteItem(D ? 1 : 0, sp, clip, S.globalAlpha, op, D ? p : null);
+    }
+    // (a string's measures in the text state (fk): its ink's bounds as aligned, its width and its alphabetic baseline)
+    const LAYOUT = new Map();
+    function layout(fk, text) {
+      const key = fk + '\u0001' + text;
+      let Lo = LAYOUT.get(key);
+      if (Lo) return Lo;
+      const m = g.measureText(text);
+      Lo = { l: m.actualBoundingBoxLeft, r: m.actualBoundingBoxRight, asc: m.actualBoundingBoxAscent, desc: m.actualBoundingBoxDescent, w: m.width, ab: m.alphabeticBaseline ?? 0 };
+      if (LAYOUT.size > 20000) LAYOUT.clear();
+      LAYOUT.set(key, Lo);
+      return Lo;
+    }
+    function pathItem(stroke, a) {
+      let ops, rule = 'nonzero', M = S.M;
+      if (a[0] && typeof a[0] === 'object') {
+        const p = a[0];
+        if (p.__opaque) { opaquePath(stroke, p, a[1]); return; }
+        ops = ops2d(p, M); rule = a[1] ?? 'nonzero';
+      } else { ops = path; rule = a[0] ?? 'nonzero'; }
+      if (!ops.length) return;
+      const clip = clipOf(S.clips);
+      if (clip.empty) return;
+      const op = opOf(), style = stroke ? S.strokeStyle : S.fillStyle;
+      const D = typeof style === 'string' ? null : DESC.get(style);
+      if (stroke && simScale(M) && !shadowed() && !filtered() && !foreign(style)) { strokeItem(ops, simScale(M) * S.lineWidth / 2, clip, op, style); return; }
+      if (stroke || shadowed() || filtered() || foreign(style) || D?.kind === 4) {
+        // (drawn whole: its commands, and the transform it's filled or stroked in, about the anchor, so that the drawing is what its
+        // key says; drawn in a transform that just moves it there)
+        const pb = pathBounds(ops), sp = opsSpec([ops]);
+        if (!pb || !sp) return;
+        const A = sp.A, T = sp.T[0], fT = sp.about(M);
+        const reach = stroke ? S.lineWidth / 2 * Math.sqrt(M[0] * M[0] + M[1] * M[1] + M[2] * M[2] + M[3] * M[3]) * (S.lineJoin === 'miter' ? Math.max(1, S.miterLimit) : 1.5) + 2 : 2;
+        const box = [pb[0] - A[0] - reach, pb[1] - A[1] - reach, pb[2] - A[0] + reach, pb[3] - A[1] + reach];
+        S.M = [1, 0, 0, 1, A[0], A[1]];
+        whole(`${stroke ? 'S' : 'F' + rule}|${sp.key}|${fT.k}`, [0, 0], box, gg => {
+          const B = gg.getTransform(), m = fT.T;
+          replay(gg, T, B.e, B.f);
+          gg.setTransform(m[0], m[1], m[2], m[3], m[4] + B.e, m[5] + B.f); stroke ? gg.stroke() : gg.fill(rule);
+        }, op, clip);
+        S.M = M;
+        return;
+      }
+      const p = paintOf(style, M);
+      if (!p) return;
+      // (a lone circle is a disc, a lone rectangle a parallelogram)
+      if (ops.length === 1) {
+        const o = ops[0], s = simScale(o.M);
+        if ((o.op === 'arc' || (o.op === 'ellipse' && Math.abs(o.a[2]) === Math.abs(o.a[3]))) && s && isFull(o)) {
+          const Mo = o.M, c = [Mo[0] * o.a[0] + Mo[2] * o.a[1] + Mo[4], Mo[1] * o.a[0] + Mo[3] * o.a[1] + Mo[5]], R = Math.abs(o.a[2]) * s;
+          const q = boxQuad([c[0] - R - 1, c[1] - R - 1, c[0] + R + 1, c[1] + R + 1], clip, OPS[op]?.[2]);
+          if (!q) return;
+          const it = put(3, q, clip, S.globalAlpha, op, {});
+          inst[it.o + 8] = c[0]; inst[it.o + 9] = c[1]; inst[it.o + 10] = R;
+          setPaint(it, p);
+          return;
+        }
+        if (o.op === 'rect') { rectFill(o.a, o.M, clip, op, p); return; }
+      }
+      // (a convex polygon (lines and arcs, flattened), cut to the layer, is shaded as one: up to 4 corners in the instance, up to 32 in
+      // a row of the paint table)
+      if (ops.every(o => o.op === 'moveTo' || o.op === 'lineTo' || o.op === 'closePath' || o.op === 'arc' || o.op === 'ellipse')) {
+        const subs = flatten(ops, .1).filter(s => s.p.length >= 4);
+        if (subs.length === 1) {
+          let P = [];
+          const sp0 = subs[0].p;
+          for (let i = 0; i < sp0.length; i += 2) if (!P.length || Math.hypot(sp0[i] - P.at(-1)[0], sp0[i + 1] - P.at(-1)[1]) > 1e-6) P.push([sp0[i], sp0[i + 1]]);
+          if (P.length > 1 && Math.hypot(P[0][0] - P.at(-1)[0], P[0][1] - P.at(-1)[1]) < 1e-6) P.pop();
+          if (convexSign(P)) {
+            const r = clip.rect;
+            P = cutPoly(P, Math.max(r[0], 0) - 2, Math.max(r[1], 0) - 2, Math.min(r[2], L.w) + 2, Math.min(r[3], L.h) + 2);
+            if (P.length < 3) return;
+            if (P.length <= 32) {
+              const q = boxQuad([Math.min(...P.map(v => v[0])) - 1, Math.min(...P.map(v => v[1])) - 1, Math.max(...P.map(v => v[0])) + 1, Math.max(...P.map(v => v[1])) + 1], clip, OPS[op]?.[2]);
+              if (!q) return;
+              if (P.length <= 4) {
+                if (P.length === 3) P.push(P[2]);
+                const it = put(5, q, clip, S.globalAlpha, op, {});
+                inst.set(P.flat(), it.o + 8);
+                setPaint(it, p);
+                return;
+              }
+              const row = new Float32Array(64);
+              row.set(P.flat());
+              paints.push(row);
+              const it = put(11, q, clip, S.globalAlpha, op, {});
+              inst[it.o + 12] = paints.length - 1; inst[it.o + 13] = P.length; inst[it.o + 14] = convexSign(P);
+              setPaint(it, p);
+              return;
+            }
+          }
+        }
+      }
+      // (any other fill: its coverage, a sprite of its own shape, painted)
+      const pb = pathBounds(ops), sp = opsSpec([ops]);
+      if (!pb || !sp) return;
+      const A = sp.A, T = sp.T[0];
+      let box = [pb[0] - A[0] - 2, pb[1] - A[1] - 2, pb[2] - A[0] + 2, pb[3] - A[1] + 2];
+      const ct = cutBox(A, box, clip);
+      if (ct?.empty) return;
+      if (ct) box = ct.box;
+      const s = place({ key: `F|${rule}|${sp.key}${ct ? ct.key : ''}`, box, a0: 1, draw: (gg, X, Y) => { replay(gg, T, X, Y); gg.fillStyle = '#fff'; gg.fill(rule); } }, A, 4);
+      spriteItem(1, s, clip, S.globalAlpha, op, p);
+    }
+    const isFull = o => { const a0 = o.op === 'arc' ? o.a[3] : o.a[5], a1 = o.op === 'arc' ? o.a[4] : o.a[6], ccw = !!(o.op === 'arc' ? o.a[5] : o.a[7]); return ccw ? a0 - a1 >= TAU - 1e-9 : a1 - a0 >= TAU - 1e-9; };
+    function rectFill(a, M, clip, op, p) {
+      const [x, y, w, h] = a;
+      if (!w || !h) return;
+      const o = [M[0] * x + M[2] * y + M[4], M[1] * x + M[3] * y + M[5]], u = [M[0] * w, M[1] * w], v = [M[2] * h, M[3] * h];
+      const q = boxQuad(paraQuad(o, u, v), clip, OPS[op]?.[2]);
+      if (!q) return;
+      const it = put(2, q, clip, S.globalAlpha, op, {});
+      inst[it.o + 8] = o[0]; inst[it.o + 9] = o[1]; inst[it.o + 10] = u[0]; inst[it.o + 11] = u[1]; inst[it.o + 12] = v[0]; inst[it.o + 13] = v[1];
+      setPaint(it, p);
+    }
+    function strokeItem(ops, hw, clip, op, style) {
+      const p = paintOf(style, S.M);
+      if (!p || !(hw > 0)) return;
+      // (a lone full circle is a ring)
+      if (ops.length === 1 && (ops[0].op === 'arc' || (ops[0].op === 'ellipse' && Math.abs(ops[0].a[2]) === Math.abs(ops[0].a[3]))) && isFull(ops[0]) && simScale(ops[0].M) && !S.dash.length) {
+        const o = ops[0], Mo = o.M, c = [Mo[0] * o.a[0] + Mo[2] * o.a[1] + Mo[4], Mo[1] * o.a[0] + Mo[3] * o.a[1] + Mo[5]], R = Math.abs(o.a[2]) * simScale(Mo);
+        const q = boxQuad([c[0] - R - hw - 1, c[1] - R - hw - 1, c[0] + R + hw + 1, c[1] + R + hw + 1], clip, OPS[op]?.[2]);
+        if (!q) return;
+        const it = put(8, q, clip, S.globalAlpha, op, {});
+        inst[it.o + 8] = c[0]; inst[it.o + 9] = c[1]; inst[it.o + 10] = R; inst[it.o + 11] = hw;
+        setPaint(it, p);
+        return;
+      }
+      const s = simScale(S.M), subs = flatten(ops, .15), out = [];
+      const b = strokePieces(subs, hw, S.lineCap, S.lineJoin, S.miterLimit, S.dash.map(d => d * s), S.lineDashOffset * s, out);
+      if (!b || !out.length) return;
+      const q = boxQuad([b[0] - 1, b[1] - 1, b[2] + 1, b[3] + 1], clip, OPS[op]?.[2]);
+      if (!q) return;
+      // (one segment needs no coverage buffer)
+      if (out.length === 1 && out[0].length === 7) {
+        const it = put(4, q, clip, S.globalAlpha, op, {});
+        inst.set(out[0], it.o + 8);
+        setPaint(it, p);
+        return;
+      }
+      const p0 = pn;
+      for (const pc of out) {
+        const o = pslot(), I = pinst;
+        let x0, y0, x1, y1;
+        if (pc.length === 7) { const r = pc[4] + 1; x0 = Math.min(pc[0], pc[2]) - r; y0 = Math.min(pc[1], pc[3]) - r; x1 = Math.max(pc[0], pc[2]) + r; y1 = Math.max(pc[1], pc[3]) + r; }
+        else { x0 = Math.min(pc[0], pc[2], pc[4], pc[6]) - 1; y0 = Math.min(pc[1], pc[3], pc[5], pc[7]) - 1; x1 = Math.max(pc[0], pc[2], pc[4], pc[6]) + 1; y1 = Math.max(pc[1], pc[3], pc[5], pc[7]) + 1; }
+        I[o] = x0; I[o + 1] = y0; I[o + 2] = x1 - x0; I[o + 3] = 0; I[o + 4] = 0; I[o + 5] = y1 - y0; I[o + 6] = pc.length === 7 ? 4 : 5; I[o + 7] = 0;
+        for (let k = 0; k < 8; k++) I[o + 8 + k] = pc[k] ?? 0;
+        for (let k = 16; k < FLOATS; k++) I[o + k] = 0;
+      }
+      const it = put(6, q, clip, S.globalAlpha, op, { pieces: [p0, pn], cb: [q[0], q[1], q[0] + q[2], q[1] + q[5]] });
+      inst[it.o + 8] = q[0]; inst[it.o + 9] = q[1]; inst[it.o + 10] = q[0] + q[2]; inst[it.o + 11] = q[1] + q[5];
+      setPaint(it, p);
+    }
+    // (a path that can't be read back (made from SVG path data): drawn whole, over the layer, in its transform as it is)
+    function opaquePath(stroke, p, rule) {
+      const clip = clipOf(S.clips);
+      if (clip.empty) return;
+      const M = S.M, box = [-M[4], -M[5], L.w - M[4], L.h - M[5]];
+      const ls = stroke ? `${S.lineWidth},${S.lineJoin},${S.lineCap},${S.miterLimit}` : rule;
+      S.M = [1, 0, 0, 1, M[4], M[5]];
+      whole(`O${IDS(p)}|${stroke}|${ls}|${lin(M)}|${num(box)}`, [0, 0], box, gg => {
+        const B = gg.getTransform();
+        gg.setTransform(M[0], M[1], M[2], M[3], B.e, B.f); stroke ? gg.stroke(p) : gg.fill(p, rule);
+      }, opOf(), clip);
+      S.M = M;
+    }
+    function imageItem(a) {
+      const img = a[0];
+      if (!img) return;
+      const clip = clipOf(S.clips);
+      if (clip.empty) return;
+      const Ly = LAYERS.get(img), iw = Ly ? Ly.w : img.naturalWidth || img.width, ih = Ly ? Ly.h : img.naturalHeight || img.height;
+      if (!iw || !ih) return;
+      let sx = 0, sy = 0, sw = iw, sh = ih, dx, dy, dw, dh;
+      if (a.length >= 9) [, sx, sy, sw, sh, dx, dy, dw, dh] = a;
+      else if (a.length >= 5) [, dx, dy, dw, dh] = a;
+      else [, dx, dy] = a, dw = iw, dh = ih;
+      if (![sx, sy, sw, sh, dx, dy, dw, dh].every(isFinite) || !sw || !sh || !dw || !dh) return;
+      // (a source rectangle past the image's edge is cut to it, and the destination with it)
+      if (sw < 0) { sx += sw; sw = -sw; } if (sh < 0) { sy += sh; sh = -sh; }
+      const kx = dw / sw, ky = dh / sh;
+      const cx0 = Math.max(sx, 0), cy0 = Math.max(sy, 0), cx1 = Math.min(sx + sw, iw), cy1 = Math.min(sy + sh, ih);
+      if (cx0 >= cx1 || cy0 >= cy1) return;
+      dx += (cx0 - sx) * kx; dy += (cy0 - sy) * ky; dw = (cx1 - cx0) * kx; dh = (cy1 - cy0) * ky; sx = cx0; sy = cy0; sw = cx1 - cx0; sh = cy1 - cy0;
+      const M = S.M, op = opOf();
+      const o = [M[0] * dx + M[2] * dy + M[4], M[1] * dx + M[3] * dy + M[5]], u = [M[0] * dw, M[1] * dw], v = [M[2] * dh, M[3] * dh];
+      if (shadowed() || filtered()) {
+        if (Ly && !Ly.direct) warn('a layer drawn with a shadow or filter is drawn without');
+        else {
+          const r = [o[0] - M[4], o[1] - M[5]], q = paraQuad([0, 0], u, v);
+          whole(`I${IDS(img)}v${img.__v | 0}|${num([sx, sy, sw, sh, dx, dy, dw, dh])}`, [dx, dy], q, gg => gg.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh), op, clip);
+          return;
+        }
+      }
+      const t = imageTex(img);
+      if (!t || !(t.tex || t.layer)) return;
+      const q = boxQuad(paraQuad(o, u, v), clip, OPS[op]?.[2]);
+      if (!q) return;
+      const it = put(7, q, clip, S.globalAlpha, op, { img: t, smooth: S.imageSmoothingEnabled, rep: -1 });
+      let v0 = sy / t.h, v1 = (sy + sh) / t.h;
+      if (t.flip) { v0 = 1 - v0; v1 = 1 - v1; }
+      inst.set([o[0], o[1], u[0], u[1], v[0], v[1], 0, 0, sx / t.w, v0, (sx + sw) / t.w, v1], it.o + 8);
+    }
+    function putImage(a) {
+      const [img, dx, dy] = a;
+      let [, , , x = 0, y = 0, w = img.width, h = img.height] = a;
+      if (w < 0) { x += w; w = -w; } if (h < 0) { y += h; h = -h; }
+      x = Math.max(0, x); y = Math.max(0, y); w = Math.min(img.width - x, w); h = Math.min(img.height - y, h);
+      if (w <= 0 || h <= 0) return;
+      const tex = gl.createTexture(); upload(tex, img, 0, 0, img.width, img.height, [img.width, img.height]); gl.bindTexture(gl.TEXTURE_2D, tex); setNearest();
+      const o = [Math.round(dx + x), Math.round(dy + y)];
+      const q = boxQuad([o[0], o[1], o[0] + w, o[1] + h], NOCLIP);
+      if (!q) { gl.deleteTexture(tex); return; }
+      const it = put(7, q, NOCLIP, 1, 'copy', { img: { tex, w: img.width, h: img.height, id: nextId++, v: 0 }, smooth: false, rep: -1, temp: tex });
+      inst.set([o[0], o[1], w, 0, 0, h, 0, 0, x / img.width, y / img.height, (x + w) / img.width, (y + h) / img.height], it.o + 8);
+    }
+    // ---- the stand-in for the context ----
+    const METHODS = {
+      save() { g.save(); stack.push(S); S = { ...S }; },
+      restore() { g.restore(); if (stack.length) S = stack.pop(); },
+      reset() { resetState(); items = []; n = 0; pn = 0; paints = []; reqs = new Map(); },
+      setTransform(...a) { const m = a[0] && typeof a[0] === 'object' ? a[0] : null; const v = m ? [m.a ?? m.m11 ?? 1, m.b ?? m.m12 ?? 0, m.c ?? m.m21 ?? 0, m.d ?? m.m22 ?? 1, m.e ?? m.m41 ?? 0, m.f ?? m.m42 ?? 0] : a.length ? a.map(Number) : ID; if (v.every(isFinite)) S.M = v; },
+      resetTransform() { S.M = ID; },
+      getTransform() { const M = S.M; return new DOMMatrix([M[0], M[1], M[2], M[3], M[4], M[5]]); },
+      transform(a, b, c, d, e, f) { const v = [a, b, c, d, e, f].map(Number); if (v.every(isFinite)) S.M = mmul(S.M, v); },
+      translate(x, y) { if (isFinite(x) && isFinite(y)) S.M = mmul(S.M, [1, 0, 0, 1, +x, +y]); },
+      scale(x, y) { if (isFinite(x) && isFinite(y)) S.M = mmul(S.M, [+x, 0, 0, +y, 0, 0]); },
+      rotate(r) { if (isFinite(r)) { const c = Math.cos(r), s = Math.sin(r); S.M = mmul(S.M, [c, s, -s, c, 0, 0]); } },
+      beginPath() { path = []; },
+      clip(...a) {
+        let ops, rule;
+        if (a[0] && typeof a[0] === 'object') { ops = a[0].__opaque ? null : ops2d(a[0], S.M); rule = a[1] ?? 'nonzero'; } else { ops = path.slice(); rule = a[0] ?? 'nonzero'; }
+        if (!ops) { warn('a clip to an unreadable Path2D is ignored'); return; }
+        S.clips = [...S.clips, { ops, rule }];
+      },
+      setLineDash(d) { g.setLineDash(d); S.dash = g.getLineDash(); },
+      getLineDash() { return S.dash.slice(); },
+      fill(...a) { pathItem(false, a); },
+      stroke(...a) { pathItem(true, a); },
+      fillRect(x, y, w, h) { rectItem(+x, +y, +w, +h, false); },
+      clearRect(x, y, w, h) { rectItem(+x, +y, +w, +h, true); },
+      strokeRect(x, y, w, h) { if (![x, y, w, h].every(isFinite) || (!w && !h)) return; const saved = path; path = [{ op: 'rect', a: [+x, +y, +w, +h], M: S.M }]; pathItem(true, []); path = saved; },
+      fillText(t, x, y, m) { textItem(true, t, +x, +y, m === undefined ? undefined : +m); },
+      strokeText(t, x, y, m) { textItem(false, t, +x, +y, m === undefined ? undefined : +m); },
+      drawImage(...a) { imageItem(a); },
+      putImageData(...a) { putImage(a); },
+      createLinearGradient(...a) { return gradient(g, 'createLinearGradient', a); },
+      createRadialGradient(...a) { return gradient(g, 'createRadialGradient', a); },
+      createConicGradient(...a) { return gradient(g, 'createConicGradient', a); },
+      createPattern(img, rep) { return pattern(g, img, rep); },
+      isPointInPath(...a) { return pointIn('isPointInPath', a); },
+      isPointInStroke(...a) { return pointIn('isPointInStroke', a); },
+      measureText(t) { return g.measureText(t); },
+      getImageData() { warn("getImageData() on a layer reads nothing: its drawing isn't on a 2D canvas"); return g.getImageData(0, 0, 1, 1); },
+    };
+    for (const m of PATH_OPS) METHODS[m] = (...a) => { path.push({ op: m, a, M: S.M }); };
+    // (the context itself holds only what measuring text needs: its text state; a hit test builds the rest on it for the moment)
+    function pointIn(k, a) {
+      g.save();
+      for (const p of ['lineWidth', 'lineCap', 'lineJoin', 'miterLimit']) g[p] = S[p];
+      g.setLineDash(S.dash);
+      if (!(a[0] && typeof a[0] === 'object')) replay(g, path, 0, 0);
+      const M = S.M; g.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
+      const r = g[k](...a);
+      g.restore();
+      return r;
+    }
+    const proxy = new Proxy(g, {
+      get(t, k) {
+        if (k === 'canvas') return c;
+        if (RAW[k] && !TEXT_SET.has(k)) return S[k];
+        let f = fns.get(k);
+        if (f) return f;
+        const v = t[k];
+        if (typeof v !== 'function') return v;
+        f = METHODS[k] ?? ((...a) => { warn(`${String(k)}() is not drawn on a layer`); return v.apply(t, a.map(unwrap)); });
+        fns.set(k, f);
+        return f;
+      },
+      set(t, k, v) {
+        const raw = RAW[k];
+        if (!raw) { t[k] = unwrap(v); return true; }
+        // (a value set again, as it was last set in this state, changes nothing)
+        if (S[raw] === v && (typeof v !== 'object' || v === null)) return true;
+        // (the text state is the context's too, for measuring text; the rest is kept here, taken or ignored as canvas would)
+        if (TEXT_SET.has(k)) { t[k] = v; S[k] = t[k]; S.fk = S.tk = null; }
+        else { const x = accept(k, v); if (x === undefined) return true; S[k] = x; }
+        S[raw] = v;
+        return true;
+      },
+    });
+    // ---- a frame ----
+    // begin(): the context to draw this frame's drawing on, emptied, in its default state
+    L.begin = () => {
+      if (opt.frame) recording++;
+      L.rec = recording;
+      if (L.direct) { if (g.reset) g.reset(); else c.width = c.width; return g; }
+      init();
+      resetState();
+      items = []; n = 0; pn = 0; paints = []; reqs = new Map();
+      return proxy;
+    };
+    // (a canvas resized forgets its drawing state; so does its stand-in)
+    L.size = (w, h) => {
+      if (L.w === w && L.h === h) return;
+      if (L.direct) { c.width = w; c.height = h; } else c.width = 1;
+      resetState();
+      L.w = w; L.h = h;
+    };
+    L.target = () => tgt;
+    // flush(): the texture the layer's drawing this frame is in (empty if it wasn't drawn on this frame)
+    L.flush = () => {
+      init();
+      if (L.rec !== recording) return EMPTY;
+      if (L.flushed === recording && last) return last;
+      L.flushed = recording;
+      if (L.direct) {
+        if (L.panel) return last = GL.texture(L.name, c, { mipmap: true });
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+        last = GL.texture(L.name, c);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        return last;
+      }
+      draw();
+      return last;
+    };
+    let prev = {};
+    function draw() {
+      // (layers drawn as images: their targets, as they now are)
+      for (const it of items) if (it.img?.layer) {
+        const Ly = it.img.layer, ok = Ly.flushed === recording && Ly !== L;
+        if (!ok && Ly.rec === recording) warn(`the layer ${Ly.name} is drawn on ${L.name} before it's flushed: it's left out`);
+        it.img = { ...it.img, tex: ok ? Ly.target()?.tex ?? null : null, v: Ly.version };
+      }
+      // (what's drawn, compared with the last draw's, to skip one that draws the same: the instances, then what else each item draws
+      // with (its sprites' keys, its image), then the paint table)
+      const meta = new Float64Array(items.length * 10 + 2);
+      meta[0] = L.w; meta[1] = L.h;
+      items.forEach((it, i) => {
+        const o = 2 + i * 10;
+        meta[o] = OPN[it.blend] ?? -1;
+        if (it.sp) { meta[o + 1] = it.sp.r.h1[0]; meta[o + 2] = it.sp.r.h1[1]; }
+        if (it.cm) { meta[o + 3] = it.cm.r.h1[0]; meta[o + 4] = it.cm.r.h1[1]; meta[o + 8] = it.cm.I[0]; meta[o + 9] = it.cm.I[1]; }
+        if (it.img) { meta[o + 5] = it.img.id * 2 + (it.smooth ? 1 : 0); meta[o + 6] = (it.img.v | 0) * 2 + (it.img.tex ? 1 : 0); }
+        if (it.temp) meta[o + 7] = nextId++;
+      });
+      const U = new Uint32Array(inst.buffer, 0, n * FLOATS), PU = new Uint32Array(pinst.buffer, 0, pn * FLOATS), PT = new Float32Array(paints.length * 64);
+      paints.forEach((r, i) => PT.set(r, i * 64));
+      const same = (a, b) => { if (!b || a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
+      const unchanged = tgt && tgt.w === L.w && tgt.h === L.h && last && same(U, prev.U) && same(meta, prev.meta) && same(PU, prev.PU) && same(new Uint32Array(PT.buffer), prev.PT);
+      prev = { U: U.slice(), meta, PU: PU.slice(), PT: new Uint32Array(PT.buffer) };
+      if (unchanged) return;
+      // (every sprite the items draw with, looked up, and those not in the atlas made; then each item told where its sprites are)
+      const { got, temps } = settle(reqs);
+      const skip = new Set();
+      for (const it of items) {
+        if (it.kind === 7 && !it.img?.tex) { skip.add(it); continue; }
+        if (it.sp) {
+          const a = got.get(it.sp.key);
+          if (!a) { console.error('draw2d: a sprite is missing'); skip.add(it); continue; }
+          const I = inst, o = it.o;
+          I[o + 8] = it.sp.I[0] + a.o[0]; I[o + 9] = it.sp.I[1] + a.o[1]; I[o + 10] = a.w; I[o + 11] = a.h; I[o + 12] = a.x; I[o + 13] = a.y; I[o + 7] = a.tex ? 6 : a.page; it.spr = a.tex ?? null;
+        }
+        if (it.cm) {
+          const a = got.get(it.cm.key);
+          if (!a) { console.error('draw2d: a clip is missing'); skip.add(it); continue; }
+          const I = inst, o = it.o;
+          I[o + 24] = a.x; I[o + 25] = a.y; I[o + 26] = a.tex ? 7 : a.page; I[o + 28] = it.cm.I[0] + a.o[0]; I[o + 29] = it.cm.I[1] + a.o[1]; I[o + 30] = a.w; I[o + 31] = a.h; it.msk = a.tex ?? null;
+        }
+      }
+      gl.activeTexture(gl.TEXTURE0 + U_SCRATCH);
+      tgt = GL.target('d2:' + L.name, L.w, L.h, true);
+      const prevVAO = gl.getParameter(gl.VERTEX_ARRAY_BINDING);
+      gl.bindVertexArray(vao);
+      // (the instances: the items', then the stroke pieces')
+      gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+      const bytes = (n + pn) * FLOATS * 4;
+      if (bytes > instCap) { instCap = Math.max(bytes, instCap * 2, 65536); gl.bufferData(gl.ARRAY_BUFFER, instCap, gl.DYNAMIC_DRAW); }
+      if (n) gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst, 0, n * FLOATS);
+      if (pn) gl.bufferSubData(gl.ARRAY_BUFFER, n * FLOATS * 4, pinst, 0, pn * FLOATS);
+      // (the paint table)
+      if (paints.length) {
+        gl.activeTexture(gl.TEXTURE0 + U_PAINT); gl.bindTexture(gl.TEXTURE_2D, paintTex);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        const rows = Math.max(paints.length, 16), data = new Float32Array(rows * 64);
+        data.set(PT);
+        if (rows > paintRows) { paintRows = Math.max(rows, paintRows * 2); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 16, paintRows, 0, gl.RGBA, gl.FLOAT, null); }
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 16, rows, gl.RGBA, gl.FLOAT, data);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        GL.stats.uploads++; GL.stats.uploadBytes += rows * 256;
+      }
+      gl.useProgram(prog);
+      // (every unit the program samples gets a texture of ours: one left from another pass could be this layer's own target)
+      const bind = (u, t) => { gl.activeTexture(gl.TEXTURE0 + u); gl.bindTexture(gl.TEXTURE_2D, t); };
+      for (let i = 0; i < PAGES; i++) bind(i, pages[i]?.tex ?? EMPTY.tex);
+      for (const u of [U_SPR, U_MSK, U_IMG, U_COV, U_DST]) bind(u, EMPTY.tex);
+      bind(U_PAINT, paintTex);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, tgt.fb); gl.viewport(0, 0, L.w, L.h);
+      gl.disable(gl.SCISSOR_TEST); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.uniform2f(loc.uSize, L.w, L.h); gl.uniform1i(loc.uMode, 0);
+      gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD);
+      let draws = 0;
+      const point = first => { for (let j = 0; j < 8; j++) gl.vertexAttribPointer(1 + j, 4, gl.FLOAT, false, FLOATS * 4, first * FLOATS * 4 + j * 16); };
+      const run = (first, count) => { point(first); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count); draws++; };
+      let curImg = null, curSmooth = null, curRep = null, curBlend = null, curSpr = null, curMsk = null;
+      const bindFor = it => {
+        const t = it.img?.tex ?? null;
+        if (t !== curImg || it.smooth !== curSmooth || it.rep !== curRep) {
+          bind(U_IMG, t ?? EMPTY.tex);
+          if (t) {
+            const f = it.smooth === false ? gl.NEAREST : gl.LINEAR;
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+            const rep = it.rep ?? -1;
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, rep >= 0 && rep & 1 ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, rep >= 0 && rep & 2 ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+          }
+          curImg = t; curSmooth = it.smooth; curRep = it.rep;
+        }
+        if ((it.spr ?? null) !== curSpr) { curSpr = it.spr ?? null; bind(U_SPR, curSpr ?? EMPTY.tex); }
+        if ((it.msk ?? null) !== curMsk) { curMsk = it.msk ?? null; bind(U_MSK, curMsk ?? EMPTY.tex); }
+      };
+      const alike = (a, b) => b.kind !== 6 && !skip.has(b) && b.blend === a.blend && !MIX[b.blend] && (b.img?.tex ?? null) === curImg && (!b.img || (b.smooth === curSmooth && b.rep === curRep)) && (b.spr ?? null) === curSpr && (b.msk ?? null) === curMsk;
+      const setBlend = op => {
+        if (op === curBlend) return;
+        curBlend = op;
+        const f = OPS[op];
+        if (f) gl.blendFunc(gl[f[0]], gl[f[1]]);
+      };
+      const toLayer = () => { gl.bindFramebuffer(gl.FRAMEBUFFER, tgt.fb); gl.viewport(0, 0, L.w, L.h); };
+      let i = 0;
+      while (i < items.length) {
+        const it = items[i];
+        if (skip.has(it)) { i++; continue; }
+        if (it.kind === 6) {
+          // a stroke: its pieces' coverage, the largest of them, into the coverage buffer; then painted through it
+          const cv = coverage();
+          bind(U_COV, EMPTY.tex);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, cv.fb); gl.viewport(0, 0, L.w, L.h);
+          gl.enable(gl.SCISSOR_TEST);
+          const b = it.cb; gl.scissor(b[0], L.h - b[3], b[2] - b[0], b[3] - b[1]);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.blendEquation(gl.MAX); gl.blendFunc(gl.ONE, gl.ONE); curBlend = null;
+          gl.uniform1i(loc.uMode, 1);
+          run(n + it.pieces[0], it.pieces[1] - it.pieces[0]);
+          gl.disable(gl.SCISSOR_TEST); gl.blendEquation(gl.FUNC_ADD); gl.uniform1i(loc.uMode, 0);
+          toLayer();
+          bind(U_COV, cv.tex);
+        }
+        if (MIX[it.blend]) {
+          // a blend mode: what's under it copied out, and blended with it in the shader
+          const d = dstCopy(it);
+          gl.disable(gl.BLEND); gl.uniform1i(loc.uMode, 2); gl.uniform1i(loc.uBlend, MIX[it.blend]);
+          bind(U_DST, d.tex);
+          bindFor(it); run(it.o / FLOATS, 1);
+          gl.enable(gl.BLEND); gl.uniform1i(loc.uMode, 0);
+          i++;
+          continue;
+        }
+        // (a run of items drawn alike, as far as the next that isn't)
+        bindFor(it); setBlend(it.blend);
+        let j = i + 1;
+        while (j < items.length && alike(it, items[j])) j++;
+        run(it.o / FLOATS, j - i);
+        i = j;
+      }
+      gl.disable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ZERO);
+      for (const it of items) if (it.temp) gl.deleteTexture(it.temp);
+      for (const t of temps) gl.deleteTexture(t);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindVertexArray(prevVAO);
+      GL.stats.passes += draws; GL.stats.pixels += L.w * L.h;
+      L.version++;
+      // (a panel: its colour straight, with mipmaps, as the scene shader samples panels)
+      if (L.panel) {
+        straight = GL.target('d2s:' + L.name, L.w, L.h, true);
+        GL.pass(unpremul, straight, {}, { uSrc: tgt });
+        gl.bindTexture(gl.TEXTURE_2D, straight.tex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        GL.stats.mipmaps++;
+        last = straight;
+      } else last = tgt;
+    }
+    function dstCopy(it) {
+      gl.activeTexture(gl.TEXTURE0 + U_SCRATCH);
+      if (!dstT || dstT.w < L.w || dstT.h < L.h) { if (dstT) gl.deleteTexture(dstT.tex); dstT = { tex: gl.createTexture(), w: Math.max(L.w, dstT?.w ?? 0), h: Math.max(L.h, dstT?.h ?? 0) }; gl.bindTexture(gl.TEXTURE_2D, dstT.tex); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, dstT.w, dstT.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); setNearest(); }
+      const I = inst, o = it.o, x0 = Math.max(0, Math.floor(I[o])), y0 = Math.max(0, Math.floor(I[o + 1])), x1 = Math.min(L.w, Math.ceil(I[o] + I[o + 2])), y1 = Math.min(L.h, Math.ceil(I[o + 1] + I[o + 5]));
+      gl.bindTexture(gl.TEXTURE_2D, dstT.tex);
+      if (x1 > x0 && y1 > y0) gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, x0, L.h - y1, x0, L.h - y1, x1 - x0, y1 - y0);
+      return dstT;
+    }
+    return L;
+  }
+  // (the coverage buffer the strokes share: one channel, as big as the biggest layer)
+  function coverage() {
+    gl.activeTexture(gl.TEXTURE0 + U_SCRATCH);
+    let w = 0, h = 0;
+    for (const L of allLayers) if (!L.direct) { w = Math.max(w, L.w); h = Math.max(h, L.h); }
+    if (!covT || covT.w < w || covT.h < h) {
+      if (covT) { gl.deleteTexture(covT.tex); gl.deleteFramebuffer(covT.fb); }
+      const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, null); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); setNearest();
+      const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      covT = { tex, fb, w, h };
+    }
+    return covT;
+  }
+  const allLayers = [];
+  function makeLayer(...a) { const L = layer(...a); allLayers.push(L); return L; }
+  // (called once a frame's layers are drawn: images uploaded for that frame alone go)
+  function endFrame() { frameNo++; if (gl) for (const t of frameTemps.splice(0)) gl.deleteTexture(t); }
+  return { layer: makeLayer, endFrame, stats: () => ({ pages: pages.length, sprites: ATLAS.size, ...stats }), recent: () => recent.splice(0) };
+})();
 
 ;
 // ---- styles/demoscene/modern/engine.js ----
@@ -3456,24 +5452,27 @@ void main() {
 // song time. STYLE.md ("The modern engine") has the frame description and the helpers.
 const MOD = (() => {
   const LW = 1920, LH = 1080;
+  const RENDER_MODE = HAS_DOM && /[?&]render\b/.test(location.search);   // (a script capturing frames: see modern/canvas.js)
   const SCENES = {};   // key ('V2.5', 'C1', 'intro', 'outro') → scene function (t, seg, E) → F
   const FONT_T = '"Rubik Mono One"', FONT_M = '"Space Mono"';
-  // ---------- canvases ----------
-  // (uploaded to the GPU every frame, so they must stay on it: Chrome moves a canvas whose attribute is left unset to the CPU once it
-  // judges it read back often, after which every upload is a full copy up from memory)
-  const mk = (w, h) => { const c = makeCanvas(w, h); return { c, g: c.getContext('2d', { willReadFrequently: false }), w, h }; };
-  const UI = mk(LW, LH);
-  const PAN = [mk(2048, 1024), mk(1024, 512), mk(1024, 512)];   // the panels' three textures (a panel picks one with tex: 0..2)
+  // ---------- 2D layers ----------
+  // The UI (the canvas's size) and the three panels, which scenes draw on with the 2D API: draw2d.js records their drawing and draws
+  // it with WebGL into textures the GPU samples, from sprites uploaded once, so that a frame uploads only what's new in it. Scenes
+  // must draw on them only through what uiBegin() and panel() return, each a context in its default state, emptied: a frame's
+  // drawing starts with the UI's, and a panel it doesn't draw on is empty.
+  const UI = D2.layer('ui', LW, LH, { frame: true });
+  const PAN = [D2.layer('p0', 2048, 1024, { panel: true }), D2.layer('p1', 1024, 512, { panel: true }), D2.layer('p2', 1024, 512, { panel: true })];   // the panels' three textures (a panel picks one with tex: 0..2)
   let _uiScale = 1;
   // (an older era's UI is coarser: `scale` is its share of the 1920 × 1080 frame, never more than the canvas has)
   function uiBegin(scale) {
     const w = Math.max(64, Math.round(scale < 1 ? Math.min(canvas.width, LW * scale) : canvas.width * scale)), h = Math.max(36, Math.round(w * canvas.height / canvas.width));
-    if (UI.c.width !== w || UI.c.height !== h) { UI.c.width = w; UI.c.height = h; }
+    UI.size(w, h);
     _uiScale = w / LW;
-    const g = UI.g; g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, w, h); g.setTransform(_uiScale, 0, 0, _uiScale, 0, 0);
+    const g = UI.begin();
+    g.setTransform(_uiScale, 0, 0, _uiScale, 0, 0);
     return g;
   }
-  function panel(i) { const P = PAN[i], g = P.g; g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, P.w, P.h); P.used = true; return g; }
+  const panel = i => PAN[i].begin();
 
   // ---------- distance-field shapes (extruded in 3D by the scene shader) ----------
   // A mask canvas → an 8-bit signed distance texture (0.5 at the edge, ±RANGE texels at 0 and 1), by an exact Euclidean
@@ -3739,30 +5738,186 @@ const MOD = (() => {
     4: { res: 1, uiRes: 1, bloom: .45, th: .9, ca: .0035, grain: .035, vig: .9, flare: 0, sat: 1 },
   };
   function eraMix(fx) { const a = Math.floor(clamp(fx, 2, 4)), b = Math.min(4, a + 1), k = fx - a, A = ERA[a], B = ERA[b]; const o = {}; for (const key in A) o[key] = lerp(A[key], B[key], k); return o; }
-  let ready = false;
-  // warm(): create the context and compile every program now (at start-up, before the first frame is asked for), so that the first
-  // modern frame doesn't stall on the scene shader's compile mid-song.
-  function warm() {
-    if (ready) return;
-    for (const k of ['scene', 'bright', 'down', 'up', 'final']) GL.program(k, SHADERS[k]);
+  let warmMs = 0;
+  const warmed = new Set();
+  // warm(K): create the context and compile the programs named (by default every one a frame draws with) now, ahead of the frame
+  // that needs them, so that it doesn't stall on their compile. At start-up wire.js asks for just the 1996 part's, and its warm-up
+  // compiles the others between frames.
+  function warm(K = ['bright', 'down', 'up', 'final', 'compose', 'vga']) {
+    K = K.filter(k => !warmed.has(k));
+    if (!K.length) return;
+    const t0 = performance.now();
+    // (not the scene shader: each frame's variant of it compiles as the warm-up prepares it, or as the frame first needs it)
+    for (const k of K) GL.program(k, SHADERS[k]);
     GL.size(canvas.width, canvas.height);
-    // one tiny draw of each, so the driver finishes linking now
-    const t = GL.target('warm', 8, 8), px = new Uint8Array(4);
-    for (const k of ['scene', 'bright', 'down', 'up', 'final']) GL.pass(GL.program(k), k === 'final' ? null : t, {}, {});
-    GL.gl.readPixels(0, 0, 1, 1, GL.gl.RGBA, GL.gl.UNSIGNED_BYTE, px);
-    ready = true;
+    // one tiny draw of each (into a scratch target: the canvas may be the page's), so the driver finishes linking now
+    const t = GL.target('warm', 8, 8);
+    for (const k of K) { GL.pass(GL.program(k), t, {}, {}); warmed.add(k); }
+    GL.sync(t);
+    warmMs += performance.now() - t0;
+  }
+  // ---------- the scene shader's variants ----------
+  // Each frame draws with a variant of the scene shader compiled for just the features it has (shaders.js's switches). The warm-up
+  // (wire.js) prepares each window's variants in the order the song will need them, from where it starts: where the browser
+  // compiles in the background (KHR_parallel_shader_compile) it starts them all, one for each window at each tier, and they compile
+  // while the song plays (a frame that needs one not yet ready waits for it). Elsewhere (Firefox) a compile holds up the frames, and
+  // each era draws with one program (below). The full shader is never compiled unless asked for (self.MOD_FULL_SHADER = true draws
+  // with it): it's the slowest to compile, the more so on Windows, whose HLSL compiler (under ANGLE) is slow with big shaders.
+  const WORLDS = { hall: 1, fractal: 2, city: 3, gates: 4 }, SKIES = { plasma: 1, stars: 2, rays: 3 };
+  // (each switch as the uniforms render() sets would have it, for the tier given, or for any tier (null); a tier's switch for code
+  // that only a world or a floor reaches is off without them, so that tiers that differ only there share a variant)
+  function features(F, tr = tier) {
+    const modern = F.fx > 3.4, any = tr === null;
+    const f = {
+      WORLD: F.world && modern ? WORLDS[F.world.kind] : 0, SKY: SKIES[F.sky?.mode] ?? 0,
+      SHAPE: F.shape ? 1 : 0, SPLIT: F.shape?.split ? 1 : 0, FLOOR: F.floor ? 1 : 0, TUNNEL: F.tunnel ? 1 : 0, SPHERES: F.spheres.length ? 1 : 0,
+      PANELS: F.panels.length ? 1 : 0, HALO: F.halo ? 1 : 0, BEAM: F.beam ? 1 : 0,
+      VOL: modern && (F.light.vol ?? 0) > 0 && (any || tr < 1) ? 1 : 0, SHADOWS: modern && (any || tr < 2) ? 1 : 0,
+      POOL: modern && (any || tr < 3) && (F.pool ?? .6) > 0 ? 1 : 0, RWORLD: modern && (any || tr < 3) ? 1 : 0,
+      DEPTH: modern && (any || tr < 1) && F.dof && (F.dof.k ?? .02) > 0 ? 1 : 0,
+    };
+    if (!f.FLOOR) { f.POOL = 0; if (!f.WORLD) f.SHADOWS = 0; }
+    if (!f.WORLD || !f.FLOOR) f.RWORLD = 0;
+    if (!f.PANELS) f.DEPTH = 0;
+    // (for any tier, where each compile holds up the frames, fewer variants: the tiers' features always compiled in, their uniforms
+    // choosing, and the cheap emitters too; and in the older eras, whose pictures are small, everything but the shape)
+    if (any) {
+      f.VOL = modern ? 1 : 0; f.DEPTH = modern ? f.PANELS : 0; f.HALO = f.BEAM = 1;
+      if (!modern) { f.SKY = -1; f.TUNNEL = f.SPHERES = f.FLOOR = f.PANELS = 1; f.SPLIT = f.SHAPE; }
+    }
+    return f;
+  }
+  const variants = new Map();
+  // (the god rays' own pass, at tiers 1-3, needs just the world, the shape and the light: everything else is switched off)
+  const volFeatures = f => ({ ...Object.fromEntries(Object.keys(f).map(k => [k, 0])), WORLD: f.WORLD, SHAPE: f.SHAPE, SPLIT: f.SPLIT, VOLPASS: 1 });
+  const godRays = (F, tr) => F.fx > 3.4 && tr > 0 && (F.light.vol ?? 0) > 0;
+  // Where the browser can't compile in the background, each era draws every window with one program instead, compiled before the
+  // song can start (wire.js's warm-up), so that no compile ever holds up the frames mid-song: the variant with every feature the
+  // era's windows use compiled in, their uniforms choosing, as in the full shader. It draws the same pixels as a window's own
+  // variant, if more slowly (every path compiled in costs registers), and compiles in seconds where the variants took twenty
+  // between them (on Windows). (self.MOD_VARIANTS = true draws with the variants there too, for the benchmark.) A window with a
+  // feature its era's program lacks (none of the 2026 era's splits its shape) gets its own variant, compiled when it's first
+  // drawn: a hitch, and a warning.
+  const ERA_FEATURES = {
+    older: { WORLD: 0, SKY: -1, SHAPE: 1, SPLIT: 1, FLOOR: 1, TUNNEL: 1, SPHERES: 1, PANELS: 1, HALO: 1, BEAM: 1, VOL: 0, SHADOWS: 0, POOL: 0, RWORLD: 0, DEPTH: 0 },
+    modern: { WORLD: -1, SKY: -1, SHAPE: 1, SPLIT: 0, FLOOR: 1, TUNNEL: 1, SPHERES: 1, PANELS: 1, HALO: 1, BEAM: 1, VOL: 1, SHADOWS: 1, POOL: 1, RWORLD: 1, DEPTH: 1 },
+  };
+  const eraFeatures = (fx, vol) => { const E = ERA_FEATURES[fx > 3.4 ? 'modern' : 'older']; return vol ? volFeatures(E) : E; };
+  const eraPrograms = () => !GL.parallel() && !self.MOD_VARIANTS && !self.MOD_FULL_SHADER;
+  // (whether switches E have every feature f has: a kind of world or sky, or any; each other switch on where f's is)
+  const covers = (E, f) => Object.entries(f).every(([k, v]) => k === 'WORLD' || k === 'SKY' ? E[k] === -1 || E[k] === v : (E[k] ?? 0) >= v);
+  // (a program's name, for the switches it has on (WORLD4,SKY2,SHAPE,PANELS,VOL…), and its #defines)
+  const keyOf = f => Object.entries(f).filter(([, v]) => v).map(([k, v]) => k === 'WORLD' || k === 'SKY' ? k + (v < 0 ? 'any' : v) : k).join(',');
+  const defsOf = f => Object.entries(f).map(([k, x]) => `#define ${k} ${x}\n`).join('');
+  // (F's own variant's switches, at a tier or for any tier (null), and with vol the god rays' pass's)
+  function variantOf(F, tr, vol = false) {
+    const f = vol ? volFeatures(features(F, tr)) : features(F, tr);
+    if (vol && tr === null) f.SHAPE = f.SPLIT = 1;
+    return { key: keyOf(f), defs: defsOf(f) };
+  }
+  // (the program F draws with at a tier, as above: its own variant, or its era's program)
+  const warned = new Set();
+  function programOf(F, tr, vol = false) {
+    if (!eraPrograms()) return variantOf(F, GL.parallel() ? tr : null, vol);
+    const f = vol ? volFeatures(features(F, null)) : features(F, null), E = eraFeatures(F.fx, vol);
+    if (covers(E, f)) return { key: keyOf(E), defs: defsOf(E) };
+    const v = variantOf(F, null, vol);
+    if (!warned.has(v.key)) { warned.add(v.key); console.warn(`scene shader: the era's program lacks ${v.key}; compiling it mid-song`); }
+    return v;
+  }
+  // (every program compiled, for the benchmark: its name, when it started (ms since the engine loaded), and whether the warm-up
+  // asked for it or a frame had to; the program has how long it took, where the browser compiles in the background until it was
+  // first found ready, and where it doesn't, its first draw's)
+  const T_LOAD = performance.now(), compiles = [];
+  let preparing = false, oneOffs = 0;   // (and how many compiles and waits for one there have been: see wire.js's STYLE_ONEOFF)
+  function compile(key, defs) {
+    const t0 = performance.now();
+    oneOffs++;
+    let v;
+    try { v = GL.program('scene|' + key, SHADERS.scene.replace('#version 300 es\n', '#version 300 es\n' + defs), true); }
+    catch (e) { console.error(`scene shader variant ${key}: ${e.message}`); v = { failed: true, pending: false }; }
+    compileMs += performance.now() - t0;
+    variants.set(key, v);
+    compiles.push({ key, v, at: t0 - T_LOAD, by: preparing ? 'warm-up' : 'frame' });
+    // (compiled then and there: one tiny draw with it too, so that what a driver leaves for a program's first use is done now,
+    // rather than on the first frame that draws with it)
+    if (!GL.parallel() && !v.failed) { const t1 = performance.now(), w = GL.target('warm', 8, 8); GL.pass(v, w, {}, {}); GL.sync(w); v.drawMs = performance.now() - t1; }
+    return v;
+  }
+  // variant(F, tr, wait, vol): the program for F's features at a tier (compiling it if it's new; with the god rays' pass's, with
+  // vol), or, unless waiting for it, null while it compiles in the background. One that fails to compile gives the full shader.
+  function variant(F, tr = tier, wait = true, vol = false) {
+    const { key, defs } = programOf(F, tr, vol);
+    const v = variants.get(key) ?? compile(key, defs);
+    if (v.pending && wait) { const t0 = performance.now(); GL.ready(v, true); compileMs += performance.now() - t0; oneOffs++; }
+    if (GL.ready(v)) return v;
+    return v.failed ? (vol ? null : GL.program('scene', SHADERS.scene)) : null;
+  }
+  let compileMs = 0;
+  // (the programs F needs: [tier, vol] for each; where the browser compiles in the background, one for each tier)
+  function needs(F) {
+    const par = GL.parallel(), list = par ? (F.fx > 3.4 ? [0, 1, 2, 3] : [0]).map(tr => [tr, false]) : [[null, false]];
+    if (godRays(F, 1)) list.push([par ? 1 : null, true]);
+    return list;
+  }
+  // prepare(F, max): the programs F will need that aren't compiled yet, up to max of them, started (in the background) or compiled;
+  // how many (see above; the warm-up calls it, one at a time where a compile holds up the frames)
+  function prepare(F0, max = Infinity) {
+    if (self.MOD_FULL_SHADER) return 0;
+    const F = { ...DEF, ...F0 };
+    let n = 0;
+    for (const [tr, vol] of needs(F)) {
+      if (n >= max) break;
+      const { key, defs } = programOf(F, tr, vol);
+      if (variants.has(key)) continue;
+      preparing = true;
+      try { compile(key, defs); } finally { preparing = false; }
+      n++;
+    }
+    return n;
+  }
+  // prepareEras(fxs): where each era draws with one program, the next one that the eras given (fx) need and that isn't compiled
+  // yet, compiled (the 2026 era's with its god rays' pass's); how many (0 or 1: the warm-up calls it a step at a time)
+  function prepareEras(fxs) {
+    if (!eraPrograms()) return 0;
+    for (const fx of fxs) for (const vol of fx > 3.4 ? [false, true] : [false]) {
+      const E = eraFeatures(fx, vol), key = keyOf(E);
+      if (variants.has(key)) continue;
+      preparing = true;
+      try { compile(key, defsOf(E)); } finally { preparing = false; }
+      return 1;
+    }
+    return 0;
+  }
+  // prepared(F): whether the programs F needs at the tier the engine is at are compiled and ready, without waiting for any
+  function prepared(F0) {
+    if (self.MOD_FULL_SHADER) return true;
+    const F = { ...DEF, ...F0 };
+    for (const vol of godRays(F, tier) ? [false, true] : [false]) {
+      const v = variants.get(programOf(F, tier, vol).key);
+      if (!v) return false;
+      if (v.pending) { GL.ready(v); if (v.pending) return false; }
+    }
+    return true;
   }
   function render(F0) {
+    const tA = performance.now();
+    GL.resetStats();
     const F = { ...DEF, ...F0 }, E = eraMix(F.fx);
     const modern = F.fx > 3.4, res = (F.res ?? E.res) * (modern ? resK : 1);
     const Wd = canvas.width, Hd = canvas.height;
     GL.size(Wd, Hd);
     warm();
     // (an older era's picture is its grid in the 1920 × 1080 frame, the 1998 card's 640 × 360, say, but never finer than the
-    // canvas has pixels: a player shown small draws at its own size, not a third of it; the 2026 era's is a share of the canvas)
-    const sw = Math.max(32, Math.round(F.fx > 3.4 ? Wd * res : Math.min(Wd, LW * res))), sh = Math.max(18, Math.round(sw * Hd / Wd));
-    const T = { ui: GL.texture('ui', UI.c) };
-    PAN.forEach((P, i) => { T['p' + i] = P.used ? GL.texture('p' + i, P.c, { mipmap: true }) : GL.getTexture('p' + i) ?? GL.texture('p' + i, P.c); P.used = false; });
+    // canvas has pixels: a player shown small draws at its own size, not a third of it; the 2026 era's is a share of its picture's
+    // size, picW())
+    const sw = Math.max(32, Math.round(F.fx > 3.4 ? picW(Wd) * res : Math.min(Wd, LW * res))), sh = Math.max(18, Math.round(sw * Hd / Wd));
+    const waited = waitForLast();
+    // the 2D layers, each drawn into its texture if it was drawn on this frame (the panels first: the UI can draw one)
+    const T = {};
+    PAN.forEach((P, i) => { T['p' + i] = P.flush(); });
+    T.ui = UI.flush();
+    D2.endFrame();
     let shape = null;
     if (F.shape) {
       const S = F.shape.src;
@@ -3776,6 +5931,7 @@ const MOD = (() => {
       tun.src = F.tunnel.src;
     }
     const scene = GL.target('scene', sw, sh);
+    const tB = performance.now();
     const passes = () => {
     const P = F.panels.slice(0, 6);
     const pc = new Float32Array(18), pu = new Float32Array(18), pv = new Float32Array(18), pm = new Float32Array(24);
@@ -3786,7 +5942,7 @@ const MOD = (() => {
     const sd = F.shape || {};
     const R = sd.rot ?? rotYX(0);
     const L = F.light;
-    GL.pass(GL.program('scene'), scene, {
+    const U = {
       uRes: [sw, sh], uT: T0, uFx: F.fx, uSeed: (T0 * 60) % 997,
       uRo: F.ro, uTa: F.ta, uFov: F.fov, uRoll: F.roll,
       uSkyA: hex(F.skyA), uSkyB: hex(F.skyB), uAcc: hex(F.acc), uFogD: F.fog,
@@ -3805,14 +5961,19 @@ const MOD = (() => {
       uLP: L.p, uLC: mul(hex(L.c), L.k ?? 4), uVol: L.vol ?? 0,
       uWorld: F.world && F.fx > 3.4 ? { hall: 1, fractal: 2, city: 3, gates: 4 }[F.world.kind] : 0, uWT: F.world?.t ?? T0, uWP: F.world?.p ?? [1, 1, 1, 1],
       uWCol: hex(F.world?.col ?? '#1a1a22'), uWCol2: hex(F.world?.glowCol ?? '#ffffff'), uWPos: F.world?.at ?? [0, 0, 0], uWMetal: F.world?.metal ?? .6,
-      uPool: modern && tier < 3 ? F.pool ?? .6 : 0, uTier: modern ? tier : 0,
+      uPool: modern && tier < 3 ? F.pool ?? .6 : 0, uTier: modern ? tier : 0, uDepthOn: modern && tier < 1 && F.dof && (F.dof.k ?? .02) > 0 ? 1 : 0,
       uUIGlow: F.uiGlow,
-    }, { uTex0: T.p0, uTex1: T.p1, uTex2: T.p2, uShape: shape ?? T.ui, uTunTex: tun ?? T.ui, uUI: T.ui });
+    };
+    GL.pass(self.MOD_FULL_SHADER ? GL.program('scene', SHADERS.scene) : variant(F), scene, U, { uTex0: T.p0, uTex1: T.p1, uTex2: T.p2, uShape: shape ?? T.ui, uTunTex: tun ?? T.ui, uUI: T.ui });
+    // the god rays, below tier 0: their own pass, at half the picture's resolution, as far as the scene's depth (its alpha)
+    let vol = null;
+    const vp = godRays(F, modern ? tier : 0) && variant(F, tier, true, true);
+    if (vp) { vol = GL.target('vol', sw / 2, sh / 2); GL.pass(vp, vol, { ...U, uRes: [vol.w, vol.h] }, { uShape: shape ?? T.ui, uDepth: scene }); }
     // bloom: a threshold, three halvings and a tent back up
     let bloom = scene;
     if (E.bloom > .01) {
       const b1 = GL.target('b1', sw / 2, sh / 2), b2 = GL.target('b2', sw / 4, sh / 4), b3 = GL.target('b3', sw / 8, sh / 8), b4 = GL.target('b4', sw / 16, sh / 16);
-      GL.pass(GL.program('bright'), b1, { uTexel: [1 / sw, 1 / sh], uTh: E.th }, { uSrc: scene });
+      GL.pass(GL.program('bright'), b1, { uTexel: [1 / sw, 1 / sh], uTh: E.th, uVolK: vol ? 1 : 0 }, { uSrc: scene, uVol: vol });
       GL.pass(GL.program('down'), b2, { uTexel: [1 / b1.w, 1 / b1.h] }, { uSrc: b1 });
       GL.pass(GL.program('down'), b3, { uTexel: [1 / b2.w, 1 / b2.h] }, { uSrc: b2 });
       GL.pass(GL.program('down'), b4, { uTexel: [1 / b3.w, 1 / b3.h] }, { uSrc: b3 });
@@ -3827,38 +5988,87 @@ const MOD = (() => {
     const pix = F.fx < 3.95 && sw < Wd - 1, gl = GL.gl;
     const filt = (tex, f) => { gl.bindTexture(gl.TEXTURE_2D, tex); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f); };
     if (pix) { filt(scene.tex, gl.NEAREST); filt(T.ui.tex, gl.NEAREST); }
-    GL.pass(GL.program('final'), null, {
+    // (a 2026 picture smaller than the canvas, and below level 0 an older era's, is finished at its own size and composed onto the
+    // canvas: SHADERS.compose)
+    const compose = modern ? sw < Wd - 1 : level >= 1, pic = compose ? GL.target('pic', sw, sh, true) : null;
+    GL.pass(GL.program('final'), pic, {
       uBloomK: E.bloom, uFx: F.fx, uCA: E.ca, uGrain: E.grain, uVig: E.vig, uSeed: (T0 * 60) % 991, uExposure: F.exposure, uFlash: F.flash,
       uFlashCol: hex(F.flashCol ?? '#ffffff').map(v => v ** (1 / 2.2)), uFlareK: E.flare * (F.flare ?? 0), uFlare: fl, uFlareCol: hex(F.flareCol ?? '#ffd9a0'), uSat: E.sat * F.sat, uSceneRes: [sw, sh],
-      uDof: modern && tier < 1 && F.dof ? F.dof.k ?? .02 : 0, uFocus: F.dof?.focus ?? 8,
-    }, { uScene: scene, uBloom: bloom, uUI: T.ui });
+      uDof: modern && tier < 1 && F.dof ? F.dof.k ?? .02 : 0, uFocus: F.dof?.focus ?? 8, uVolK: vol ? 1 : 0, uCompose: compose ? 1 : 0,
+    }, { uScene: scene, uBloom: bloom, uUI: T.ui, uVol: vol });
+    if (compose) { filt(pic.tex, pix ? gl.NEAREST : gl.LINEAR); GL.pass(GL.program('compose'), null, { uGrain: E.grain, uSeed: (T0 * 60) % 991 }, { uPic: pic, uUI: T.ui }); }
     if (pix) { filt(scene.tex, gl.LINEAR); filt(T.ui.tex, gl.LINEAR); }
     };
-    passes(); lastPasses = passes; usedGL = true; last = { fx: F.fx, w: sw, h: sh };
-    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-    ctx.drawImage(GL.canvas(), 0, 0, Wd, Hd);
-    ctx.restore();
+    passes(); lastPasses = passes; usedGL = true; last = { fx: F.fx, w: sw, h: sh, stats: { ...GL.stats } };
+    const tC = performance.now();
+    // (where GL draws on a canvas of its own, in render mode, its frame goes into core.js's 2D canvas)
+    if (!GL.direct()) {
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(GL.canvas(), 0, 0, Wd, Hd);
+      ctx.restore();
+    }
+    // (where the frame's time went on this thread: the scene's JS (its 2D drawing recorded), the 2D layers (their new sprites made and
+    // uploaded, and their drawing submitted), the passes' submission and the copy into the page's canvas; finish() adds how long the
+    // GPU then took to catch up)
+    perf = { js: tA - tStart, upload: tB - tA - waited, submit: tC - tB, copy: performance.now() - tC, wait: waited };
   }
-  let T0 = 0, lastPasses = null;
+  let T0 = 0, lastPasses = null, tStart = 0, perf = null, inFlight = false;
+  // (the GPU's work on the frame before, finished now, before this frame's goes in: see finish(); how long that took)
+  function waitForLast() {
+    if (!inFlight) return 0;
+    const a = performance.now(); GL.sync(); inFlight = false;
+    return performance.now() - a;
+  }
+  // presentVGA(img, glow, glowK): the 1996 part's frame, on a WebGL canvas (kit.js's _flush() calls it there): its framebuffer's
+  // colours (an ImageData, 640 × 360) and its glow (160 × 90, or null), added at glowK. SHADERS.vga has how it's drawn.
+  function presentVGA(img, glow, glowK) {
+    const tA = performance.now();
+    GL.resetStats();
+    const waited = waitForLast();
+    const fb = GL.texture('vga', img, { mipmap: canvas.width < img.width }), gt = glow ? GL.texture('vgaGlow', glow) : null;
+    const tB = performance.now();
+    GL.pass(GL.program('vga', SHADERS.vga), null, { uSrc: [img.width, img.height], uDst: [canvas.width, canvas.height], uGlowK: gt ? glowK : 0 }, { uFB: fb, uGlow: gt });
+    // (its GPU work is next to nothing, so the next frame doesn't wait for it: see finish())
+    last = { fx: 1, w: img.width, h: img.height, stats: { ...GL.stats } };
+    perf = { js: tA - tStart, upload: tB - tA - waited, submit: performance.now() - tB, copy: 0, wait: waited };
+  }
   // Quality levels, which the page steps through (see wire.js's setQuality): the 2026 era's shader tier (0 everything; 1 no depth of
-  // field, fewer god-ray samples and march steps, no ambient occlusion; 2 no god rays or soft shadows, a simpler fractal; 3 no
-  // light pool or reflected set either) and, last, its picture's resolution. The UI layer (the scroller, the date, Softmax's HUD,
-  // any type drawn on it) is the canvas's full size at every level. Level 0 is the video as designed.
-  const LEVELS = [[0, 1], [1, 1], [2, 1], [3, 1], [3, .75], [3, .5]];
+  // field or ambient occlusion, fewer march steps, the god rays in their own pass at half resolution; 2 no soft shadows, a simpler
+  // fractal; 3 no light pool or reflected set either) and, last, its picture's resolution (three quarters, a half, a third). The
+  // UI layer (the scroller, the date, Softmax's HUD, any type drawn on it) is the canvas's full size at every level. Level 0 is the
+  // video as designed.
+  const LEVELS = [[0, 1], [1, 1], [2, 1], [3, 1], [3, .75], [3, .5], [3, 1 / 3]];
+  // The 2026 era's picture at levels 0-3 is as many pixels across as the canvas has CSS pixels, and no more than 1920 (the video's
+  // own size), and levels 4-6 a share of that: a high-density screen's extra device pixels would cost the raymarcher four times
+  // the work (a Surface Pro's 2880 × 1620, full screen) for a picture that looks much the same, while the UI and type, composed on
+  // top, stay at the canvas's full resolution. The canvas's CSS pixels are its device pixels over the ratio the page tells the
+  // engine (STYLE_DPR, which a worker can't see for itself), or else, drawing on the page, the canvas's own. Render mode draws the
+  // whole canvas: its frames are the video.
+  function picW(Wd) {
+    if (RENDER_MODE) return Wd;
+    const css = self.STYLE_DPR ? Wd / Math.max(1, self.STYLE_DPR) : HAS_DOM && canvas.clientWidth ? canvas.clientWidth : Wd;
+    return Math.min(Wd, css, LW);
+  }
   let level = 0, tier = 0, resK = 1, usedGL = false, last = null;
   function setLevel(l) { level = clamp(Math.round(l), 0, LEVELS.length - 1); [tier, resK] = LEVELS[level]; }
-  // (the GPU's work for the frame just drawn, finished: so that the page's measure of a frame includes it)
-  function finish() { if (!usedGL) return; usedGL = false; const px = new Uint8Array(4); GL.gl.readPixels(0, 0, 1, 1, GL.gl.RGBA, GL.gl.UNSIGNED_BYTE, px); }
-  const setT = t => { T0 = t; };
+  // STYLE_FINISH's hook: the page calls it once a frame is drawn, so that its measure of the frame includes the GPU's work. The wait
+  // for that work comes as the next frame hands the GPU its own (in render()), not here, so that the GPU draws one frame while the
+  // next one's scene and 2D drawing run. The page's measure of a frame is then its own JS plus whatever of the GPU's work on the
+  // frame before is left: at a steady pace, the slower of the two, which is what limits the frame rate.
+  function finish() {
+    if (!usedGL) return;
+    usedGL = false; inFlight = true;
+    GL.gl.flush();
+  }
+  const setT = t => { T0 = t; tStart = performance.now(); };
   // gpuBench(n): re-run the last frame's GL passes n times, finishing each: the GPU's share of a frame, in ms.
   function gpuBench(n = 20) {
-    const gl = GL.gl, px = new Uint8Array(4);
-    lastPasses(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    lastPasses(); GL.sync();
     const a = performance.now();
-    for (let i = 0; i < n; i++) { lastPasses(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); }
+    for (let i = 0; i < n; i++) { lastPasses(); GL.sync(); }
     return (performance.now() - a) / n;
   }
-  return { render, warm, setT, gpuBench, setLevel, finish, level: () => level, tier: () => tier, last: () => last, project, clawd, bitmap, SCENES, uiBegin, panel, PAN, UI, text, chrome, scroller, datePlate, softmaxHUD, shapeG, shapeText, shapePath, shapeHeart, rotYX, v3, add, sub, mul, mix3, norm, hex, eraMix, ERA, FONT_T, FONT_M, LW, LH };
+  return { render, presentVGA, warm, prepare, prepareEras, prepared, eraPrograms, oneOffs: () => oneOffs, eraDefines: () => ({ older: defsOf(ERA_FEATURES.older), modern: defsOf(ERA_FEATURES.modern), 'modern god rays': defsOf(volFeatures(ERA_FEATURES.modern)) }), variants: () => variants, defines: (F, tr = null, vol = false) => variantOf({ ...DEF, ...F }, tr, vol), startup: () => ({ warmMs, compileMs, variants: variants.size, compiles: compiles.map(c => ({ key: c.key, ms: c.v.ms ?? null, draw: c.v.drawMs ?? null, at: c.at, by: c.by })) }), setT, gpuBench, setLevel, finish, level: () => level, tier: () => tier, last: () => last, perf: () => perf, project, clawd, bitmap, SCENES, uiBegin, panel, PAN, UI, text, chrome, scroller, datePlate, softmaxHUD, shapeG, shapeText, shapePath, shapeHeart, rotYX, v3, add, sub, mul, mix3, norm, hex, eraMix, ERA, FONT_T, FONT_M, LW, LH };
 })();
 // mline('V2', 5, (t, seg, E) => F): the modern scene for verse 2, line 5; msection('C1', fn): for a whole section.
 // E = { fx, res, uiRes }: the era the version draws this window at (return fx: E.fx, res: E.res in F).
@@ -3882,7 +6092,7 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
   // ---------------------------------------------------------------------------------------------
   // THE NFO: a glass terminal (2048 × 1024), its sung word on a pane in front
   // ---------------------------------------------------------------------------------------------
-  const RELEASE = [['title', "We Didn't Start the Scaling"], ['artist', 'Softmax feat. MC Token'], ['type', 'pc demo · vga 640x360 · 256 colours · 140 bpm'], ['covers', 'jun 2017 → sep 2026 (64 lines, 4 choruses)'], ['released', '22 september 2026']];
+  const RELEASE = [['title', "We Didn't Start the Scaling"], ['artist', 'Softmax feat. MC Token'], ['type', 'pc demo · vga 640x360 · 256 colours · 140 bpm'], ['covers', 'jun 2017 → sep 2026 (64 lines, 4 choruses)'], ['released', '22 september 2026'], ['final', '30 september 2026']];
   const CREW = [['dj clawd', 'code, gfx, music', '#ff9a5c'], ['softmax', 'vocals', '#ff5cc0'], ['mc token', 'rap', '#5ae6ff']];
   const REQS = ['486dx2/66, 8 mb ram, vga, gus/sb16', 'recommended: 100,000 h100s', 'run: scaling.exe'];
   const PROMPT = 'C:\\DEMOS\\FC>type scaling.nfo';
@@ -3919,7 +6129,7 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     g.lineWidth = 2; g.strokeRect(42, BANNER[0] + 12, 1964, BANNER[1] - BANNER[0] - 24);
     // the info
     box(g, 30, 628, 1988, 200, 'release', '#5a6699');
-    RELEASE.forEach(([k, v], i) => kv(g, k, v, 70, 654 + i * 34, 330, i === 0 ? '#ffffff' : i === 1 ? '#ffd0ef' : undefined));
+    RELEASE.forEach(([k, v], i) => kv(g, k, v, 70, 652 + i * 29, 330, i === 0 ? '#ffffff' : i === 1 ? '#ffd0ef' : undefined));
     box(g, 30, 862, 940, 150, 'crew', '#5a6699');
     CREW.forEach(([k, v, col], i) => kv(g, k, v, 70, 888 + i * 36, 330, col));
     box(g, 1000, 862, 1018, 150, 'requirements', '#5a6699');
@@ -9014,8 +11224,19 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
   }
 
   let pending = null;
+  // STYLE_ONEOFF(): whether the frame just drawn did work that later frames won't, or may have waited on some between frames: a
+  // compile or a wait for one, render targets sized (engine.js), a window's first frame, where its scenes build their caches if the
+  // warm-up hasn't, or a warm-up step. The page's quality controller leaves such frames out of its measure.
+  let oneOff = false, oneOffsSeen = 0;
+  const drawnWindows = new Set(), warmedWindows = new Set();
+  self.STYLE_ONEOFF = () => {
+    const n = MOD.oneOffs(), r = oneOff || n !== oneOffsSeen || (MOD.last()?.stats.allocs ?? 0) > 0;
+    oneOff = false; oneOffsSeen = n;
+    return r;
+  };
   const RETRO = OVERLAYS[0];
   OVERLAYS[0] = (t, s) => {
+    lastFrame = { t, at: performance.now() };
     if (pending) { const F = pending; pending = null; MOD.render(F); return; }
     if (VERSION === 'A' && RETRO) RETRO(t, s);
   };
@@ -9024,9 +11245,10 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     const key = seg.key, retro = SHOTS[key];
     SHOTS[key] = (p, lt, d, t, s) => {
       if (!warming) { warming = true; warmScenes(); }
+      if (!drawnWindows.has(s)) { drawnWindows.add(s); if (!warmedWindows.has(s)) oneOff = true; }
       const E = eraAt(t, s);
       // (without WebGL2 the whole song is the VGA engine's: after chorus 1, `ch/zz_generic.js`'s)
-      if ((E.fx < 2 || noGL) && retro) { retro(p, lt, d, t, s); return; }
+      if ((E.fx < 2 || noGL) && retro) { MOD.setT(t); retro(p, lt, d, t, s); return; }
       MOD.setT(t);
       const g = MOD.uiBegin(E.uiRes);
       const F = (MOD.SCENES[s.key] ?? placeholder)(t, s, E, g);
@@ -9039,41 +11261,104 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       pending = F;
     };
   }
-  // (compile the modern engine's shaders at start-up; in a worker this runs before it reports ready)
+  // (take the context and compile the 1996 part's program at start-up; in a worker this runs before it reports ready. The modern
+  // engine's own programs come with the warm-up, below, or with the first frame that needs them.)
   let noGL = false;
-  try { MOD.warm(); } catch (e) { noGL = true; console.error('modern engine warm-up: ' + (e.stack || e)); }
-  // A scene builds its caches (an atlas, a shape's distance field) on its first frame, which would hitch a first play on that line's
-  // first beat. So after the first frame (when the page or the worker has its fonts, which the caches may draw with), each modern
-  // window runs once at its start, its middle and its end (a build that a word triggers lasts to the end), a window at a time
-  // between frames, from the start time on round the song. (Not in render mode, where a script drives the frames.)
-  // STYLE_WARM settles once every window is warm: until then the warm-up's builds come between frames, and the site's page holds the
-  // song (and seeking) rather than let it run ahead of the video.
+  try { MOD.warm(['vga']); } catch (e) { noGL = true; console.error('modern engine warm-up: ' + (e.stack || e)); }
+  // A scene builds its caches (an atlas, a shape's distance field) on its first frame, and draws with programs that must be compiled
+  // first (engine.js): either would hitch a first play on that line's first beat. So after the first frame (when the page or the
+  // worker has its fonts, which the caches may draw with), the warm-up compiles the modern engine's other programs, and where the
+  // browser can't compile in the background (Firefox), each era's program; then it runs each modern window once at its start, its
+  // middle and its end (a build that a word triggers lasts to the end), and where the browser compiles in the background, starts
+  // the variants those frames need. It goes a step at a time, between frames, a program or a window's scenes a step, the windows in
+  // the order the song reaches them from the playhead (the start, or the last frame drawn, so a seek moves it along), round the
+  // song. While the song plays (frames keep coming), each step is followed by a pause ten times its length, unless the playhead is
+  // about to reach a window that isn't warm yet; while it's paused, the steps follow each other straight away. A window that
+  // playback reaches before the warm-up does builds what it needs then.
+  // STYLE_WARM settles once the programs are compiled (in Firefox every one the song will draw with, a few seconds' work, so that
+  // none is compiled mid-song: a compile there holds up the frames for up to a second) and the windows playing in the first few
+  // seconds from the start (self.STYLE_START) are warm: the site's page holds the song (and seeking) until then rather than let it
+  // run ahead of the video. Where the browser compiles in the background, from the top of version A, whose first minute is the 1996
+  // part, that's at once. MOD.WARM_ALL settles once every window is (for the benchmark). (Not in render mode, where a script drives
+  // the frames.)
   const rendering = HAS_DOM && /[?&]render\b/.test(location.search);
-  let warming = rendering || typeof setTimeout !== 'function' || noGL, warmed;
+  let warming = rendering || typeof setTimeout !== 'function' || noGL, warmed, warmedAll, lastFrame = { t: 0, at: -Infinity };
   self.STYLE_WARM = new Promise(ok => { warmed = ok; });
-  if (warming) warmed();
+  MOD.WARM_ALL = new Promise(ok => { warmedAll = ok; });
+  if (warming) { warmed(); warmedAll(); }
   function warmScenes() {
     const list = SEGS.filter(s => MOD.SCENES[s.key] && (VERSION === 'B' || eraAt(s.start + .01, s).fx >= 2));
-    const from = Math.max(0, list.findIndex(s => s.end > (self.STYLE_START ?? 0)));
-    const order = [...list.slice(from), ...list.slice(0, from)];
-    let i = 0;
-    const next = () => {
-      if (i >= order.length) { warmed(); return; }
-      const s = order[i++];
-      for (const t of [s.start + .05, (s.start + s.end) / 2, s.end - .05]) {
-        try { const E = eraAt(t, s); MOD.setT(t); MOD.SCENES[s.key](t, s, E, MOD.uiBegin(E.uiRes)); } catch (e) { console.error(`warming ${s.key}: ${e.stack || e}`); }
-      }
-      setTimeout(next, 0);
+    const t0 = self.STYLE_START ?? 0, par = GL.parallel();
+    const first = list.filter(s => s.end > t0 && s.start < t0 + 3);
+    const programs = ['bright', 'down', 'up', 'final', 'compose'];
+    // (the eras the song's windows are drawn in, for their programs)
+    const eras = [...new Set(list.flatMap(s => [s.start + .05, (s.start + s.end) / 2, s.end - .05].map(t => eraAt(t, s).fx)))];
+    const frames = new Map(), done = new Set();   // (each window's three frames, once its scenes have run; the windows done)
+    let isWarm = false, erasDone = !MOD.eraPrograms();
+    const check = () => {
+      if (isWarm || programs.length || !erasDone || !first.every(s => done.has(s) && (frames.get(s) ?? []).every(F => MOD.prepared(F)))) return;
+      isWarm = true; warmed();
     };
-    setTimeout(next, 100);
+    if (!first.length && erasDone) { isWarm = true; warmed(); }
+    // (the window to warm next: the first not done that the playhead reaches, round the song; and how many seconds away it is)
+    const nextWindow = () => {
+      const p = lastFrame.at > -Infinity ? lastFrame.t : t0;
+      let best = null, away = Infinity;
+      for (const s of list) {
+        if (done.has(s)) continue;
+        const d = s.end > p ? Math.max(0, s.start - p) : DUR - p + s.start;
+        if (d < away) { best = s; away = d; }
+      }
+      return best && { s: best, away };
+    };
+    const step = () => {
+      const a = performance.now();
+      const n = programs.length || !erasDone ? null : nextWindow();
+      if (!programs.length && erasDone && !n) {
+        warmedAll();
+        // (where the variants compile in the background, the start's may not be ready yet)
+        if (!isWarm) { check(); if (!isWarm) setTimeout(step, 50); }
+        return;
+      }
+      try {
+        if (programs.length) MOD.warm([programs.shift()]);
+        else if (!erasDone) { if (!MOD.prepareEras(eras)) erasDone = true; }
+        else if (!frames.has(n.s)) {
+          const s = n.s, Fs = [];
+          for (const t of [s.start + .05, (s.start + s.end) / 2, s.end - .05]) {
+            try { const E = eraAt(t, s); MOD.setT(t); const F = MOD.SCENES[s.key](t, s, E, MOD.uiBegin(E.uiRes)); F.fx = E.fx; F.res = E.res; Fs.push(F); }
+            catch (e) { console.error(`warming ${s.key}: ${e.stack || e}`); }
+          }
+          frames.set(s, Fs); warmedWindows.add(s);
+        } else {
+          // (one variant, or where they compile in the background, all of them)
+          let k = 0;
+          for (const F of frames.get(n.s)) { k += MOD.prepare(F, par ? Infinity : 1); if (k && !par) break; }
+          if (!k) { done.add(n.s); if (!first.includes(n.s)) frames.delete(n.s); }
+        }
+      } catch (e) { console.error(`warming: ${e.stack || e}`); if (n) done.add(n.s); }
+      check();
+      // (the pause before the next step: none while the page holds the song for the warm-up or nothing plays; while the song plays,
+      // ten times this step's length, but only a few frames' worth when the playhead is about to reach the window, so that a frame
+      // or two go by between compiles, and the page's quality controller doesn't take them for a slow machine)
+      const ms = performance.now() - a, now = performance.now();
+      if (ms > 8) oneOff = true;
+      let wait = 0;
+      if (isWarm && now - lastFrame.at < 300) {
+        const soon = nextWindow();
+        wait = soon && soon.away < 8 ? Math.min(100, ms * 2) : Math.min(3000, Math.max(ms < 4 ? 20 : 250, ms * 10));
+      }
+      setTimeout(step, wait);
+    };
+    setTimeout(step, 100);
   }
   // The page's hooks for its quality ladder (page.mjs on the site; the version pages' own): QUALITY_LEVELS levels, 0 the video as
   // designed and each cheaper than the last, set with setQuality(level). The 1996 part's lighter load (LOWQ) comes in at level 2; the
-  // 2026 era's shader tiers at 1, 2 and 3, and its picture's resolution at 4 and 5 (engine.js's LEVELS). Text, the scroller, the date
-  // and Softmax's HUD are the canvas's full resolution at every level. In render mode (a script driving the frames) it stays at 0.
-  // STYLE_FINISH finishes the GPU's work for the frame just drawn, so that the page's measure of a frame's time includes it, and
+  // 2026 era's shader tiers at 1, 2 and 3, and its picture's resolution at 4, 5 and 6 (engine.js's LEVELS). Text, the scroller, the
+  // date and Softmax's HUD are the canvas's full resolution at every level. In render mode (a script driving the frames) it stays
+  // at 0. STYLE_FINISH lets the page's measure of a frame's time include the GPU's work (engine.js's finish() says how), and
   // STYLE_INFO says what the frame was, for the page's debug overlay.
-  self.QUALITY_LEVELS = 6;
+  self.QUALITY_LEVELS = 7;
   self.setQuality = l => { if (rendering) return; LOWQ = l >= 2; MOD.setLevel(l); };
   self.STYLE_FINISH = () => MOD.finish();
   self.STYLE_INFO = () => {

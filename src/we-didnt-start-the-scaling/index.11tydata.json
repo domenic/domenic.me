@@ -2536,5 +2536,334 @@
    "script": "/we-didnt-start-the-scaling/assets/engine/indie-folk.js",
    "fonts": []
   }
+ },
+ "changelog": {
+  "pop-punk": {
+   "title": "Errata & reprints",
+   "current": "1.0.4",
+   "releases": [
+    {
+     "version": "1.0.4",
+     "name": "fifth printing",
+     "date": "2026-09-30",
+     "notes": [
+      "The video’s engine starts loading in parallel with the song’s audio, not after it.",
+      "A track switch made mid-load could be undone when the old load finished; superseded loads are now discarded."
+     ],
+     "shown": "Sep 30"
+    },
+    {
+     "version": "1.0.3",
+     "name": "fourth printing",
+     "date": "2026-09-29",
+     "notes": [
+      "Every word is retimed against the vocal, by a consensus of six aligners.",
+      "Play waits for the video to load, so the song can’t run on ahead of it."
+     ],
+     "shown": "Sep 29"
+    },
+    {
+     "version": "1.0.2",
+     "name": "third printing",
+     "date": "2026-09-27",
+     "notes": [
+      "Seeking lands exactly: the song no longer drifts up to a second from the words and the video."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.0.1",
+     "name": "second printing",
+     "date": "2026-09-26",
+     "notes": [
+      "The track menu is readable in dark mode (it was white on pale yellow)."
+     ],
+     "shown": "Sep 26"
+    },
+    {
+     "version": "1.0",
+     "name": "first printing",
+     "date": "2026-09-26",
+     "notes": [
+      "Issue #1: nine years of AI as a punk zine, in cut paper, halftone and ransom-note letters, with a gag for every line."
+     ],
+     "shown": "Sep 26"
+    }
+   ]
+  },
+  "piano-rock": {
+   "title": "Corrections & updates",
+   "current": "1.2.2",
+   "releases": [
+    {
+     "version": "1.2.2",
+     "date": "2026-09-30",
+     "notes": [
+      "The video’s engine starts loading in parallel with the song’s audio, not after it.",
+      "A track switch made mid-load could be undone when the old load finished; superseded loads are now discarded."
+     ],
+     "shown": "Sep 30"
+    },
+    {
+     "version": "1.2.1",
+     "date": "2026-09-29",
+     "notes": [
+      "Every word is retimed against the vocal, and the captions follow.",
+      "Play waits for the video to load, so the song can’t run on ahead of it."
+     ],
+     "shown": "Sep 29"
+    },
+    {
+     "version": "1.2",
+     "name": "correction",
+     "date": "2026-09-27",
+     "notes": [
+      "The “buy three” boxes are SSI, THINKY and PERPLEXITY, with Meta shopping in the chyron.",
+      "The chain gang in “Sam’s own agents” wears the names the agents gave themselves, like PHASEONE[big]."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.1",
+     "name": "late edition",
+     "date": "2026-09-27",
+     "notes": [
+      "The closed captions appear word by word as they’re sung.",
+      "Seeking lands exactly: the song no longer drifts up to a second from the words and the video."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.0",
+     "name": "first broadcast",
+     "date": "2026-09-26",
+     "notes": [
+      "Channel 89 Action News: nine years of AI headlines, reported by a 1989 local newscast on a worn VHS tape."
+     ],
+     "shown": "Sep 26"
+    }
+   ]
+  },
+  "k-pop": {
+   "title": "Discography",
+   "current": "2.0.2",
+   "releases": [
+    {
+     "version": "2.0.2",
+     "date": "2026-09-30",
+     "notes": [
+      "Pictures download sixteen at a time instead of four, and the low-resolution stand-in atlas is half the size, so the video starts sooner and sharpens faster after a seek.",
+      "The dancers’ sprite sheets upload between frames rather than during one, so the choruses no longer hitch when the members change moves together.",
+      "A track switch made mid-load could be undone when the old load finished; superseded loads are now discarded."
+     ],
+     "shown": "Sep 30"
+    },
+    {
+     "version": "2.0.1",
+     "date": "2026-09-29",
+     "notes": [
+      "Play no longer waits for every picture, which could take a minute on a slow connection."
+     ],
+     "shown": "Sep 29"
+    },
+    {
+     "version": "2.0",
+     "name": "2nd mini album",
+     "date": "2026-09-29",
+     "notes": [
+      "A new comeback M/V. ATTN! and the song’s real people are Nano Banana Pro pictures, dancing in clips from Veo, Grok Imagine and HappyHorse, composited live in WebGL.",
+      "A new page to match: a pearl photo studio by day, the stage by night.",
+      "Every word is retimed against the vocal, and the members sing them."
+     ],
+     "shown": "Sep 29"
+    },
+    {
+     "version": "1.2",
+     "name": "special edition",
+     "date": "2026-09-27",
+     "notes": [
+      "The “buy three” boxes are SSI, THINKY and PERPLEXITY, and Meta calls in on the ticker.",
+      "The outro’s infinite mirror shows all four members in every reflection, and Clawd, asleep in the corner, from behind in every other one."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.1",
+     "name": "repackage",
+     "date": "2026-09-27",
+     "notes": [
+      "The karaoke card fills word by word as it’s sung, in the video and on the page.",
+      "Seeking lands exactly: the song no longer drifts up to a second from the words and the video."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.0",
+     "name": "1st mini album",
+     "date": "2026-09-26",
+     "notes": [
+      "ATTN!’s comeback special: an anime idol music video, with a countdown to D-day down the page."
+     ],
+     "shown": "Sep 26"
+    }
+   ]
+  },
+  "eurodance": {
+   "title": "History",
+   "current": "2.0.1",
+   "releases": [
+    {
+     "version": "2.0.1",
+     "name": "final version",
+     "date": "2026-09-30",
+     "notes": [
+      "The NFO lists this final version’s date under the party release’s.",
+      "Every frame is drawn with WebGL2 straight to the page’s canvas. The type, HUDs and panels, which were 2D canvases re-uploaded every frame, are now drawn on the GPU from cached text sprites and analytically shaded shapes.",
+      "The ray-marcher compiles about twice as fast under Direct3D, and Firefox, which can’t compile shaders in the background, builds three per-era programs before the song starts instead of 21 per-scene variants mid-song.",
+      "On high-DPI screens the ray-marched picture renders at CSS-pixel resolution, under full-resolution type.",
+      "The quality controller ignores one-off stalls, steps down on the median of recent frames, and steps back up once frames have headroom.",
+      "A track switch made mid-load could be undone when the old load finished; superseded loads are now discarded."
+     ],
+     "shown": "Sep 30"
+    },
+    {
+     "version": "2.0",
+     "name": "party version",
+     "date": "2026-09-29",
+     "notes": [
+      "A new video: Frontier Crew’s PC demo, which scales with the song from 1996 VGA through a 1998 3D card and 2004 pixel shaders to a 2026 64k intro.",
+      "A new page to match: the demo’s release, in text mode.",
+      "Every word is retimed against the vocal, down to the held “contain it!”s."
+     ],
+     "shown": "Sep 29"
+    },
+    {
+     "version": "1.2",
+     "date": "2026-09-27",
+     "notes": [
+      "The line-up in “Sam’s own agents” holds up the names the agents gave themselves: PHASEONE[big], JAN183411, LILY."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.1",
+     "date": "2026-09-27",
+     "notes": [
+      "The karaoke wipe and the bouncing ball land on each word as it’s sung, in the video and on the page.",
+      "The SOFTMAX chip is a small label again on phones.",
+      "Seeking lands exactly: the song no longer drifts up to a second from the words and the video."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.0",
+     "name": "as aired on hype★TV",
+     "date": "2026-09-26",
+     "notes": [
+      "DJ Clawd presents Softmax feat. MC Token: a 1998 Eurodance video as a music channel aired it, with a Windows 98 page."
+     ],
+     "shown": "Sep 26"
+    }
+   ]
+  },
+  "anisong": {
+   "title": "Broadcast notes",
+   "current": "1.2.1",
+   "releases": [
+    {
+     "version": "1.2.1",
+     "date": "2026-09-30",
+     "notes": [
+      "Stills download sixteen at a time instead of four, the soonest needed first, and decode only near the playhead; from a cold CDN edge they now all arrive in about 4 s instead of 15–17.",
+      "A track switch made mid-load could be undone when the old load finished; superseded loads are now discarded."
+     ],
+     "shown": "Sep 30"
+    },
+    {
+     "version": "1.2",
+     "name": "Blu-ray vol. 2",
+     "date": "2026-09-29",
+     "notes": [
+      "The GitHub scene names the two accounts the agent really used, miraholt31 and lbrandt-dev.",
+      "Every word is retimed against the vocal.",
+      "Play waits for the video to load, so the song can’t run on ahead of it."
+     ],
+     "shown": "Sep 29"
+    },
+    {
+     "version": "1.1",
+     "name": "Blu-ray vol. 1",
+     "date": "2026-09-27",
+     "notes": [
+      "Eliezer is redrawn with his recent beard and glasses, and five fingers.",
+      "The karaoke fills word by word as it’s sung, in the video and on the page.",
+      "Seeking lands exactly: the song no longer drifts up to a second from the words and the video."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.0",
+     "name": "TV broadcast",
+     "date": "2026-09-26",
+     "notes": [
+      "The Scaling Club’s opening: nine years of AI headlines lived by a university club, in stills made with Anima."
+     ],
+     "shown": "Sep 26"
+    }
+   ]
+  },
+  "indie-folk": {
+   "title": "notes from the night",
+   "current": "1.1.2",
+   "releases": [
+    {
+     "version": "1.1.2",
+     "name": "first light",
+     "date": "2026-09-30",
+     "notes": [
+      "The video’s engine starts loading in parallel with the song’s audio, not after it.",
+      "A track switch made mid-load could be undone when the old load finished; superseded loads are now discarded."
+     ],
+     "shown": "Sep 30"
+    },
+    {
+     "version": "1.1.1",
+     "name": "4 a.m.",
+     "date": "2026-09-29",
+     "notes": [
+      "Every word is retimed against the vocal.",
+      "Play waits for the video to load, so the song can’t run on ahead of it."
+     ],
+     "shown": "Sep 29"
+    },
+    {
+     "version": "1.1",
+     "name": "2 a.m.",
+     "date": "2026-09-27",
+     "notes": [
+      "The “buy three” boxes are SSI, THINKY and PERPLEXITY, and the BUY 3! starburst no longer covers them."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.0.1",
+     "name": "midnight",
+     "date": "2026-09-27",
+     "notes": [
+      "Seeking lands exactly: the song no longer drifts up to a second from the words and the video."
+     ],
+     "shown": "Sep 27"
+    },
+    {
+     "version": "1.0",
+     "name": "dusk",
+     "date": "2026-09-26",
+     "notes": [
+      "One long night in dithered pixel art."
+     ],
+     "shown": "Sep 26"
+    }
+   ]
+  }
  }
 }

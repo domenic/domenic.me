@@ -6,7 +6,9 @@ const W = 1920, H = 1080, TAU = Math.PI * 2;
 // In a page the canvas is #out; in a Web Worker the host sets self.OUT_CANVAS (an OffscreenCanvas) before loading the engine.
 const HAS_DOM = typeof document !== 'undefined';
 const canvas = HAS_DOM ? document.getElementById('out') : self.OUT_CANVAS;
-let ctx = canvas.getContext('2d');
+// (a style that draws its frames with WebGL2 on the canvas itself takes that context before this script runs, as self.CANVAS_GL:
+// then `ctx` is a 1×1 stand-in, which the frame code every style shares (the paper, the error bar) draws on harmlessly)
+let ctx = self.CANVAS_GL ? makeCanvas(1, 1).getContext('2d') : canvas.getContext('2d');
 // Scratch canvases for caches: DOM canvases in pages, OffscreenCanvas in workers.
 function makeCanvas(w, h) {
   if (!HAS_DOM) return new OffscreenCanvas(w, h);
