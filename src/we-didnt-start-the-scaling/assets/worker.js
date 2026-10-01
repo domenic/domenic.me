@@ -35,7 +35,7 @@ self.onmessage = async (e) => {
       URL.revokeObjectURL(code);
       await fonts;
       if (self.STYLE_READY) await self.STYLE_READY;
-      self.postMessage({ type: 'ready', levels: self.QUALITY_LEVELS ?? 0 });
+      self.postMessage({ type: 'ready', levels: self.QUALITY_LEVELS ?? 0, sharp: self.QUALITY_SHARP ?? null });
       Promise.resolve(self.STYLE_WARM).catch(() => {}).then(() => self.postMessage({ type: 'warm' }));
     } else if (m.type === 'frame') {
       const t0 = performance.now();

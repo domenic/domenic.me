@@ -2655,7 +2655,8 @@
      "notes": [
       "Each member sings her own couplets in her own voice. Toki, Relu and Ada are voice models trained for them on Domenic’s GPU and converted from Suno’s take, line by line; Logi keeps Suno’s original singer.",
       "The photocards and credits list Relu as main dancer · sub vocal and Logi as main rapper · maknae, and the credits add vocal directing.",
-      "“Two labs win Olympiad gold” is in Toki’s pink, like the rest of her couplet, instead of Logi’s yellow."
+      "“Two labs win Olympiad gold” is in Toki’s pink, like the rest of her couplet, instead of Logi’s yellow.",
+      "The lyrics, the interfaces’ type and the subtitles, which were full-frame 2D canvases re-uploaded every frame, are now drawn with WebGL from cached text sprites and shapes, so slower machines keep the video sharp. If one still can’t keep up, the video sheds effects first and lowers the dancers’ resolution only below 25 frames a second, where it used to below 35."
      ],
      "shown": "Oct 1"
     },

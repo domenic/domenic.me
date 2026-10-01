@@ -97,9 +97,12 @@ function lineAt(t) {
 // step it has to leave again soon after climbing to it is tried again only after a while, twice as long each time, so that it
 // settles rather than oscillating. The ladder is the engine's own quality levels, if it has any (QUALITY_LEVELS of them, chosen
 // with setQuality(level): 0 the video as designed, each cheaper than the last, its type always at the canvas's full resolution),
-// then the canvas's own scale (QUALITY). An engine without levels has just the scale.
+// then the canvas's own scale (QUALITY). An engine without levels has just the scale. An engine can also say from which of its
+// levels the resolution drops (QUALITY_SHARP, the K-pop video's 3D scene): from there down, including the canvas's own steps, the
+// ladder moves only for frames over a looser budget (40 ms, under 25 frames a second), since a soft picture shows more than fewer
+// sparkles or a lower frame rate.
 const QUALITY = [1, .75, .5];
-const BUDGET = 28;
+const BUDGET = 28, SHARP_BUDGET = 40;
 let renderer = null;
 let rendererStarting = null;
 let qi = 0;
@@ -107,6 +110,7 @@ let appliedScale = 0;
 let lastDrawMs = 0;
 let lastLowRes = 0;
 let engineLevels = 0;       // (the running engine's QUALITY_LEVELS)
+let engineSharp = null;     // (and its QUALITY_SHARP, if it has one)
 let step = 0;               // (where on the ladder: the engine's levels first, then the canvas's scale steps)
 let settling = 0;           // (frames to leave out after a step, while the engine settles into it: at least this many,
 let settleUntil = 0;        //  and all those drawn before this time)
@@ -164,17 +168,22 @@ function onDrawn(ms, lowRes = 0, info = null, oneOff = false) {
     applyStep();
   }
 }
+// (the budget for moving down to step k: the looser one where k lowers the resolution, for an engine that says where that starts)
+const budgetTo = k => engineSharp != null && engineSharp >= 0 && k >= engineSharp ? SHARP_BUDGET : BUDGET;
 // (the steps to move, from the frames measured at this step: down by one or more when the median of the last dozen is over the
-// budget; up by one when for three seconds or more nine in ten have been under two-thirds of it, and the step above isn't waiting
-// out a backoff; else 0)
+// budget for each step it moves to; up by one when for three seconds or more nine in ten have been under two-thirds of the budget
+// that brought it down here, and the step above isn't waiting out a backoff; else 0)
 function qualityStep(frames, now) {
   if (frames.length >= 12 && step < ladderLength() - 1) {
     const m = median(frames.slice(-12).map(f => f[0]));
-    if (m > BUDGET) return clamp(Math.floor(Math.log(m / BUDGET) / Math.log(1.6)), 1, ladderLength() - 1 - step);
+    const n = Math.floor(Math.log(m / BUDGET) / Math.log(1.6));
+    let to = step;
+    for (let k = step + 1; k <= Math.min(step + Math.max(1, n), ladderLength() - 1) && m > budgetTo(k); k++) to = k;
+    if (to > step) return to - step;
   }
   if (step > 0 && now - stepAt > 3000 && !(now < (backoff.get(step - 1)?.until ?? 0))) {
     const last = frames.filter(f => now - f[1] < 3000).map(f => f[0]).sort((a, b) => a - b);
-    if (last.length >= 20 && last[Math.floor(last.length * .9)] < BUDGET * 2 / 3) return -1;
+    if (last.length >= 20 && last[Math.floor(last.length * .9)] < budgetTo(step) * 2 / 3) return -1;
   }
   return 0;
 }
@@ -183,7 +192,7 @@ const median = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floo
 const debugHUD = new URLSearchParams(location.search).has('debug') ? (() => {
   const el = document.createElement('pre');
   el.className = 'debug-hud';
-  el.style.cssText = 'position:fixed;left:6px;top:40px;z-index:99;margin:0;padding:6px 8px;max-width:calc(100vw - 12px);background:rgb(0 0 0 / 78%);color:#9ef;font:11px/1.35 ui-monospace,monospace;white-space:pre-wrap;pointer-events:none';
+  el.style.cssText = 'position:fixed;left:6px;top:40px;z-index:99;margin:0;padding:6px 8px;max-width:calc(100vw - 12px);background:rgb(0 0 0 / 78%);color:#9ef;font:11px/1.35 ui-monospace,monospace;white-space:pre-wrap;user-select:text;cursor:text';
   document.body.append(el);
   const times = [];
   let shown = 0, info = null;
@@ -229,7 +238,7 @@ function workerRenderer(el, style, tm, scale) {
   const send = t => { busy = true; sentAt = performance.now(); worker.postMessage({ type: 'frame', t, info: !!debugHUD }); };
   worker.onmessage = e => {
     const m = e.data;
-    if (m.type === 'ready') { engineLevels = m.levels ?? 0; resolveReady(); }
+    if (m.type === 'ready') { engineLevels = m.levels ?? 0; engineSharp = m.sharp ?? null; resolveReady(); }
     else if (m.type === 'warm') resolveWarm();
     else if (m.type === 'drawn') {
       busy = false;
@@ -329,6 +338,7 @@ async function frameRenderer(el, style, tm, scale) {
   };
   win.STYLE_STALE = () => { if (renderer === r && S.playback !== 'playing') drawNow(); };
   engineLevels = win.QUALITY_LEVELS ?? 0;
+  engineSharp = win.QUALITY_SHARP ?? null;
   return r;
 }
 
