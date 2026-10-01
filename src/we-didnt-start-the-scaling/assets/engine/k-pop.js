@@ -966,9 +966,9 @@ const PAL = {
 };
 const MEM = {
   TOKI: { key: 'TOKI', col: '#FF4FA8', glow: '#FF9ACF', soft: '#FFD6EB', role: 'LEADER · MAIN VOCAL' },
-  RELU: { key: 'RELU', col: '#1FD6A8', glow: '#86F4D5', soft: '#CDF6EA', role: 'MAIN DANCER' },
+  RELU: { key: 'RELU', col: '#1FD6A8', glow: '#86F4D5', soft: '#CDF6EA', role: 'MAIN DANCER · SUB VOCAL' },
   ADA: { key: 'ADA', col: '#8F63FF', glow: '#BDA4FF', soft: '#E2D8FF', role: 'LEAD VOCAL' },
-  LOGI: { key: 'LOGI', col: '#FFB321', glow: '#FFD27A', soft: '#FFEBC4', role: 'MAIN RAPPER' },
+  LOGI: { key: 'LOGI', col: '#FFB321', glow: '#FFD27A', soft: '#FFEBC4', role: 'MAIN RAPPER · MAKNAE' },
 };
 const ORDER = ['TOKI', 'RELU', 'ADA', 'LOGI'];
 // Line distribution: verse lines go to the members in couplets (a K-pop "part"), each verse starting one member further on; choruses
@@ -3669,14 +3669,14 @@ startPics();
   line('V2', 8, (p, lt, d, t) => {
     const w = W2('V2.8');
     cam({ pos: [0, 1.25, lerp(3.3, 2.9, easeOut(p))], at: [0, 1.15, 0], fov: 34 });
-    uiSet(MEM.LOGI.col, { floor: true });
+    uiSet(MEM.TOKI.col, { floor: true });
     [['OpenAI', .15, 0], ['Google DeepMind', 1.25, 1]].forEach(([lab, x, i]) => {
       const swing = Math.sin(t * 2.2 + i * 1.3) * .08, in_ = easeOut5(seg(t, w[i].start - .05, w[i].start + .35));
       plane(medal(i, lab), { at: [x, lerp(3.2, 2.05, in_), 0], h: 1.4, anchor: [.5, 0], facing: Math.sin(t * 1.4 + i) * .35, roll: swing, grid: false, gain: 1.1 });
     });
     particles('fall', { n: 300, a: [0, 2.2, 0], b: [2.5, 1.6, 1], c: [.35], size: .03, cols: ['#FFD27A', '#FFF3C4'], shape: 'star', gain: 1.2 });
     const g = layer();
-    lyric(g, lineOf('V2.8'), t, { markup: 'TWO LABS / WIN / OLYMPIAD / *GOLD.*', x: 120, y: 230, size: 82, accent: '#FFD27A', anim: 'rise' });
+    lyric(g, lineOf('V2.8'), t, { markup: 'TWO LABS / WIN / OLYMPIAD / *GOLD.*', x: 120, y: 230, size: 82, accent: MEM.TOKI.col, anim: 'rise' });
     const k = seg(t, w[3].start, w[3].start + .2);
     txt(g, '35 / 42', 1175, 960, 64, { font: 'mono', col: '#FFD27A', align: 'center', alpha: k });
     reactCam(g, 'TOKI', 'react', t, w[4].start, { x: 130, y: 700, w: 250, rot: -.03 });
@@ -5170,8 +5170,8 @@ startPics();
   const L = n => lineOf(`C4.${n}`), Wd = (n, i) => wordsOf(L(n))[i];
   const CREDITS = [
     ['', 'ATTN! ‘We Didn’t Start the Scaling’'], ['', ''],
-    ['LYRICS', 'Domenic Denicola & Claude'], ['MUSIC', 'Suno v6'], ['VIDEO', 'Claude Opus 5.5'], ['', ''],
-    ['TOKI', 'leader · main vocal'], ['RELU', 'main dancer'], ['ADA', 'lead vocal'], ['LOGI', 'main rapper'], ['', ''],
+    ['LYRICS', 'Domenic Denicola & Claude'], ['MUSIC', 'Suno v6'], ['VOCAL DIRECTING', 'Claude Opus 5.5'], ['VIDEO', 'Claude Opus 5.5'], ['', ''],
+    ['TOKI', 'leader · main vocal'], ['RELU', 'main dancer · sub vocal'], ['ADA', 'lead vocal'], ['LOGI', 'main rapper · maknae'], ['', ''],
     ['HEADS', 'Clawd, and everyone else'], ['', ''], ['MUSIC CURVE', 'see you next week'],
   ];
   // (rolling from t0 to t1: the first row comes up from below the frame at t0, and the last has left the top by t1)

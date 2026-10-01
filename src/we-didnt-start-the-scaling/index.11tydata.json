@@ -2028,10 +2028,10 @@
   {
    "id": "k-pop",
    "group": "album",
-   "model": "Suno v6",
+   "model": "Suno v6 + RVC",
    "title": "K-pop",
    "genre": "K-Pop",
-   "blurb": "Glossy K-pop dance-pop: bright vocals, rap-sung verses, trap hi-hats, 808s and supersaw synths.",
+   "blurb": "Glossy K-pop dance-pop: four voices trading the verses, trap hi-hats, 808s and supersaw synths.",
    "track": 3,
    "url": "/we-didnt-start-the-scaling/k-pop/",
    "pageTitle": "We Didn't Start the Scaling (K-Pop)",
@@ -2248,7 +2248,7 @@
    "group": "album",
    "title": "K-pop",
    "genre": "K-Pop",
-   "model": "Suno v6",
+   "model": "Suno v6 + RVC",
    "audio": "/we-didnt-start-the-scaling/assets/audio/k-pop.m4a",
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/k-pop.mp3",
    "timing": "/we-didnt-start-the-scaling/assets/timing/k-pop.json",
@@ -2646,8 +2646,19 @@
   },
   "k-pop": {
    "title": "Discography",
-   "current": "2.0.2",
+   "current": "2.1",
    "releases": [
+    {
+     "version": "2.1",
+     "name": "repackage",
+     "date": "2026-10-01",
+     "notes": [
+      "Each member sings her own couplets in her own voice. Toki, Relu and Ada are voice models trained for them on Domenic’s GPU and converted from Suno’s take, line by line; Logi keeps Suno’s original singer.",
+      "The photocards and credits list Relu as main dancer · sub vocal and Logi as main rapper · maknae, and the credits add vocal directing.",
+      "“Two labs win Olympiad gold” is in Toki’s pink, like the rest of her couplet, instead of Logi’s yellow."
+     ],
+     "shown": "Oct 1"
+    },
     {
      "version": "2.0.2",
      "date": "2026-09-30",
