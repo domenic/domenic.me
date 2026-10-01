@@ -2,7 +2,11 @@
 // core.js: canvas, time, randomness, easing, camera, shot registry, frame compositor.
 // Everything a shot draws must be a pure function of song time `t` (frames render out of order, in parallel).
 
-const W = 1920, H = 1080, TAU = Math.PI * 2;
+// The frame: 1920×1080, or 1080×1920 in the vertical video (VERT: self.VERTICAL, which the page sets before the engine's scripts run,
+// or ?vertical in a studio page). W and H are the frame's; landscape() lends code written for the 1920×1080 frame a 16:9 one.
+const VERT = !!self.VERTICAL || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('vertical'));
+let W = VERT ? 1080 : 1920, H = VERT ? 1920 : 1080;
+const TAU = Math.PI * 2;
 // In a page the canvas is #out; in a Web Worker the host sets self.OUT_CANVAS (an OffscreenCanvas) before loading the engine.
 const HAS_DOM = typeof document !== 'undefined';
 const canvas = HAS_DOM ? document.getElementById('out') : self.OUT_CANVAS;
@@ -14,7 +18,7 @@ function makeCanvas(w, h) {
   if (!HAS_DOM) return new OffscreenCanvas(w, h);
   const c = document.createElement('canvas'); c.width = w; c.height = h; return c;
 }
-// Render scale: the scene is always authored in 1920×1080 logical units; the canvas holds W·RS × H·RS pixels.
+// Render scale: the scene is authored in logical units, W × H of them; the canvas holds W·RS × H·RS pixels.
 // Set with ?scale= (studio/renderer) or setRenderScale() (embedding pages). A cache drawn at render scale adds a function that empties
 // it to SCALE_HOOKS. (Not a `typeof` check on the cache from here: the site runs a style's scripts as one, where a later script's
 // `const` isn't yet initialized while this one runs, and even `typeof` on it throws.)
@@ -107,6 +111,20 @@ const SHOTS = {};
 function line(verse, n, fn) { SHOTS[`${verse}.${n}`] = fn; }
 // section('C1', fn): the shot for a whole section window (intro, choruses, outro).
 function section(key, fn) { SHOTS[key] = fn; }
+// The vertical video's shots, composed for its 1080×1920 frame: vshot('V2.5', fn) or vshot('C1', fn), keyed by segment like line()'s
+// and section()'s. A segment without one draws its horizontal shot through landscape() (a stand-in while a style's vertical video is
+// being made).
+const VSHOTS = {};
+function vshot(key, fn) { VSHOTS[key] = fn; }
+// landscape(fn, cx, cy, zoom): draws fn(), code written for the 1920×1080 frame (W and H are 1920 and 1080 while it runs), with its
+// point (cx, cy) at the middle of the frame, scaled by zoom (by default, enough for its 1080 height to fill the vertical frame's 1920).
+function landscape(fn, cx = 960, cy = 540, zoom = 1920 / 1080) {
+  const w = W, h = H;
+  ctx.save(); ctx.translate(w / 2, h / 2); ctx.scale(zoom, zoom); ctx.translate(-cx, -cy);
+  W = 1920; H = 1080;
+  try { return fn(); } finally { W = w; H = h; ctx.restore(); }
+}
+const shotAt = key => VERT ? VSHOTS[key] ?? (SHOTS[key] && ((...a) => landscape(() => SHOTS[key](...a)))) : SHOTS[key];
 
 // ---------- per-frame state ----------
 let T = 0;           // current song time
@@ -118,7 +136,7 @@ function renderFrame(t) {
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   ctx.fillStyle = PAL.paper; ctx.fillRect(0, 0, W, H);
   const s = segAt(t);
-  const fn = s && SHOTS[s.key];
+  const fn = s && shotAt(s.key);
   ctx.save();
   try {
     if (fn) fn(clamp((t - s.start) / (s.end - s.start)), t - s.start, s.end - s.start, t, s);
@@ -1245,10 +1263,63 @@ function captionAt(t, linger = .35) {
 }
 
 // ---------- overlay switches (a shot may call these each frame) ----------
-let _noCaption = false, _noStamp = false, _captionStyle = null;
+let _noCaption = false, _noStamp = false, _captionStyle = null, _stampStyle = null;
 const hideCaption = () => { _noCaption = true; };
 const hideStamp = () => { _noStamp = true; };
-const captionStyle = s => { _captionStyle = s; };  // {color, y}
+const captionStyle = s => { _captionStyle = s; };  // {color, y}; in the vertical video also {size}, and y is the bottom strip's centre
+// (the vertical video) stampStyle({x, y, rot}): where this frame's date stamp sits, x being its right edge (default 950, 318)
+const stampStyle = s => { _stampStyle = s; };
+
+// ---------- the vertical video's caption: the line on label-maker strips, one under another ----------
+// The fewest strips the line fits on, each at most maxW wide, with the words shared out as evenly as they go (a dash stays with the
+// word before it). A word too wide for any strip gets one to itself, and the rest share as few strips as they can. Returns the
+// strips' texts, with the widest one's width as .w.
+const _stripCache = new Map();
+function captionStrips(text, size, maxW = 900) {
+  const key = `${text}|${size}|${maxW}`;
+  let out = _stripCache.get(key);
+  if (out) return out;
+  const words = [];
+  for (const w of String(text).split(/\s+/).filter(Boolean)) /^[—–-]$/.test(w) && words.length ? words[words.length - 1] += ' ' + w : words.push(w);
+  const width = s => textW(s.toUpperCase(), size, 'archivo', size * .12) + size * 1.4;
+  const n = words.length, memo = new Map();
+  // best(i, j): the least possible widest strip setting words i… on j strips, and where they break
+  const best = (i, j) => {
+    const mk = i * 8 + j;
+    if (memo.has(mk)) return memo.get(mk);
+    let r;
+    if (j === 1) r = { w: width(words.slice(i).join(' ')), cuts: [] };
+    else {
+      r = { w: Infinity, cuts: [] };
+      for (let c = i + 1; c <= n - j + 1; c++) {
+        const a = width(words.slice(i, c).join(' ')), b = best(c, j - 1), w = Math.max(a, b.w);
+        if (w < r.w - .5) r = { w, cuts: [c, ...b.cuts] };
+      }
+    }
+    memo.set(mk, r);
+    return r;
+  };
+  // the fewest strips that fit; failing that, the fewest that come as narrow as any number of strips can
+  let pick = null;
+  for (let k = 1; k <= Math.min(4, n); k++) {
+    const b = best(0, k);
+    if (b.w <= maxW) { pick = { k, ...b }; break; }
+    if (!pick || b.w < pick.w - .5) pick = { k, ...b };
+  }
+  const cuts = [0, ...pick.cuts, n];
+  out = cuts.slice(0, -1).map((c, i) => words.slice(c, cuts[i + 1]).join(' '));
+  out.w = pick.w;
+  _stripCache.set(key, out);
+  return out;
+}
+// The caption's layout: its strips and size. 54 units, or for a line that would take four strips at 54 the largest size that sets
+// it on three; and smaller, down to 44, for a word too wide for a strip.
+function captionFit(text, size) {
+  if (size === undefined) for (size = 54; size > 44 && captionStrips(text, size).length > 3; size--);
+  let strips = captionStrips(text, size);
+  if (strips.w > 900) { size = Math.max(44, Math.floor(size * 900 / strips.w)); strips = captionStrips(text, size); }
+  return { size, strips, w: strips.w };
+}
 
 // ---------- date ticker ----------
 // Each verse line carries a date string ("JUN 2017", "NOV 17 2023", "SEP 12 2026"). Choruses keep the last date.
@@ -1262,7 +1333,9 @@ function dateAt(t) {
 let _grain = null;
 function buildGrain() {
   _grain = []; _grain.rs = RS;
-  const gw = Math.round(960 * clamp(RS, .5, 2)), gh = Math.round(540 * clamp(RS, .5, 2));
+  // (the vertical video's grain is built upright, so that it isn't stretched)
+  const gw = Math.round((VERT ? 540 : 960) * clamp(RS, .5, 2)), gh = Math.round((VERT ? 960 : 540) * clamp(RS, .5, 2));
+  const gl = Math.max(gw, gh);
   for (let v = 0; v < 3; v++) {
     const c = makeCanvas(gw, gh);
     const g = c.getContext('2d'), img = g.createImageData(gw, gh), d = img.data;
@@ -1273,7 +1346,7 @@ function buildGrain() {
     }
     g.putImageData(img, 0, 0);
     // photocopy edge darkening
-    const vg = g.createRadialGradient(gw / 2, gh / 2, gw * .26, gw / 2, gh / 2, gw * .65);
+    const vg = g.createRadialGradient(gw / 2, gh / 2, gl * .26, gw / 2, gh / 2, gl * .65);
     vg.addColorStop(0, 'rgb(255 255 255 / 0)'); vg.addColorStop(1, 'rgb(150 140 130 / .55)');
     g.fillStyle = vg; g.fillRect(0, 0, gw, gh);
     _grain.push(c);
@@ -1283,7 +1356,21 @@ function buildGrain() {
 OVERLAYS.push((t, s) => {
   // caption
   const ln = lineAt(t);
-  if (ln && !_noCaption) {
+  if (ln && !_noCaption && VERT) {
+    // the vertical video: the line on strips of tape stacked up from y (the bottom strip's centre), each stuck on a little askew,
+    // the second and third a beat of a hand behind the first; the choruses' and the outro's tape is red
+    const st = _captionStyle || {};
+    const text = ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — ');
+    const { size, strips } = captionFit(text, st.size), age = t - ln.start, gap = size * 1.6 + 14;
+    strips.forEach((s, i) => {
+      const k = easeOut(clamp((age - i * .06) / .12)), j = strips.length - 1 - i;
+      if (k <= 0) return;
+      const r = hash(ln.start * 100 + i * 7);
+      ctx.globalAlpha = k;
+      dymo(s, W / 2 + (strips.length > 1 ? (i % 2 ? 1 : -1) * size * .35 : 0), (st.y ?? 1552) - j * gap + (1 - k) * 24, size, st.color ?? (ln.sec[0] === 'C' || ln.sec === 'outro' ? PAL.red : PAL.ink), { rot: (r - .5) * .045 });
+    });
+    ctx.globalAlpha = 1;
+  } else if (ln && !_noCaption) {
     const st = _captionStyle || {};
     const age = t - ln.start, k = easeOut(clamp(age / .12));
     const size = ln.text.length > 34 ? 30 : 36;
@@ -1291,15 +1378,17 @@ OVERLAYS.push((t, s) => {
     dymo(ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — '), W / 2, (st.y ?? 1022) + (1 - k) * 20, size, st.color ?? (ln.sec[0] === 'C' ? PAL.red : PAL.ink), { rot: (hash(ln.start * 100) - .5) * .03 });
     ctx.globalAlpha = 1;
   }
-  // date stamp
+  // date stamp (the vertical video's: top right of the frame's safe area, or where stampStyle() puts it)
   const d = dateAt(t);
   if (d && !_noStamp) {
-    const k = clamp(d.age / .18), rot = -.08 + (hstr(d.text) - .5) * .06;
+    const k = clamp(d.age / .18), sv = _stampStyle || {}, rot = sv.rot ?? -.08 + (hstr(d.text) - .5) * .06;
+    const ss = VERT ? 50 : 46, tw = textW(d.text, ss, 'mono', VERT ? ss * .061 : 2.8);
+    const sx = VERT ? (sv.x ?? 950) - tw / 2 - 40 : 1690, sy = VERT ? sv.y ?? 318 : 92;
     // a torn paper tag behind the stamp keeps it legible on dark scenes
     ctx.save(); ctx.globalAlpha = .9 * clamp(k * 3);
-    card(1690, 92, textW(d.text, 46, 'mono', 2.8) + 70, 96, PAL.paper, rot, { torn: 2.5, seed: 1301, shadow: [5, 6] });
+    card(sx, sy, tw + 70 * ss / 46, 96 * ss / 46, PAL.paper, rot, { torn: 2.5, seed: 1301, shadow: [5, 6] });
     ctx.restore();
-    stamp(d.text, 1690, 92, 46, PAL.red, rot, { pop: k, font: 'mono' });
+    stamp(d.text, sx, sy, ss, PAL.red, rot, { pop: k, font: 'mono' });
   }
   // grain
   if (!_grain || _grain.rs !== RS) buildGrain();
@@ -1307,7 +1396,7 @@ OVERLAYS.push((t, s) => {
   const g = _grain[_boil % 3], ox = (hash(_boil) - .5) * 40, oy = (hash(_boil + 5) - .5) * 30;
   ctx.drawImage(g, -30 + ox, -20 + oy, W + 60, H + 40);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-  _noCaption = false; _noStamp = false; _captionStyle = null;
+  _noCaption = false; _noStamp = false; _captionStyle = null; _stampStyle = null;
 });
 
 ;
@@ -1322,8 +1411,11 @@ OVERLAYS.length = 0;
 // =====================================================================================================
 // FRAMEBUFFER, PALETTE, DITHER
 // =====================================================================================================
-const LW = 480, LH = 270, PXS = W / LW;          // low-res canvas; 1 low-res pixel = 4×4 output pixels
-const FB = new Uint8Array(LW * LH);               // palette indices, row-major
+// The low-res frame: 480×270, or 270×480 in the vertical video (VERT), 1 low-res pixel = 4×4 output pixels either way.
+// LW and LH are the current frame's: hframe() and wide() switch to the landscape 480×270 frame while code written for it runs.
+let LW = VERT ? 270 : 480, LH = VERT ? 480 : 270;
+const PXS = W / LW;
+const FB = new Uint8Array(LW * LH);               // palette indices, row-major (the same 129,600 entries in either frame)
 const CLEAR = 255;                                // "untouched" marker inside layer()
 const _FB2 = new Uint8Array(LW * LH), _FB3 = new Uint8Array(LW * LH);
 // the incoming shot's frame while _dissolve() re-runs the previous shot (which may itself use _FB2, e.g. through reflect())
@@ -1536,7 +1628,11 @@ function glow(cx, cy, r, o = {}) {
   }
 }
 // Whole-frame tint: fadeAll(1.5) dims everything 1.5 steps (dithered); fadeAll(k, LIT) brightens. Respects clipRect.
-function fadeAll(k, tab = DIM) { if (k > 0) for (let y = CY0; y <= CY1; y++) _sp(y, CX0, CX1, tint(tab, k)); }
+function fadeAll(k, tab = DIM) {
+  if (!(k > 0)) return;
+  if (_vlRec && _fullClip()) _vlRec.fades.push([k, tab]);   // (vlower re-applies whole-frame fades to the rows it uncovers)
+  for (let y = CY0; y <= CY1; y++) _sp(y, CX0, CX1, tint(tab, k));
+}
 // Fill everything OUTSIDE a circle (telescope/iris vignettes).
 function outsideCircle(cx, cy, r, ink) {
   const sx = _r(cx - VX), sy = _r(cy - VY), rr = r * r + r * .8;
@@ -1551,12 +1647,13 @@ function outsideCircle(cx, cy, r, ink) {
 // every parameter the drawing depends on. Drawn with view(0, 0); position it through your key/parameters.
 const _layers = new Map();
 function layer(key, fn) {
+  key = LW + '|' + key;   // (the frame's shape: a layer is a whole frame of pixels)
   let L = _layers.get(key);
   if (!L) {
-    _FB3.set(FB); FB.fill(CLEAR);
+    const saved = FB.slice(); FB.fill(CLEAR);   // (a copy of its own, so fn() may use layers too)
     const vx = VX, vy = VY, c = [CX0, CY0, CX1, CY1]; VX = VY = 0; noClip();
     try { fn(); } finally { VX = vx; VY = vy; [CX0, CY0, CX1, CY1] = c; }
-    L = FB.slice(); FB.set(_FB3);
+    L = FB.slice(); FB.set(saved);
     _layers.set(key, L); if (_layers.size > 64) _layers.delete(_layers.keys().next().value);
   }
   if (CX0 === 0 && CY0 === 0 && CX1 === LW - 1 && CY1 === LH - 1) { for (let i = 0; i < L.length; i++) { const v = L[i]; if (v !== CLEAR) FB[i] = v; } return; }
@@ -1640,11 +1737,34 @@ const breathe = (t, per = 2, ph = 0) => .5 - .5 * Math.cos((sbp(t) / per + ph) *
 // (i may be fractional, 1.5 = halfway between beats 1 and 2; extrapolates past the end).
 function beatsIn(s) { const out = []; for (let n = Math.ceil(sbp(s.start) - 1e-6); ; n++) { const bt = sbeatT(n); if (bt >= s.end) break; out.push(bt - s.start); } return out; }
 function beatAt(s, i) { const n0 = Math.ceil(sbp(s.start) - 1e-6); return sbeatT(n0 + i) - s.start; }
+// The voice, for staging a moment on the word it shows (a quote's bubble, a stamp on its word, a chorus line's sub-shot): the
+// windows start where make_timing.py starts their lines, often well before the first word (a median 0.7 s in this take, up to 2.3 s
+// in the choruses). sungAt(s, k) is the lt (seconds from window s's start) at which s's line starts singing display word k: an
+// index (negative counts from the end) or a piece of the word ('fake' finds "Fake"); sungAt(s, k, true), when it ends. sungLines(sec)
+// is linesOf(sec) with each line's start and end moved to its first word's start and its last word's end. Without the timing's
+// word times, a line's words are spread evenly over it.
+function _lineWords(L) {
+  const ws = splitWords(L.text), w = wordTimes(L);
+  if (w) return { ws, starts: w.starts, ends: w.ends };
+  const d = (L.end - L.start) / ws.length;
+  return { ws, starts: ws.map((_, i) => L.start + i * d), ends: ws.map((_, i) => L.start + (i + 1) * d) };
+}
+function sungAt(s, k = 0, end = false) {
+  const L = LINES.find(l => l.sec === s.sec && l.n === s.n); if (!L) return 0;
+  const W = _lineWords(L), n = W.ws.length;
+  let i = typeof k === 'number' ? (k < 0 ? n + k : k) : W.ws.findIndex(w => w.toLowerCase().includes(String(k).toLowerCase()));
+  i = clamp(i, 0, n - 1);
+  return (end ? W.ends[i] : W.starts[i]) - s.start;
+}
+function sungLines(sec) { return linesOf(sec).map(L => { const W = _lineWords(L); return { ...L, start: W.starts[0], end: W.ends[W.ends.length - 1] }; }); }
 // Rise 0→1 starting at lt0 over dur (eased). The workhorse for slow reveals: k = rise(lt, beatAt(seg, 1), .6).
 const rise = (lt, lt0, dur = .5, fn = ease) => fn(clamp((lt - lt0) / dur));
 
 // Section and colour script. skyRamp(t) is the default sky from zenith to horizon glow; it slowly warms toward dawn over the song.
-function sectionAt(t) { const s = segAt(t); return s ? s.sec : 'intro'; }
+// (While the dissolve re-runs the previous shot, that shot's section stands in for the current time's, so it keeps its own sky
+// colours, city and valley as it dissolves away, rather than flashing to the new section's at the cut.)
+let _secOverride = null;
+function sectionAt(t) { if (_secOverride && t === T) return _secOverride; const s = segAt(t); return s ? s.sec : 'intro'; }
 const SKY_RAMPS = {
   cool: [C.void, C.ink, C.night, C.navy, C.dusk],                    // intro, V1, C1
   glow: [C.void, C.ink, C.night, C.navy, C.violet],                  // V2, C2: the city's light on the horizon
@@ -1957,11 +2077,18 @@ function ridgeY(x, o = {}) { const f = o.freq ?? 1 / 60, s = o.seed ?? 1; return
 // =====================================================================================================
 // SKY
 // =====================================================================================================
+// (while vlower() draws a lowered shot, the first full-frame sky() and starfield() it paints are recorded here, so the rows its
+// lowering uncovers at the top can be painted with the same sky continued upward, with no seam)
+let _vlRec = null;
+const _fullClip = () => CX0 === 0 && CY0 === 0 && CX1 === LW - 1 && CY1 === LH - 1;
 // sky(o): the dithered night gradient (cached). Radial glow around (cx, cy) plus a vertical falloff; ramp from zenith to glow.
 // o: ramp (default skyRamp(T)), cx, cy (glow centre, default below the horizon), r (glow radius), vert (0..1 weight of the
-//    vertical term), dy (tilt: shift the whole gradient down by dy px), squash (horizontal stretch of the radial glow)
+//    vertical term), dy (tilt: shift the whole gradient down by dy px), squash (horizontal stretch of the radial glow),
+//    hy (where the vertical term reaches the horizon colour). The defaults suit the frame: in the tall one the horizon is at y ≈ 290.
 function sky(o = {}) {
-  const ramp = (o.ramp || skyRamp(T)).map(col), cx = o.cx ?? 240, cy = o.cy ?? 300, r = o.r ?? 360, vert = o.vert ?? .35, dy = _r(o.dy ?? 0), sq = o.squash ?? .7, top = o.top ?? 0, hy = o.hy ?? 230;
+  if (_vlRec && !_vlRec.sky && _fullClip()) _vlRec.sky = o;   // (vlower's record of the shot's sky: see below)
+  const tl = LH > LW;
+  const ramp = (o.ramp || skyRamp(T)).map(col), cx = o.cx ?? LW / 2, cy = o.cy ?? (tl ? 400 : 300), r = o.r ?? (tl ? 420 : 360), vert = o.vert ?? (tl ? .45 : .35), dy = _r(o.dy ?? 0), sq = o.squash ?? .7, top = o.top ?? 0, hy = o.hy ?? (tl ? 330 : 230);
   layer(`sky|${ramp}|${cx}|${cy}|${r}|${vert}|${dy}|${sq}|${top}|${hy}`, () => {
     rectf(0, 0, LW, LH, grad(ramp, (x, y) => {
       const d = Math.hypot((x - cx) * sq, y - dy - cy) / r, v = clamp((y - dy - top) / (hy - top));
@@ -1979,6 +2106,15 @@ const _STARS = (() => {
   }
   return a;
 })();
+// The tall frame's sky: the same density of stars around a pole above its middle, reaching down past its horizon.
+const SKY_POLE_V = [135, -260];
+const _STARS_V = (() => {
+  const a = []; for (let i = 0; i < 1700; i++) {
+    const r = Math.sqrt(lerp(220 * 220, 820 * 820, hash2(i, 11))), ang = lerp(-2.7, .75, hash2(i, 12)), m = hash2(i, 3);
+    a.push({ r, ang, cls: m < .035 ? 3 : m < .11 ? 2 : m < .4 ? 1 : 0, ph: hash2(i, 4), tw: hash2(i, 5) });
+  }
+  return a;
+})();
 // sparkle(x, y, size, ink, arm): the cream 4-point twinkle. size 0 = 1 px, 1 = plus, 2 = long plus, 3 = plus + diagonals.
 function sparkle(x, y, size = 1, ink = C.cream, arm = C.haze) {
   x = _r(x); y = _r(y);
@@ -1990,10 +2126,12 @@ function sparkle(x, y, size = 1, ink = C.cream, arm = C.haze) {
 // starfield(t, o): ~150 stars on the turning sky; they twinkle on the slow beat. o: density (0..1, default 1), y1 (no stars
 // below this screen y), dy (tilt offset), rot (extra rotation), appear (0..1: stars fade in brightest-first), seed, bright (0..1 twinkle amount)
 function starfield(t, o = {}) {
-  const [px, py] = SKY_POLE, rot = skyRot(t) + (o.rot ?? 0), dy = o.dy ?? 0, y1 = o.y1 ?? LH, dens = o.density ?? 1, ap = o.appear ?? 1, sb = sbeat(t), sp = spulse(t, 3), seed = o.seed ?? 0;
+  if (_vlRec && !_vlRec.stars && _fullClip()) _vlRec.stars = [t, o];
+  const tl = LH > LW, STARS = tl ? _STARS_V : _STARS;
+  const [px, py] = tl ? SKY_POLE_V : SKY_POLE, rot = skyRot(t) + (o.rot ?? 0), dy = o.dy ?? 0, y1 = o.y1 ?? LH, dens = o.density ?? 1, ap = o.appear ?? 1, sb = sbeat(t), sp = spulse(t, 3), seed = o.seed ?? 0;
   const vx = VX, vy = VY; VX = 0; VY = 0;
-  for (let i = 0; i < _STARS.length; i++) {
-    const S = _STARS[i];
+  for (let i = 0; i < STARS.length; i++) {
+    const S = STARS[i];
     if (S.tw > dens) continue;
     const a = S.ang + rot, x = Math.round(px + Math.sin(a) * S.r), y = Math.round(py + Math.cos(a) * S.r + dy);
     if (x < -3 || x > LW + 3 || y < -3 || y > y1) continue;
@@ -2032,22 +2170,40 @@ function moon(x, y, r, o = {}) {
 // =====================================================================================================
 // THE LEDGER: every verse line leaves a star; the 64 stars rise across the sky as a scaling curve.
 // =====================================================================================================
-// LEDGER[i] = {key, x, y, i}. ledger(t, o) draws the stars born so far (a star is born when its line starts).
+// The tall frame's curve (VCURVE): x = x0 + u·w, y = y0 − e(u)·h, with e the ledger's exponential and u = 0 at the curve's foot,
+// just over Clawd's hill (y ≈ 290), … 1 at the 64th star (y ≈ 70), below Instagram's header (u > 1: the curve's continuation, off the top).
+// vCurveAt(u, lane) → [x, y] on the smooth curve, `lane` px along its normal. vLedgerPt(i, n) → the i-th of n headline stars
+// (i ≥ n continues the curve), jittered across the curve as in the landscape frame but less where it's steep, so that the
+// top stretch climbs instead of zig-zagging.
+const VCURVE = { x0: 26, w: 222, y0: 290, h: 226 }, _VE3 = Math.exp(3.4) - 1;
+function vCurveAt(u, lane = 0) {
+  const x = VCURVE.x0 + u * VCURVE.w, y = VCURVE.y0 - (Math.exp(3.4 * u) - 1) / _VE3 * VCURVE.h;
+  const tx = VCURVE.w, ty = -VCURVE.h * 3.4 * Math.exp(3.4 * u) / _VE3, L = Math.hypot(tx, ty);
+  return [x - ty / L * lane, y + tx / L * lane];
+}
+function vLedgerPt(i, n = 64) {
+  const u = (i + .5) / n, e = (Math.exp(3.4 * u) - 1) / _VE3, [x, y] = vCurveAt(u, (hash2(i, 77) - .5) * 16 * lerp(1, .3, clamp(e)));
+  return [Math.round(x), Math.round(y)];
+}
+// LEDGER[i] = {key, x, y, vx, vy, i}. ledger(t, o) draws the stars born so far (a star is born when its line starts).
+// (x, y) is the star in the landscape frame, (vx, vy) in the tall one (vLedgerPt); ledgerXY(L) gives the current frame's.
 const LEDGER = (() => {
   const keys = SEGS.filter(s => s.kind === 'line'), n = keys.length, out = [];
   keys.forEach((s, i) => {
-    const u = (i + .5) / n, e = (Math.exp(3.4 * u) - 1) / (Math.exp(3.4) - 1);
-    const bx = 30 + u * 420, by = 188 - e * 160, jit = (hash2(i, 77) - .5) * 16, ang = Math.atan2(-160 * 3.4 * Math.exp(3.4 * u) / (Math.exp(3.4) - 1), 420);
-    out.push({ key: s.key, seg: s, i, x: Math.round(bx - Math.sin(ang) * jit), y: Math.round(by + Math.cos(ang) * jit), big: hash2(i, 78) < .3 });
+    const u = (i + .5) / n, e = (Math.exp(3.4 * u) - 1) / (Math.exp(3.4) - 1), de = 3.4 * Math.exp(3.4 * u) / (Math.exp(3.4) - 1);
+    const bx = 30 + u * 420, by = 188 - e * 160, jit = (hash2(i, 77) - .5) * 16, ang = Math.atan2(-160 * de, 420);
+    const [vx, vy] = vLedgerPt(i, n);
+    out.push({ key: s.key, seg: s, i, x: Math.round(bx - Math.sin(ang) * jit), y: Math.round(by + Math.cos(ang) * jit), vx, vy, big: hash2(i, 78) < .3 });
   });
   return out;
 })();
+const ledgerXY = L => LH > LW ? [L.vx, L.vy] : [L.x, L.y];
 const ledgerIndex = key => LEDGER.findIndex(L => L.key === key);
 // o: upto (index or key: only stars up to it), links (0..1 dotted constellation lines drawn so far), dx, dy, ink, band (0..1 faint
 //    dithered milky-way band along the curve), newborn (true: the newest star flares), pulse (true: stars swell on the slow beat)
 function ledger(t, o = {}) {
   const dx = o.dx ?? 0, dy = o.dy ?? 0, lim = typeof o.upto === 'string' ? ledgerIndex(o.upto) : o.upto ?? 999;
-  const born = LEDGER.filter(L => L.i <= lim && L.seg.start <= t + 1e-6);
+  const tl = LH > LW, born = LEDGER.filter(L => L.i <= lim && L.seg.start <= t + 1e-6).map(L => tl ? { ...L, x: L.vx, y: L.vy } : L);
   if (!born.length) return;
   if (o.band) for (let i = 0; i + 1 < born.length; i++) { const a = born[i], b = born[i + 1]; for (let s = 0; s < 6; s++) glow(lerp(a.x, b.x, s / 6) + dx, lerp(a.y, b.y, s / 6) + dy, 14, { tab: LIT, k: o.band * .9, pow: 2 }); }
   if (o.links > 0) {
@@ -2079,16 +2235,33 @@ function ridge(o = {}) {
   return tops;
 }
 // hill(o): Clawd's rounded hill. Returns groundY(x) (world coords). o: cx, y (summit y), w (half-width at which it has dropped
-// `drop` px), drop, ink, rim, snow
+// `drop` px), drop, wR / dropR (the right flank's, if it differs: a lopsided hill), ink, rim, snow
 function hill(o = {}) {
-  const cx = o.cx ?? 120, y = o.y ?? 190, w = o.w ?? 110, drop = o.drop ?? 40, ink = o.ink ?? C.void;
-  const gy = x => y + drop * Math.pow(Math.abs(x - cx) / w, 1.8) + (noise1(x * .08, 5) - .5) * 1.4;
+  const cx = o.cx ?? 120, y = o.y ?? 190, w = o.w ?? 110, drop = o.drop ?? 40, ink = o.ink ?? C.void, wR = o.wR ?? w, dropR = o.dropR ?? drop;
+  const gy = x => y + (x < cx ? drop * Math.pow((cx - x) / w, 1.8) : dropR * Math.pow((x - cx) / wR, 1.8)) + (noise1(x * .08, 5) - .5) * 1.4;
   for (let sx = CX0; sx <= CX1; sx++) {
     const wx = sx + VX, top = Math.round(gy(wx)) - VY; if (top > CY1) continue;
     _sp(top, sx, sx, o.rim ?? C.pine); for (let yy = top + 1; yy <= CY1; yy++) _sp(yy, sx, sx, ink);
     if (o.snow !== undefined && bay(sx, top + 1) < .7) _sp(top + 1, sx, sx, o.snow);
   }
   return x => Math.round(gy(x));
+}
+// meadow(groundY, t, o): the near land in the tall frame's lower part, so it isn't a dead slab: the body under groundY(x) shaded
+// from a faintly lit band under the rim down into the dark (dithered), with grass tufts scattered down the slope, taller nearer the
+// bottom, swaying on the slow beat; flowers (an ink, or [inks]) dot it in spring. Draw it after hill()/ridge() with the same ground.
+// o: ramp ([C.night, C.ink, C.void]), fall (px over which the body darkens, 70), ink (tufts, C.pine), n (tufts, 110), x0, x1,
+//    seed, flowers, y1 (lowest y it touches, LH)
+function meadow(groundY, t, o = {}) {
+  const x0 = Math.max(0, Math.round(o.x0 ?? 0)), x1 = Math.min(LW - 1, Math.round(o.x1 ?? LW - 1)), ramp = o.ramp ?? [C.night, C.ink, C.void], fall = o.fall ?? 70, seed = o.seed ?? 5, y1 = o.y1 ?? LH;
+  const body = top => grad(ramp, (xx, yy) => (yy - top - 2) / fall);
+  for (let x = x0; x <= x1; x++) { const top = groundY(x); if (top + 1 < y1) rectf(x, top + 1, 1, y1 - top - 1, body(top)); }
+  const sway = breathe(t, 2) > .5 ? 1 : 0, ink = o.ink ?? C.pine, fl = o.flowers === undefined || o.flowers === false ? null : [].concat(o.flowers);
+  for (let i = 0; i < (o.n ?? 110); i++) {
+    const x = Math.round(x0 + hash2(i, seed) * (x1 - x0)), top = groundY(x), span = y1 - top - 6; if (span < 4) continue;
+    const near = hash2(i, seed + 1) ** .75, y = Math.round(top + 5 + near * span), h = 1 + Math.round(near * 5 * (.5 + hash2(i, seed + 2))), lean = hash2(i, seed + 3) < .5 ? sway : 0;
+    pline(x, y, x + lean, y - h, ink); if (h > 2) pline(x + 1, y, x + 2 + lean, y - h + 2, ink); if (h > 4) pline(x - 1, y, x - 2, y - h + 2, ink);
+    if (fl && hash2(i, seed + 4) < .3) pset(x + lean, y - h - 1, fl[i % fl.length]);
+  }
 }
 // Grass tufts along a ground function, swaying on the slow beat. o: ink, step (px between tufts), h (max height), seed
 function grass(x0, x1, groundY, t, o = {}) {
@@ -2305,9 +2478,18 @@ function heartPx(x, y, s = 1, ink = C.rust, hiInk) {
   rows.forEach((r, j) => [...r].forEach((c, i) => { if (c === '#') pset(x0 + i, y0 + j, ink); }));
   if (hiInk !== undefined && s >= 2) pset(x0 + 1, y0 + 1, hiInk);
 }
-// tagPx(name, cx, bottom, o): the pixel name label (3×5 caps, cream on a dark plate with a tiny pointer). o: font (3|5), ink, plate, edge.
+// tagPx(name, cx, bottom, o): the pixel name label (3×5 caps, cream on a dark plate with a tiny pointer). o: font (3|5), ink, plate, edge,
+// scale (2: the tall frame's size, a phone-readable 10 px F3; the plate and pointer grow with it).
 function tagPx(name, cx, bottom, o = {}) {
-  const f = o.font ?? 3, th = f === 3 ? 5 : 7, w = ptextW(name, { font: f }), pw = w + 4, x = _r(cx - pw / 2), y = _r(bottom - th - 3);
+  const f = o.font ?? 3, sc = o.scale ?? 1;
+  if (sc > 1) {
+    const th = (f === 3 ? 5 : 7) * sc, w = ptextW(name, { font: f, scale: sc }), pw = w + 6, x = _r(cx - pw / 2), y = _r(bottom - th - 6);
+    rectf(x, y, pw, th + 4, o.plate ?? C.void); rectb(x - 1, y - 1, pw + 2, th + 6, o.edge ?? C.navy);
+    rectf(_r(cx) - 1, y + th + 5, 2, 1, o.edge ?? C.navy); pset(_r(cx), y + th + 6, o.edge ?? C.navy);
+    ptext(name, x + 3, y + 2, o.ink ?? C.cream, { font: f, scale: sc });
+    return pw;
+  }
+  const th = f === 3 ? 5 : 7, w = ptextW(name, { font: f }), pw = w + 4, x = _r(cx - pw / 2), y = _r(bottom - th - 3);
   rectf(x, y, pw, th + 2, o.plate ?? C.void); rectb(x - 1, y - 1, pw + 2, th + 4, o.edge ?? C.navy);
   pset(_r(cx), y + th + 3, o.edge ?? C.navy);
   ptext(name, x + 2, y + 1, o.ink ?? C.cream, { font: f });
@@ -2505,14 +2687,17 @@ function medalPx(x, y, o = {}) {
   if (o.shine) sparkle(x + r - 1, y - r + 1, o.shine > .6 ? 2 : 1);
 }
 // bubblePx: a pixel speech bubble. (x, y) = bottom-centre of the bubble box; tail points to (tx, ty).
-// o: font (3|5), ink (text), fill, edge, n (typing), maxW, pad
+// o: font (3|5), ink (text), fill, edge, n (typing), maxW, pad, scale (2: the tall frame's phone-readable size)
 function bubblePx(text, x, y, o = {}) {
-  const f = o.font ?? 3, pad = o.pad ?? 2, lines = o.maxW ? _wrapText(text, { font: f, maxW: o.maxW }) : String(text).split('\n');
-  const F = f === 3 ? F3 : F5, lh = F._h + (f === 3 ? 2 : 4), w = Math.max(...lines.map(l => ptextW(l, { font: f }))) + pad * 2 + 2, h = lines.length * lh - (f === 3 ? 2 : 4) + pad * 2 + 2 + (f === 5 && /[gjpqy,]/.test(text) ? 2 : 0);
+  const f = o.font ?? 3, sc = o.scale ?? 1, pad = o.pad ?? 2 * sc;
+  // (scaled bubbles wrap into balanced lines and leave room for descenders only under the last line)
+  const lines = o.maxW ? (sc > 1 ? balancedLines : _wrapText)(text, { font: f, scale: sc, maxW: o.maxW }) : String(text).split('\n');
+  const desc = f === 5 && /[gjpqy,]/.test(sc > 1 ? lines[lines.length - 1] : text) ? 2 * sc : 0;
+  const F = f === 3 ? F3 : F5, lh = (F._h + (f === 3 ? 2 : 4)) * sc, w = Math.max(...lines.map(l => ptextW(l, { font: f, scale: sc }))) + pad * 2 + 2, h = lines.length * lh - (f === 3 ? 2 : 4) * sc + pad * 2 + 2 + desc;
   const bx = _r(x - w / 2), by = _r(y - h), fill = o.fill ?? C.cream, edge = o.edge ?? C.void;
-  if (o.tail) { const [tx, ty] = o.tail; triPx(x - 3, y - 1, x + 2, y - 1, tx, ty, edge); triPx(x - 2, y - 2, x + 1, y - 2, lerp(x, tx, .75), lerp(y, ty, .75), fill); }
+  if (o.tail) { const [tx, ty] = o.tail, tw = sc > 1 ? 2 : 0; triPx(x - 3 - tw, y - 1, x + 2 + tw, y - 1, tx, ty, edge); triPx(x - 2 - tw, y - 2, x + 1 + tw, y - 2, lerp(x, tx, .75), lerp(y, ty, .75), fill); }
   rboxf(bx - 1, by - 1, w + 2, h + 2, edge, 2); rboxf(bx, by, w, h, fill, 1);
-  ptext(lines.join('\n'), x, by + pad + 1, o.ink ?? C.void, { font: f, align: 'center', n: o.n });
+  ptext(lines.join('\n'), x, by + pad + 1, o.ink ?? C.void, { font: f, scale: sc, align: 'center', n: o.n });
   return { x: bx, y: by, w, h };
 }
 // signPx: a text plate. (x, y) = top-centre. o: font, ink, plate, edge, pad, scale, dots
@@ -2551,27 +2736,50 @@ function laptopPx(x, y, o = {}) {
 // STANDARD SETS
 // =====================================================================================================
 // homeScene(t, o): Clawd's hill under the turning sky: the style's home base (intro, choruses, placeholders).
+// Hooks: o.behind(dy) paints after the sky, stars and ledger, before the land (aurora curtains); o.ground(g) paints on the hill
+// (world coords, g = the hill's groundY) before Clawd.
 // o: sky ({…} sky options), stars ({…}), moon ([x, y, r] | false), moonOpts, ledger ({…} | false), city ({…} | false),
 //    weather (kind | false), clawd ({…} clawdPx options plus x | false), lantern (false to drop Clawd's lantern), hillX (summit x),
 //    dy (tilt: positive moves the land down, i.e. the camera looks up; sky and stars move at 30 %, far ridge at 60 %)
 // Returns {ground(x) → screen y of the hill top, clawd: clawdPx info}.
+// The tall frame's home scene (HOME_V): the moon high on the right, the far ridge and the city on the horizon at y ≈ 330, the
+// valley between lit by scattered farm windows (valleyLights), and Clawd's round hill with its summit at (hillX, hillY), its
+// right flank falling away into the valley. The caption band (y ≈ 296–360) lies across the hill's dark body and the valley.
+const HOME_V = { moon: [208, 124, 9], city: { y: 324, x0: 112, dc: 196 }, ridge: 334, hillX: 92, hillY: 320, hillW: 120, drop: 40, hillWR: 190, dropR: 100 };
+// valleyLights(t, o): the far valley's farm and village windows below the ridge (tall frame), a few twinkling. o: x0, x1, y0, y1,
+// n, grow (0..1: more lights later in the song), seed. Each light is a window or two on a dark house, bigger nearer (lower).
+function valleyLights(t, o = {}) {
+  const x0 = o.x0 ?? 104, x1 = o.x1 ?? LW, y0 = o.y0 ?? 340, y1 = o.y1 ?? 470, seed = o.seed ?? 61, n = Math.round((o.n ?? 34) * (.55 + .45 * (o.grow ?? .5)));
+  for (let i = 0; i < n; i++) {
+    const v = hash2(i, seed) ** 1.4, y = Math.round(lerp(y0, y1, v)), x = Math.round(lerp(x0, x1, hash2(i, seed + 1))), near = v > .55;
+    rectf(x - 1, y - 1, near ? 5 : 3, near ? 3 : 2, C.void);
+    const h = hash2(i, seed + 2), on = h < .82 || hash2(i, sbeat(t) + seed) < .5;
+    if (!on) continue;
+    pset(x, y, h < .3 ? C.gold : h < .62 ? C.amber : C.clay);
+    if (near && h < .5) pset(x + 2, y, C.amber);
+  }
+}
 function homeScene(t, o = {}) {
-  const dy = o.dy ?? 0;
+  const dy = o.dy ?? 0, tl = LH > LW;
   sky({ dy: Math.round(dy * .3), ...(o.sky || {}) });
   starfield(t, { dy: dy * .3, ...(o.stars || {}) });
-  if (o.moon !== false) { const [mx, my, mr] = o.moon || [392, 46, 9]; moon(mx, my + dy * .3, mr, o.moonOpts || {}); }
+  if (o.moon !== false) { const [mx, my, mr] = o.moon || (tl ? HOME_V.moon : [392, 46, 9]); moon(mx, my + dy * .3, mr, o.moonOpts || {}); }
   if (o.ledger !== false) ledger(t, { dy: dy * .3, ...(o.ledger || {}) });
+  if (o.behind) o.behind(dy);
   view(0, -Math.round(dy * .6));
-  if (o.city !== false) city(t, { y: 204, x0: 262, grow: { intro: .15, V1: .25, C1: .3, V2: .5, C2: .55, V3: .75, C3: .8, V4: .95, C4: 1, outro: 1 }[sectionAt(t)] ?? .5, dc: 380, lit: .3, ...(o.city || {}) });
-  ridge({ y: 214, amp: 14, seed: 3, ink: C.ink, rim: C.night, freq: 1 / 80 });
+  if (o.city !== false) city(t, { y: tl ? HOME_V.city.y : 204, x0: tl ? HOME_V.city.x0 : 262, grow: { intro: .15, V1: .25, C1: .3, V2: .5, C2: .55, V3: .75, C3: .8, V4: .95, C4: 1, outro: 1 }[sectionAt(t)] ?? .5, dc: tl ? HOME_V.city.dc : 380, lit: .3, ...(o.city || {}) });
+  ridge({ y: tl ? HOME_V.ridge : 214, amp: 14, seed: 3, ink: C.ink, rim: C.night, freq: 1 / 80 });
+  if (tl && o.valley !== false) valleyLights(t, { grow: { intro: .15, V1: .25, C1: .3, V2: .5, C2: .55, V3: .75, C3: .8, V4: .95, C4: 1, outro: 1 }[sectionAt(t)] ?? .5, ...(o.valley || {}) });
   view(0, -dy);
-  const hx = o.hillX ?? 118, g = hill({ cx: hx, y: 196, w: 150, drop: 46, ink: C.void, rim: C.pine, snow: seasonAt(t) === 'winter' ? C.haze : undefined });
+  const hx = o.hillX ?? (tl ? HOME_V.hillX : 118), g = hill({ cx: hx, y: tl ? HOME_V.hillY : 196, w: tl ? HOME_V.hillW : 150, drop: tl ? HOME_V.drop : 46, wR: tl ? HOME_V.hillWR : undefined, dropR: tl ? HOME_V.dropR : undefined, ink: C.void, rim: C.pine, snow: seasonAt(t) === 'winter' ? C.haze : undefined });
+  if (tl) meadow(g, t, { ramp: [C.ink, C.void], fall: 60, n: 80, seed: 9 });
   grass(0, LW, g, t, { ink: C.pine });
+  if (o.ground) o.ground(g);
   let info = null;
   if (o.clawd !== false) {
     const cl = o.clawd || {}, x = cl.x ?? hx - 2;
-    if (o.lantern !== false) handLantern(x + 18, g(x + 18));
-    info = clawdPx(x, g(x), { u: 2, pose: 'sit', eyes: 'up', outline: ['C4', 'outro'].includes(sectionAt(t)) ? C.wine : undefined, ...cl });
+    if (o.lantern !== false) handLantern(x + (tl ? 22 : 18), g(x + (tl ? 22 : 18)));
+    info = clawdPx(x, g(x), { u: tl ? 3 : 2, pose: 'sit', eyes: 'up', outline: ['C4', 'outro'].includes(sectionAt(t)) ? C.wine : undefined, ...cl });
   }
   view(0, 0);
   if (o.weather !== false) weather(t, o.weather ?? 'auto');
@@ -2588,39 +2796,93 @@ let _trans = null;
 function cutIn() { _trans = { dur: 0 }; }
 function dissolveIn(dur = DISSOLVE) { _trans = { dur }; }
 
+// The current video's shot for a segment: its vertical one in the vertical video (VSHOTS: see below), else its horizontal one.
+const shotOf = key => VERT ? VSHOTS[key] : SHOTS[key];
 function _dissolve(t, s) {
   const lt = t - s.start, dur = _trans ? _trans.dur : DISSOLVE;
   if (dur <= 0 || lt >= dur) return;
-  const i = SEGS.indexOf(s), prev = SEGS[i - 1];
-  if (!prev || !SHOTS[prev.key]) return;
+  const i = SEGS.indexOf(s), prev = SEGS[i - 1], prevShot = prev && shotOf(prev.key);
+  if (!prevShot) return;
   _FBD.set(FB);
-  const saved = [_noCaption, _noStamp, _captionStyle, _trans, VX, VY];
+  const saved = [_noCaption, _noStamp, _captionStyle, _trans, VX, VY, _solidDate];
   FB.fill(0); VX = VY = 0; noClip();
-  try { const d = prev.end - prev.start; SHOTS[prev.key](clamp((t - prev.start) / d), t - prev.start, d, t, prev); }
+  _secOverride = prev.sec;
+  try { const d = prev.end - prev.start; prevShot(clamp((t - prev.start) / d), t - prev.start, d, t, prev); }
   catch (e) { console.error(`dissolve: shot ${prev.key} @ ${t.toFixed(2)}: ${e.stack || e}`); }
-  [_noCaption, _noStamp, _captionStyle, _trans, VX, VY] = saved; noClip();
+  finally { _secOverride = null; }
+  [_noCaption, _noStamp, _captionStyle, _trans, VX, VY, _solidDate] = saved; noClip();
   const k = ease(lt / dur);
   for (let y = 0; y < LH; y++) { const row = y * LW, br = (y & 7) << 3; for (let x = 0; x < LW; x++) if (BAYER[br | (x & 7)] < k) FB[row + x] = _FBD[row + x]; }
 }
 // The sung line, typed out at the bottom. Caption rules: see STYLE.md. captionStyle({color, y}) recolours (palette name or index) /
-// moves it (y = cap-top in low-res px, default 252); hideCaption() hides it for this frame.
+// moves it (y = cap-top in low-res px, default 252; in the tall frame, the foot, default CAPTION_VFOOT); hideCaption() hides it.
 const CAPTION_Y = 252;
-function _curLine(t) { for (let i = LINES.length - 1; i >= 0; i--) if (LINES[i].start <= t) return LINES[i]; return null; }
+// In the tall frame the caption is F5 at ×2, in one to three balanced lines (CAPTION_VW wide at most, 21 px apart) that grow upward
+// from a foot at CAPTION_VFOOT (y 400, 1600 output units: the bottom of the last line's plate, just above the ~270 output units
+// that a Reel's account name, caption and audio label cover). One line takes y 379–400, two 358–400, three 337–400.
+const CAPTION_VFOOT = 400, CAPTION_VW = 228, CAPTION_VLH = 21;
+// The caption follows the voice, by the timing's word times (tools/word_timing.py, as the page's karaoke uses them): a line comes
+// up as the one before it finishes, or half a second before its first word after a rest (timeline.js's captionAt), and goes 0.35 s
+// after its last word, fading over another 0.35 s. It types out at an even pace from its first word's start to its last word's
+// end (or a second into the last word, where that's held longer: the choruses hold "gaining" for up to 3 s, and typing on to the
+// hold's end left the caption seconds behind the voice): on time at both ends, but unhurried in between rather than snapping to
+// each word.
 function captionText(L) { return L.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — '); }
+// Wrap text into as few lines as greedy wrapping at maxW needs, as evenly as it can (the narrowest widest line).
+function balancedLines(str, o) {
+  const n = _wrapText(str, o).length; if (n <= 1) return [String(str)];
+  let lo = 0, hi = o.maxW;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (_wrapText(str, { ...o, maxW: m }).length <= n) hi = m; else lo = m; }
+  return _wrapText(str, { ...o, maxW: hi });
+}
+// How the tall frame's caption lays out text: [{text, x, y, w}] (x, y = each line's cap top-left), for shots that compose around it.
+// foot: the bottom of the last line's plate.
+function captionLayout(text, foot = CAPTION_VFOOT) {
+  const lines = balancedLines(text, { scale: 2, maxW: CAPTION_VW }), y0 = foot - 17 - (lines.length - 1) * CAPTION_VLH;
+  return lines.map((ln, i) => { const w = ptextW(ln, { scale: 2 }); return { text: ln, x: Math.round((LW - w) / 2), y: y0 + i * CAPTION_VLH, w }; });
+}
+// How many of the caption's characters (text: the line as captionText() gives it) are typed at t; null without word times.
+function _typedChars(L, text, t) {
+  const w = wordTimes(L); if (!w) return null;
+  const a = w.starts[0], b = Math.max(a + .3, Math.min(w.ends[w.ends.length - 1], w.starts[w.starts.length - 1] + 1));
+  return Math.ceil(text.length * clamp((t - a) / (b - a)) - 1e-6);
+}
 function _drawCaption(t) {
   if (_noCaption) return;
-  const L = _curLine(t); if (!L) return;
-  const fade = clamp((t - (L.end + .35)) / .35); if (fade >= 1) return;
-  const st = _captionStyle || {}, text = captionText(L), age = t - L.start, dur = L.end - L.start;
-  const typeDur = clamp(text.length / 16, .45, Math.max(.45, dur * .75)), n = Math.max(1, Math.ceil(text.length * clamp(age / typeDur)));
+  const cap = captionAt(t, .7); if (!cap) return;
+  const L = cap.ln, fade = clamp((t - (cap.last + .35)) / .35); if (fade >= 1) return;
+  const st = _captionStyle || {}, text = captionText(L);
+  let n = _typedChars(L, text, t);
+  if (n === null) {   // (a line without word times types out evenly from its start)
+    const dur = L.end - L.start, typeDur = clamp(text.length / 16, .45, Math.max(.45, dur * .75));
+    n = Math.max(1, Math.ceil(text.length * clamp((t - L.start) / typeDur)));
+  }
   let ink = st.color !== undefined ? col(st.color) : L.sec[0] === 'C' ? C.gold : L.sec === 'outro' ? C.haze : C.cream;
   if (typeof ink !== 'number' || ink > 15) ink = C.cream;  // zine-style hex colours don't apply here
+  if (LH > LW) return _drawCaptionTall(text, n, ink, 1 - fade, st);
   let y = st.y ?? CAPTION_Y; if (y > LH) y = Math.round(y / PXS) - 4;
   const w = ptextW(text), x0 = Math.round((LW - w) / 2), vis = 1 - fade;
   rectf(x0 - 5, y - 4, w + 10, 16, dim(.55 * vis));
   const typing = n < text.length;
   ptext(text, x0, y, vis < 1 ? veil(ink, vis) : ink, { n, shadow: vis < 1 ? veil(C.void, vis) : C.void });
-  if (typing) { const cw = ptextW(text.slice(0, n)); rectf(x0 + cw + 2, y, 3, 7, veil(ink, .9 * vis)); }
+  if (typing) { const cw = n > 0 ? ptextW(text.slice(0, n)) : -2; rectf(x0 + cw + 2, y, 3, 7, veil(ink, .9 * vis)); }
+}
+function _drawCaptionTall(text, n, ink, vis, st) {
+  let foot = st.y ?? CAPTION_VFOOT; if (foot > LH) foot = Math.round(foot / PXS);   // (captionStyle's y is the foot here)
+  const lines = captionLayout(text, foot), o = { scale: 2 };
+  for (const ln of lines) rectf(ln.x - 6, ln.y - 4, ln.w + 12, CAPTION_VLH, dim(.55 * vis));
+  // (each line is a run of the text, the spaces it broke at dropped: n chars of the text show k of a line's)
+  let at = 0;
+  for (const ln of lines) {
+    const a = text.indexOf(ln.text, at), k = clamp(n - a, 0, ln.text.length), part = ln.text.slice(0, k);
+    at = a + ln.text.length;
+    if (k > 0) {
+      ptext(part, ln.x + 1, ln.y + 1, vis < 1 ? veil(C.void, vis) : C.void, o);
+      ptext(part, ln.x, ln.y, vis < 1 ? veil(ink, vis) : ink, o);
+    }
+    // the cursor: after the last letter typed, waiting at the end of a line until the next line's first word
+    if (n < text.length && n >= a && (n <= at || ln === lines[lines.length - 1])) { rectf(ln.x + (k > 0 ? ptextW(part, o) + 3 : 0), ln.y, 5, 14, veil(ink, .9 * vis)); break; }
+  }
 }
 // The date: small dot-matrix year (rolls through the years it skips) with the month/day above it, top-left.
 function _dateInfo(t) {
@@ -2629,14 +2891,29 @@ function _dateInfo(t) {
   return cur ? { text: cur.date, age: t - cur.start, prev: prev ? prev.date : null } : null;
 }
 const DATE_X = 9, DATE_Y = 8;
+// In the tall frame the date sits below Reels' header, a size up: month/day in F5 over the year in dot-matrix F5 ×3.
+// solidDate() (a shot calls it each frame) backs it with a solid plate instead of the dim one, for a shot whose busy art (labels,
+// a tilt past signs) would otherwise show through under the date.
+const DATE_VX = 17, DATE_VY = 66;
+let _solidDate = false;
+const solidDate = () => { _solidDate = true; };
 function _drawDate(t) {
   if (_noStamp) return;
   const d = _dateInfo(t); if (!d) return;
+  const tl = LH > LW;
   const m = d.text.match(/^(.*?)\s*(\d{4})$/), md = m ? m[1] : d.text, yr = m ? +m[2] : null;
   const pm = d.prev && d.prev.match(/(\d{4})$/), py = pm ? +pm[1] : yr;
   const kY = easeOut(clamp(d.age / (.35 * Math.max(1, Math.abs(yr - py))))), shownY = py && yr && yr !== py ? Math.round(lerp(py, yr, kY)) : yr;
   const kM = clamp(d.age / .45), pmd = d.prev ? (d.prev.match(/^(.*?)\s*\d{4}$/) || [0, d.prev])[1] : '';
   // a soft dithered plate keeps it legible over busy scenes; month/day in F3 (cross-dissolves from the previous one), year in dot-matrix F5 ×2
+  if (tl) {
+    const x = DATE_VX, y = DATE_VY, f = { font: 5 };
+    rectf(x - 5, y - 4, 80, 38, _solidDate ? C.void : dim(.6)); if (_solidDate) rectb(x - 6, y - 5, 82, 40, C.ink);
+    if (md !== pmd && kM < 1 && pmd) ptext(pmd, x, y, veil(C.haze, 1 - kM), { ...f, shadow: veil(C.void, 1 - kM) });
+    if (md) ptext(md, x, y, md !== pmd ? veil(C.haze, kM) : C.haze, { ...f, shadow: md !== pmd ? veil(C.void, kM) : C.void });
+    if (shownY) ptext(String(shownY), x, y + 11, C.cream, { scale: 3, dots: true, shadow: C.ink, off: C.ink });
+    return;
+  }
   rectf(DATE_X - 4, DATE_Y - 3, 57, 28, dim(.6));
   if (md !== pmd && kM < 1 && pmd) ptext(pmd, DATE_X, DATE_Y, veil(C.haze, 1 - kM), { font: 3, shadow: veil(C.void, 1 - kM) });
   if (md) ptext(md, DATE_X, DATE_Y, md !== pmd ? veil(C.haze, kM) : C.haze, { font: 3, shadow: md !== pmd ? veil(C.void, kM) : C.void });
@@ -2646,7 +2923,93 @@ function _drawDate(t) {
 function _placeholder(t, s) {
   FB.fill(0); VX = VY = 0; noClip();
   homeScene(t, {});
-  if (s) { ptext(s.key, 240, 80, C.gold, { align: 'center', scale: 2, dots: true }); if (s.text) ptext(s.text, 240, 104, C.haze, { align: 'center', maxW: 300 }); }
+  const tl = LH > LW, cx = LW / 2;
+  if (s) { ptext(s.key, cx, tl ? 130 : 80, C.gold, { align: 'center', scale: 2, dots: true }); if (s.text) ptext(s.text, cx, tl ? 154 : 104, C.haze, { align: 'center', maxW: tl ? 220 : 300 }); }
+}
+
+// ---------- the landscape frame inside the tall one ----------
+// hframe(fn): runs fn() in the landscape 480×270 frame (LW, LH = 480, 270; FB cleared to CLEAR; view and clip reset) and returns the
+// pixels it painted (a 480×270 Uint8Array; CLEAR where it painted nothing), leaving the current frame as it was.
+function hframe(fn) {
+  const saved = FB.slice(), st = [LW, LH, VX, VY, CX0, CY0, CX1, CY1];
+  LW = 480; LH = 270; VX = VY = 0; noClip(); FB.fill(CLEAR);
+  let out;
+  try { fn(); } finally { out = FB.slice(); [LW, LH, VX, VY, CX0, CY0, CX1, CY1] = st; FB.set(saved); }
+  return out;
+}
+// wide(fn, o): paint fn(), code written for the landscape frame (a horizontal shot, or part of one), and paste a rectangle of it
+// into the current frame: its (sx, sy, w, h) at world (x, y), through the view and clip, skipping what fn() left unpainted.
+// o: sx, sy (default: the middle 270 columns), w (270), h (270), x, y (0, 0). Caption, date and transition switches that fn()
+// sets are dropped. Returns the landscape pixels, for anything else you want from them.
+function wide(fn, o = {}) {
+  const sw = [_noCaption, _noStamp, _captionStyle, _trans];
+  const L = hframe(fn);
+  [_noCaption, _noStamp, _captionStyle, _trans] = sw;
+  const w = o.w ?? 270, h = o.h ?? 270, sx = o.sx ?? Math.round((480 - w) / 2), sy = o.sy ?? 0, x = _r((o.x ?? 0) - VX), y = _r((o.y ?? 0) - VY);
+  for (let j = 0; j < h; j++) {
+    const yy = y + j; if (yy < CY0 || yy > CY1 || sy + j < 0 || sy + j >= 270) continue;
+    const srow = (sy + j) * 480 + sx, row = yy * LW;
+    for (let i = Math.max(0, CX0 - x, -sx), i1 = Math.min(w, CX1 - x + 1, 480 - sx); i < i1; i++) { const v = L[srow + i]; if (v !== CLEAR) FB[row + x + i] = v; }
+  }
+  return L;
+}
+// The stand-in for a segment with no vertical shot yet (never in the finished video): its horizontal shot's middle 270 × 270,
+// with the top and bottom rows run out to the tall frame's edges.
+function _standIn(key, a) {
+  const L = hframe(() => SHOTS[key](...a)), oy = (LH - 270) >> 1, ox = (480 - LW) >> 1;
+  for (let y = 0; y < LH; y++) { const srow = clamp(y - oy, 0, 269) * 480 + ox, row = y * LW; for (let x = 0; x < LW; x++) { const v = L[srow + x]; FB[row + x] = v === CLEAR ? 0 : v; } }
+}
+// ---------- lowering a vertical shot ----------
+// vlower(key, d, fill): draw segment `key`'s vertical shot d px lower in the frame (a multiple of 8, so its dithering stays in
+// phase), its bottom d rows dropping off the frame and its top d rows refilled. By default ('sky') they get the shot's own sky and
+// stars (its first full-frame sky() and starfield() calls) continued upward, so the gradient runs on with no seam; a shot without
+// one gets the section's default sky. fill(d) paints them instead (an interior's wall, a beam or a ribbon running off the top).
+// 'copy' repeats the picture's own top strip: only for something that repeats evenly in d rows. 'extend' runs every column's top
+// 8 rows on up (an interior: wallpaper stripes, curtains, a lamp's cord, all in the dither's phase). It's how a shot composed with its
+// floor at y ≈ 290 sets its stage down on the lowered caption (VERTICAL.md). Applied to the shot wherever it's drawn (its own
+// frames and the dissolve out of it).
+const VLOWER = {};
+function vlower(key, d, fill = 'sky') { VLOWER[key] = { d: Math.round(d / 8) * 8, fill }; }
+function _vlowerFrame(L, rec) {
+  const d = L.d; if (!(d > 0)) return;
+  FB.copyWithin(d * LW, 0, (LH - d) * LW);
+  if (L.fill === 'copy') { FB.copyWithin(0, d * LW, 2 * d * LW); return; }
+  if (L.fill === 'extend') { for (let y = d - 1; y >= 0; y--) FB.copyWithin(y * LW, (y + 8) * LW, (y + 9) * LW); return; }
+  const sv = [VX, VY, CX0, CY0, CX1, CY1]; VX = VY = 0; noClip();
+  // the shot's whole-frame fades and flashes (fadeAll) cover the new rows too, so a fade never ends at a hard line at row d
+  const refade = h => { for (const [k, tab] of rec.fades) for (let y = 0; y < h; y++) _sp(y, 0, LW - 1, tint(tab, k)); };
+  try {
+    if (typeof L.fill === 'function') { clipRect(0, 0, LW, d); L.fill(d); refade(d); return; }
+    // the sky continued upward, painted over the uncovered rows and (to compare with) the first Bayer period below them
+    const B = 8, S = FB.slice(d * LW, (d + B) * LW);
+    clipRect(0, 0, LW, d + B);
+    const so = rec.sky || {}; sky({ ...so, dy: (so.dy ?? 0) + d });
+    const [st, oo] = rec.stars || [T, {}]; starfield(st, { ...oo, dy: (oo.dy ?? 0) + d, y1: oo.y1 !== undefined ? oo.y1 + d : undefined });
+    refade(d + B);   // (the shot's whole-frame fades, which the rows below already have)
+    const R = FB.slice(d * LW, (d + B) * LW);
+    FB.set(S, d * LW);
+    // whatever stands in front of the sky all the way through that period (a beam, a ribbon, a tower, a wall running off the top)
+    // runs on up through the uncovered rows too, its rows repeating with the dither's period
+    for (let x = 0; x < LW; x++) {
+      let solid = true; for (let r = 0; r < B && solid; r++) if (S[r * LW + x] === R[r * LW + x]) solid = false;
+      if (solid) for (let y = 0; y < d; y++) FB[y * LW + x] = S[(((y - d) % B + B) % B) * LW + x];
+    }
+  } finally { [VX, VY, CX0, CY0, CX1, CY1] = sv; }
+}
+// In the vertical video VSHOTS[key] is the segment's vertical shot (vshot() sets it, vlower() may lower it) or, until it has one,
+// the stand-in: so core's renderFrame and the dissolve draw them through this kit's framebuffer rather than through core's landscape().
+if (VERT) for (const sg of SEGS) {
+  let f = VSHOTS[sg.key];
+  const lowered = (...a) => {
+    const prev = _vlRec, rec = _vlRec = { sky: null, stars: null, fades: [] };
+    try { f(...a); } finally { _vlRec = prev; }
+    const L = VLOWER[sg.key]; if (L) _vlowerFrame(L, rec);
+  };
+  Object.defineProperty(VSHOTS, sg.key, {
+    configurable: true, enumerable: true,
+    get: () => f ? (VLOWER[sg.key] ? lowered : f) : (SHOTS[sg.key] ? (...a) => _standIn(sg.key, a) : undefined),
+    set: v => { f = v; },
+  });
 }
 function _flush() {
   for (let i = 0; i < FB.length; i++) _u32[i] = _PAL32[FB[i]];
@@ -2656,13 +3019,13 @@ function _flush() {
 }
 OVERLAYS.push((t, s) => {
   try {
-    if (!(s && SHOTS[s.key])) _placeholder(t, s);
+    if (!(s && shotOf(s.key))) _placeholder(t, s);
     else _dissolve(t, s);
     VX = VY = 0; noClip();
     _drawCaption(t); _drawDate(t);
   } catch (e) { console.error(`dither overlay @ ${t.toFixed(2)}: ${e.stack || e}`); }
   _flush();
-  FB.fill(0); VX = VY = 0; noClip(); _trans = null;
+  FB.fill(0); VX = VY = 0; noClip(); _trans = null; _solidDate = false;
   _noCaption = false; _noStamp = false; _captionStyle = null;
 });
 
@@ -2736,6 +3099,71 @@ OVERLAYS.push((t, s) => {
     shootingStar(300, 30, 430, 92, (lt - b(13.1)) / 1.1, { len: 30 });
 
     // Fade up from black: every colour climbs out of the void (dithered, no alpha).
+    const fk = 7 * (1 - ease(clamp(lt / 2.8)));
+    if (fk > 0) fadeAll(fk);
+  });
+
+  // ======================================================================
+  // VERTICAL (the 270×480 frame). The tall frame turns the intro into one long tilt down: it opens high in the night, the moon
+  // low in the frame and the stars pricking on, and sinks past them to the hill, which rises in from the bottom; Clawd climbs
+  // it with the lantern and sits, and the title is written over it in three lines of stars, scatters, and a shooting star falls.
+  // The tilt ends with the hill low (no caption in the intro), so the sky above Clawd stays open: the poster is this frame.
+  const VTITLE = ["WE DIDN'T", 'START THE', 'SCALING'], VT_Y = 92, VT_LH = 36, VT_SUB = 214;
+  let vdots = null;
+  const vtitleDots = () => vdots || (vdots = VTITLE.flatMap((ln, li) => {
+    const before = VTITLE.slice(0, li).join('').length;
+    return textDots(ln, 135, VT_Y + li * VT_LH, { scale: 4, align: 'center' }).map(d => ({ ...d, i: d.i + before, line: li }));
+  }));
+  const VEND = 16;                                   // the tilt's resting dy: the hill's summit at y ≈ 336
+  vshot('intro', (p, lt, d, t, s) => {
+    hideCaption();
+    const b = i => beatAt(s, i);
+    // Camera: high in the sky, then a long, slow tilt down to the hill (beats 2.6 → 8).
+    const tilt = Math.round(lerp(290, VEND, ease(clamp((lt - b(2.6)) / (b(8) - b(2.6))))));
+    // Clawd walks in from the left (beats 5 → 8) and up the hill's flank to the summit, and sits.
+    const hx = HOME_V.hillX, walkK = clamp((lt - b(5)) / (b(8) - b(5) + .2)), arrived = walkK >= 1;
+    const cx = Math.round(lerp(-14, hx - 2, easeOut(walkK) * .15 + walkK * .85));
+    const home = homeScene(t, {
+      dy: tilt,
+      moon: [214, 46, 9],
+      stars: { appear: clamp((lt - .3) / 3.2) },
+      ledger: false, clawd: false, weather: false,
+      moonOpts: { glow: 1 },
+    });
+    view(0, -tilt);
+    const gy = x => home.ground(x) - tilt;
+    for (let i = 0; i < 11; i++) { const fx0 = 8 + hash2(i, 5) * 250; firefly(fx0 + Math.sin(t * .4 + i) * 8, gy(fx0) - 6 - hash2(i, 6) * 26 + Math.sin(t * .6 + i * 2) * 4, t, i); }
+    if (!arrived) {
+      const c = clawdPx(cx, gy(cx), { u: 3, walk: lt * 1.25, eyes: 'open', lookX: .6 });
+      handLantern(c.handR[0] + 2, c.handR[1] + 8, { glow: 24 });
+    } else {
+      const lookUp = lt > b(8.6), follow = lt > b(13.2);
+      handLantern(hx + 22, gy(hx + 22), { glow: 26 });
+      clawdPx(hx - 2, gy(hx - 2), { u: 3, pose: 'sit', eyes: lookUp ? 'up' : 'open', lookX: follow ? 1 : lookUp ? .3 : 0, lookY: follow ? -.6 : 0 });
+    }
+    view(0, 0);
+    // The title in stars, three lines: letters light one by one (beats 8.5 → 11), hold, then drift up and dissolve into the sky.
+    const t0 = b(8.5), drift0 = b(12), n = VTITLE.join('').length;
+    if (lt > t0) {
+      const sb = sbeat(t);
+      for (const dt of vtitleDots()) {
+        const born = t0 + dt.i / n * 2.1 + hash2(dt.x, dt.y) * .25, age = lt - born;
+        if (age < 0) continue;
+        const dk = clamp((lt - drift0 - hash2(dt.x, 3) * .8) / 2.2);
+        const x = dt.x + (hash2(dt.x, dt.y + 9) - .5) * 26 * ease(dk), y = dt.y - (8 + hash2(dt.y, dt.x) * 22) * ease(dk);
+        if (dk >= 1) continue;
+        const big = hash2(dt.x * 3, dt.y) < .07, tw = hash2(dt.x + dt.y * 480, sb) < .12;
+        if (age < .35) sparkle(x, y, 1, C.cream, C.gold);
+        else if (dk > .55) pset(x, y, veil(C.dusk, 1 - (dk - .55) / .45));
+        else if (dk > .25) pset(x, y, C.haze);
+        else if (big || (tw && spulse(t, 3) > .5)) sparkle(x, y, 1, C.cream, C.haze);
+        else pset(x, y, hash2(dt.x, dt.y + 1) < .75 ? C.cream : C.gold);
+      }
+      const sk = rise(lt, b(10.4), .8) * (1 - rise(lt, drift0 + .4, 1));
+      if (sk > 0) ptext('(indie folk)', 135, VT_SUB, veil(C.haze, sk), { align: 'center' });
+    }
+    // A shooting star as the title scatters, across the upper right; Clawd's eyes follow it.
+    shootingStar(150, 54, 258, 128, (lt - b(13.1)) / 1.1, { len: 30 });
     const fk = 7 * (1 - ease(clamp(lt / 2.8)));
     if (fk > 0) fadeAll(fk);
   });
@@ -2958,9 +3386,10 @@ OVERLAYS.push((t, s) => {
   // V1.6 Sydney's chats gave Roose a fright — through a snowy window: Kevin at his laptop; hearts pour out of the screen
   // ("I'm Sydney ♥ I love you"); his hair stands on end and he slams the lid.
   line('V1', 6, (p, lt, d, t, s) => {
-    const b = i => B(s, i);
     const WX = 120, WY = 44, WW = 240, WH = 150;
-    const fright = lt > b(1) - .1, shut = lt > b(2);
+    // (on the words: "I'm Sydney" as "Sydney's" is sung, "I love you." on "chats", the fright on "Roose", the slam on "fright")
+    const sydT = sungAt(s, 'sydney') - .35, loveT = sungAt(s, 'chats'), frT = sungAt(s, 'roose') - .1, shutT = sungAt(s, 'fright') - .05;
+    const fright = lt > frT, shut = lt > shutT;
     layer('v1.6-wall', () => {
       rectf(0, 0, LW, LH, C.night);
       for (let y = 0; y < LH; y += 5) { hline(0, LW, y, C.ink); for (let x = (y / 5) % 2 ? 0 : 9; x < LW; x += 18) vline(x, y, y + 4, C.ink); }
@@ -2974,7 +3403,7 @@ OVERLAYS.push((t, s) => {
     glow(WX + 30, WY + 30, 60, { tab: WARM, k: .8 });                     // a warm lamp, off to the left
     rectf(WX + 22, WY + 20, 16, 8, C.amber); vline(WX + 30, WY + 28, DT, C.void);
     // Kevin, lit blue by his screen
-    const hop = fright && !shut ? Math.round(3 * Math.abs(Math.sin((lt - b(1)) * 9))) : 0;
+    const hop = fright && !shut ? Math.round(3 * Math.abs(Math.sin((lt - frT) * 9))) : 0;
     personPx(kx, DT + 20, { u: 5, dy: hop, top: C.dusk, hair: fright ? 'spiky' : 'short', hairC: C.void, eyes: fright ? 'wide' : 'dot', mouth: fright ? 'o' : 'smile', aL: fright ? 1.25 : -.6, aR: fright ? 1.25 : -.6, skin: C.gold });
     if (!shut) glow(kx, DT - 14, 30, { tab: COOL, k: 1.1 });
     rectf(WX, DT, WW, WH - (DT - WY), C.ink); hline(WX, WX + WW, DT, C.rust);     // desk
@@ -2984,7 +3413,7 @@ OVERLAYS.push((t, s) => {
     else { rectf(lx - 16, ly - 3, 32, 3, C.navy); hline(lx - 16, lx + 15, ly - 3, C.haze); }
     // hearts pour out of the screen while it's on; after the slam they fade
     for (let i = 0; i < 28; i++) {
-      const born = .1 + i / 28 * (b(2) - .1), age = lt - born, fade = shut ? 1 - clamp((lt - b(2)) / .5) : 1;
+      const born = .1 + i / 28 * (shutT - .1), age = lt - born, fade = shut ? 1 - clamp((lt - shutT) / .5) : 1;
       if (age < 0 || fade <= 0) continue;
       const side = hash(i) < .5 ? -1 : 1, x = lx + side * (4 + age * (18 + hash2(i, 4) * 60)) + Math.sin(age * 3 + i) * 4, y = ly - 20 - age * (16 + hash2(i, 1) * 34);
       if (fade < 1 && bay(Math.round(x), Math.round(y)) > fade) continue;
@@ -2992,8 +3421,8 @@ OVERLAYS.push((t, s) => {
     }
     if (!shut) {
       const bx = WX + 50, by = WY + 76;
-      if (lt < b(1)) bubblePx("I'm Sydney ♥", bx, by, { font: 5, tail: [lx - 14, ly - 16], n: Math.ceil((lt - .1) * 22) });
-      else bubblePx('I love you.', bx, by, { font: 5, tail: [lx - 14, ly - 16], n: Math.ceil((lt - b(1)) * 22), fill: C.gold });
+      if (lt < loveT) { if (lt > sydT) bubblePx("I'm Sydney ♥", bx, by, { font: 5, tail: [lx - 14, ly - 16], n: Math.ceil((lt - sydT) * 22) }); }
+      else bubblePx('I love you.', bx, by, { font: 5, tail: [lx - 14, ly - 16], n: Math.ceil((lt - loveT) * 22), fill: C.gold });
     }
     noClip();
     // window frame, mullions, sill
@@ -3001,7 +3430,7 @@ OVERLAYS.push((t, s) => {
     vline(WX + WW / 3, WY, WY + WH, C.void); vline(WX + WW * 2 / 3, WY, WY + WH, C.void); hline(WX, WX + WW, WY + 40, C.void);
     rectf(WX - 8, WY + WH + 2, WW + 16, 4, C.dusk); rectf(WX - 8, WY + WH + 1, WW + 16, 1, C.cream);
     // one heart left stuck to the glass after the slam
-    if (shut) heartPx(WX + WW * 2 / 3 + 22, WY + 60 + Math.min(20, (lt - b(2)) * 12), 2, C.rust, C.amber);
+    if (shut) heartPx(WX + WW * 2 / 3 + 22, WY + 60 + Math.min(20, (lt - shutT) * 12), 2, C.rust, C.amber);
     weather(t, 'snow', { n: 70 });
   });
 
@@ -3058,17 +3487,16 @@ OVERLAYS.push((t, s) => {
   // V1.8 Eliezer's "shut-it-down" blast — from a rooftop, a fedora'd figure blasts the city through a megaphone; the
   // lights go out in a wave… then flicker back on, one by one.
   line('V1', 8, (p, lt, d, t, s) => {
-    const b = i => B(s, i);
     sky({ cy: 300, r: 340, ramp: [C.void, C.ink, C.night, C.navy, C.dusk] });
     starfield(t, { density: .7 });
-    const blast = b(1) - .15, front = lt > blast ? (lt - blast) * 260 : -1, MX0 = 142, MY0 = 146;
+    const blast = sungAt(s, 'shut') - .1, back0 = blast + 1.1, front = lt > blast ? (lt - blast) * 380 : -1, MX0 = 142, MY0 = 146;   // (the blast on "shut-it-down")
     // the city (right), windows off once the blast front passes, back on later
     for (let bi = 0; bi < 11; bi++) {
       const x = 196 + bi * 26 + Math.round(hash(bi) * 6), w = 16 + Math.round(hash2(bi, 1) * 8), h = 30 + Math.round(hash2(bi, 2) * 70);
       rectf(x, 210 - h, w, h + 60, bi % 2 ? C.ink : C.void); hline(x, x + w - 1, 210 - h, C.navy);
       for (let wy = 210 - h + 4; wy < 206; wy += 5) for (let wx = x + 2; wx < x + w - 2; wx += 4) {
         const hs = hash2(wx, wy); if (hs > .55) continue;
-        const d0 = Math.hypot(wx - MX0, wy - MY0), off = front > d0, back = lt > b(2.6) + hs * 1.2;
+        const d0 = Math.hypot(wx - MX0, wy - MY0), off = front > d0, back = lt > back0 + hs * .7;
         if (off && !back) continue;
         pset(wx, wy, hs < .15 ? C.cream : hs < .35 ? C.gold : C.amber); pset(wx + 1, wy, hs < .35 ? C.gold : C.clay);
       }
@@ -3076,7 +3504,7 @@ OVERLAYS.push((t, s) => {
     // rooftop
     rectf(0, 180, 176, 90, C.void); hline(0, 176, 180, C.navy); rectf(24, 164, 12, 16, C.void); rectf(22, 162, 16, 2, C.ink);
     // Eliezer with the megaphone
-    const shout = lt > blast && lt < b(2.2);
+    const shout = lt > blast && lt < back0;
     const E = personPx(100, 180, { u: 4, hat: 'fedora', hatC: C.ink, beard: C.wine, top: C.ink, pants: C.void, aR: .25, mouth: shout ? 'o' : 'none', eyes: shout ? 'closed' : 'dot' });
     const [hx, hy] = E.handR;
     polyf([[hx, hy - 3], [hx + 18, hy - 9], [hx + 18, hy + 5], [hx, hy + 1]], C.haze); pline(hx + 18, hy - 9, hx + 18, hy + 5, C.cream); pline(hx, hy - 3, hx + 18, hy - 9, C.cream);
@@ -3084,7 +3512,7 @@ OVERLAYS.push((t, s) => {
     const mx = hx + 19, my = hy - 2;
     // sound rings
     for (let k = 0; k < 4; k++) {
-      const r = (lt - blast - k * .16) * 260; if (r <= 4 || r > 520) continue;
+      const r = (lt - blast - k * .16) * 380; if (r <= 4 || r > 520) continue;
       for (let a = -.55; a <= .55; a += .7 / r) { const x = mx + Math.cos(a) * r, y = my + Math.sin(a) * r; if (bay(Math.round(x), Math.round(y)) < 1 - r / 560) pset(x, y, k === 0 ? C.cream : C.haze); }
     }
     const tk = clamp((lt - blast) / .6);
@@ -3227,12 +3655,12 @@ OVERLAYS.push((t, s) => {
       rectf(sx + 1, sy + 1, 52, sh, C.void); rectf(sx, sy, 52, sh, C.cream);
       rectf(sx - 2, sy + sh, 56, 4, C.gold); hline(sx - 2, sx + 53, sy + sh + 3, C.amber);
       if (sh > 14) ptext('AI ACT', cx, sy + 5, C.navy, { align: 'center' });
-      const nl = Math.floor(clamp((lt - 1.3) / 1.2) * 11);
+      const w0 = sungAt(s, 'writes') - .15, nl = Math.floor(clamp((lt - w0) / 1.2) * 11);   // (it writes itself on "writes")
       for (let i = 0; i < nl && 17 + i * 4 < sh - 3; i++) hline(sx + 5, sx + 46 - (hash(i) * 12 | 0), sy + 17 + i * 4, i % 4 === 3 ? C.rust : C.haze);
-      if (nl < 11 && lt > 1.3 && 17 + nl * 4 < sh) { const qx = sx + 5 + (frac(lt * 1.5) * 38 | 0), qy = sy + 17 + nl * 4; pline(qx, qy, qx + 6, qy - 9, C.void); pline(qx + 1, qy - 2, qx + 7, qy - 10, C.haze); }
+      if (nl < 11 && lt > w0 && 17 + nl * 4 < sh) { const qx = sx + 5 + (frac(lt * 1.5) * 38 | 0), qy = sy + 17 + nl * 4; pline(qx, qy, qx + 6, qy - 9, C.void); pline(qx + 1, qy - 2, qx + 7, qy - 10, C.haze); }
     }
     ridge({ y: 214, amp: 8, seed: 41, ink: C.ink, rim: C.night });
-    const vk = rise(lt, 2.0, .3);
+    const vk = rise(lt, sungAt(s, 'ai'), .3);   // (the vote as "the AI law" is sung)
     if (vk > 0) ptext('523 FOR · 46 AGAINST', cx, 184, veil(C.haze, vk), { font: 3, align: 'center' });
   });
 
@@ -3258,7 +3686,6 @@ OVERLAYS.push((t, s) => {
     pset(x - 11, ey + 4, C.clay); pset(x + 11, ey + 4, C.clay);
   }
   line('V1', 13, (p, lt, d, t, s) => {
-    const b = i => B(s, i);
     sky({ cy: 320, r: 380, ramp: [C.void, C.ink, C.night, C.navy, C.violet] });
     starfield(t, { density: .7 });
     const g = hill({ cx: 120, y: 214, w: 200, drop: 40, ink: C.void, rim: C.pine });
@@ -3266,7 +3693,7 @@ OVERLAYS.push((t, s) => {
     const sx = 104, sy = g(104) + 2;
     // the chain of thought: link after link, star to star, up the sky
     const nodes = [[sx + 16, sy - 58], [160, 138], [196, 112], [236, 122], [266, 90], [304, 86], [330, 58], [368, 54], [404, 30]];
-    const tEnd = b(3) - .2, n = clamp((lt - .3) / (tEnd - .3)) * (nodes.length - 1), done = lt > tEnd;
+    const tEnd = sungAt(s, -1) - .05, n = clamp((lt - .3) / (tEnd - .3)) * (nodes.length - 1), done = lt > tEnd;   // (the last link on the last "link")
     for (let i = 0; i < nodes.length - 1; i++) {
       const f = clamp(n - i); if (f <= 0) break;
       const [x0, y0] = nodes[i], [x1, y1] = nodes[i + 1], L = Math.hypot(x1 - x0, y1 - y0), ux = (x1 - x0) / L, uy = (y1 - y0) / L, steps = Math.floor(L / 4 * f);
@@ -3299,7 +3726,6 @@ OVERLAYS.push((t, s) => {
     pset(x, y - 4, C.amber);
   }
   line('V1', 14, (p, lt, d, t, s) => {
-    const b = i => B(s, i);
     sky({ cy: 300, r: 340, ramp: [C.void, C.ink, C.night, C.navy, C.violet] });
     starfield(t, { density: 1, bright: .5 });
     // palm tree (right) with an owl that blinks on every beat
@@ -3311,7 +3737,7 @@ OVERLAYS.push((t, s) => {
     rectf(0, 214, LW, 56, C.ink); for (let x = 4; x < LW; x += 10) rectf(x, 218, 3, 40, C.void); rectf(0, 213, LW, 3, C.void); hline(0, LW, 213, C.dusk);
     clawdPx(40, 213, { u: 1, eyes: frac(sbp(t) + .5) < .2 ? 'closed' : 'open', lookX: 1, blink: false });
     // desk lamp: a small pool of light
-    const DT = 196, px = 282, py = DT + 1, slam = b(1.6) - .1, raised = lt > b(.7) && lt < slam;
+    const DT = 196, px = 282, py = DT + 1, slam = sungAt(s, 'veto') - .05, raised = lt > slam - .45 && lt < slam;   // (VETO on "vetoes")
     glow(160, 146, 34, { tab: WARM, k: 1 });
     polyf([[154, 138], [166, 138], [190, DT], [130, DT]], lit(.8));
     // Gavin: wide awake, staring straight at us
@@ -3332,7 +3758,6 @@ OVERLAYS.push((t, s) => {
   // ======================================================================
   // V1.15 Hinton takes his medal, scolds — in a spotlight, a gold medal is lowered around his neck; he wags a finger at us.
   line('V1', 15, (p, lt, d, t, s) => {
-    const b = i => B(s, i);
     layer('v1.15-stage', () => {
       rectf(0, 0, LW, LH, C.void);
       for (let x = 0; x < LW; x++) { const f = Math.min(x, LW - 1 - x); if (f < 70) { const fold = Math.sin(x * .4) > 0 ? C.wine : C.rust; vline(x, 0, 205, f < 60 - Math.sin(x * .08) * 8 ? fold : C.void); } }
@@ -3343,14 +3768,14 @@ OVERLAYS.push((t, s) => {
     polyf([[224, -2], [256, -2], [312, 206], [168, 206]], lit(2));
     ellf(240, 208, 70, 6, lit(2.4));
     // the medal comes down on its ribbon, then settles on his chest
-    const mk = rise(lt, .05, .75, easeOut), chestY = 186, my = lerp(-10, chestY, mk);
-    const wag = lt > b(1.9) - .1;
+    const mk = rise(lt, .05, sungAt(s, 'medal') - .05, ease), chestY = 186, my = lerp(-10, chestY, mk);   // (it settles on "medal")
+    const wagT = sungAt(s, 'scold') - .1, wag = lt > wagT;   // (he scolds on "scolds")
     const P = personPx(240, 206, { u: 4, hair: 'short', hairC: C.cream, glasses: true, suit: true, top: C.ink, tie: C.rust, skin: C.gold, eyes: 'dot', mouth: wag ? 'o' : 'smile', aR: wag ? 1.4 + (Math.floor(lt * 5) % 2 ? .22 : -.18) : -.4, aL: -.4 });
     if (mk < 1) { pline(235, -2, 238, my - 3, C.rust); pline(245, -2, 242, my - 3, C.rust); medalPx(240, my, { r: 4, ribbon: false }); }
     else { pline(235, 174, 239, chestY - 3, C.rust); pline(245, 174, 241, chestY - 3, C.rust); medalPx(240, chestY, { r: 3, ribbon: false, shine: spulse(t, 3) }); }
     if (wag) {
       const [hx, hy] = P.handR; rectf(hx, hy - 5, 1, 4, C.gold);
-      bubblePx('be careful.', hx + 40, hy - 10, { font: 5, tail: [hx + 6, hy - 4], n: Math.ceil((lt - b(1.9) + .1) * 20) });
+      bubblePx('be careful.', hx + 40, hy - 10, { font: 5, tail: [hx + 6, hy - 4], n: Math.ceil((lt - wagT) * 20) });
     }
     signPx('NOBEL PRIZE · PHYSICS', 240, 222, { font: 3, ink: C.gold, plate: C.void, edge: C.wine });
     // the audience
@@ -3396,6 +3821,686 @@ OVERLAYS.push((t, s) => {
     handLantern(62, g(62));
     clawdPx(42, g(42), { u: 1, pose: 'sit', eyes: 'up', lookX: 1 });
   });
+
+  // ######################################################################################################################
+  // VERTICAL (the 270×480 frame; see ../VERTICAL.md). The stage floor sits at y ≈ 290, just above the caption band (y 296–360):
+  // the sky above it is the tall frame's room, and each line's gag rises, falls, stacks or hangs through it.
+  // ######################################################################################################################
+
+  // ======================================================================
+  // V1.1 First, "Attention" lit the fuse — the tall sky is the rocket's climb. The eight Googlers stand round the launch stand on a
+  // far hill across the stage; the fuse burns, the rocket climbs 130 px and blooms high up into the starburst, ATTENTION in its
+  // heart, "is all you need" under it; willow sparks fall the height of the sky. Clawd sits on its own near hill, lower left.
+  vshot('V1.1', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky();
+    starfield(t, { density: .8 });
+    const g = farHill(178, 258, 150, 30);
+    const lx = 182, ly = g(lx);
+    const party = [128, 142, 156, 168, 198, 210, 224, 238];
+    const burstT = b(2) - .05, launchT = b(1) - .05;
+    party.forEach((x, i) => personPx(x, g(x), { u: 2, skin: SKIN[i % 3], top: [C.navy, C.teal, C.violet, C.dusk][i % 4], hair: ['short', 'long', 'curly', 'short', 'bun', 'short', 'slick', 'short'][i], hairC: [C.void, C.wine, C.void, C.rust][i % 4], aR: i === 3 && lt < launchT ? -.2 : lt > burstT ? 1.1 : -1.25, aL: lt > burstT ? 1.1 : -1.25, eyes: lt > launchT ? 'up' : 'dot', flip: x > lx }));
+    tagPx('GOOGLE ×8', 226, g(226) - 26, { scale: 2 });
+    // the fuse: from the match (x 170) along the ground to the stand
+    const fk = rise(lt, .08, launchT - .18, k => k), fuse0 = 170, fuse1 = lx - 3, burnX = lerp(fuse0, fuse1, fk);
+    for (let x = Math.ceil(burnX); x <= fuse1; x += 2) pset(x, g(x) - 1, C.haze);
+    if (lt > .1 && lt < launchT + .05) {
+      glow(burnX, g(burnX) - 2, 10, { tab: WARM, k: 1.4 });
+      sparkle(burnX, g(burnX) - 2, 1, C.cream, C.gold);
+      for (let i = 0; i < 4; i++) pset(burnX + (fx(i) - .5) * 6, g(burnX) - 2 - fx(i, 1) * 5, i % 2 ? C.gold : C.amber);
+    }
+    // launch stand + rocket
+    pline(lx - 3, ly, lx, ly - 7, C.void); pline(lx + 3, ly, lx, ly - 7, C.void);
+    const cx = 150, cy = 126, R = 54;
+    const rk = clamp((lt - launchT) / (burstT - launchT)), ry = lerp(ly - 9, cy, rk ** 1.7), rx = lerp(lx, cx, rk ** 1.7);
+    if (rk < 1) {
+      if (rk > 0) {
+        for (let i = 0; i < 16; i++) { const f = i / 16; pset(rx + (fx(i) - .5) * (1 + i * .35) + (lx - cx) / (ly - cy) * i * 2.2, ry + 9 + i * 2.2, f < .3 ? C.cream : f < .6 ? veil(C.gold, 1 - f) : veil(C.clay, 1 - f)); }
+        glow(rx, ry + 8, 13, { tab: WARM, k: 1.3 });
+      }
+      spr(ROCKET, rx - 2, Math.round(ry));
+    }
+    // the bloom, high in the sky
+    const bk = clamp((lt - burstT) / .45);
+    if (bk > 0) {
+      if (bk < .35) glow(cx, cy, 100, { tab: LIT, k: 1.2 * (1 - bk / .35) });
+      glow(cx, cy, 78, { tab: WARM, k: .7 * easeOut(bk) });
+      starburst(cx, cy, R, easeOut(bk) * (1 + .03 * breathe(t, 2)), { n: 14, rot: lt * .12, inner: .38 });
+      // willow sparks falling the height of the sky
+      const age = lt - burstT;
+      for (let i = 0; i < 30; i++) {
+        const a = i / 30 * TAU + hash(i) * .2, sp = 38 + hash2(i, 2) * 30, e = easeOut(clamp(age / .9)), x = cx + Math.cos(a) * sp * e * 1.1, y = cy + Math.sin(a) * sp * e + age * age * 22;
+        if (age > .1 && y < 286) pset(x, y, age < .5 ? C.cream : age < .8 ? C.gold : veil(C.amber, 1.4 - age * .8));
+      }
+      for (let i = 0; i < 7; i++) { const a = i / 7 * TAU + .3, r = R * 1.35 + 4 * breathe(t, 2, i / 7); sparkle(cx + Math.cos(a) * r, cy + Math.sin(a) * r, hash2(i, sbeat(t)) < .5 ? 1 : 2); }
+      const tk = rise(lt, burstT + .12, .35);
+      if (tk > 0) {
+        ptext('ATTENTION', cx, cy - 7, veil(C.cream, tk), { align: 'center', scale: 2, shadow: veil(C.wine, tk) });
+        const sk = rise(lt, burstT + .35, .4);
+        ptext('is all you need', cx, cy + R + 12, veil(C.haze, sk), { align: 'center', scale: 2, shadow: veil(C.void, sk) });
+      }
+    }
+    // Clawd's hill (near, lower left), just above the caption band
+    const hg = hill({ cx: 30, y: 290, w: 120, drop: 70, ink: C.void, rim: C.pine });
+    meadow(hg, t, { ramp: [C.ink, C.void], fall: 60, n: 70, x1: 200 });
+    grass(0, 150, hg, t);
+    handLantern(70, hg(70));
+    clawdPx(42, hg(42), { u: 3, pose: 'sit', eyes: lt > launchT ? 'up' : 'open', lookX: 1, blink: lt < burstT });
+    weather(t, 'fireflies', { n: 12, x0: 0, x1: 150, y1: 330 });
+  });
+
+  // ======================================================================
+  // V1.2 Scaling laws you can't refuse — the tall winter sky turns into log-log paper; the law's stars land one per eighth down a
+  // steep straight line; the gold prediction runs on down to Clawd in the snow on the stage's right, and the next star slides down
+  // it into Clawd's raised paws: sparkle eyes.
+  vshot('V1.2', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky({ cy: 420 });
+    starfield(t, { density: .45 });
+    const X0 = 22, X1 = 254, Y0 = 112, Y1 = 266, DX = 58, DY = 52, gk = rise(lt, 0, .5);
+    const lg = [0, .301, .477, .602, .699, .778, .845, .903, .954];
+    for (let k = 0; k < 4; k++) lg.forEach((l, m) => { const x = Math.round(X0 + DX * (k + l)); if (x <= X1) pline(x, Y0, x, Y1, veil(m ? C.navy : C.dusk, gk), { every: m ? 4 : 2 }); });
+    for (let k = 0; k < 3; k++) lg.forEach((l, m) => { const y = Math.round(Y1 - DY * (k + l)); if (y >= Y0) pline(X0, y, X1, y, veil(m ? C.navy : C.dusk, gk), { every: m ? 4 : 2 }); });
+    ptext('LOSS', X0 + 4, Y0 + 4, veil(C.haze, gk), { font: 3, scale: 2, shadow: veil(C.void, gk) });
+    ptext('COMPUTE →', X0 + 4, Y1 - 13, veil(C.haze, gk), { font: 3, scale: 2, shadow: veil(C.void, gk) });
+    // the law: stars landing on a straight line, one per eighth
+    const P0 = [X0 + 14, Y0 + 30], P1 = [184, 236], N = 9, dt = .19, t0 = .12;
+    const at = i => [lerp(P0[0], P1[0], i / (N - 1)), lerp(P0[1], P1[1], i / (N - 1))];
+    const nOn = clamp((lt - t0) / (dt * (N - 1)), 0, 1) * (N - 1);
+    plines([P0, [lerp(P0[0], P1[0], nOn / (N - 1)), lerp(P0[1], P1[1], nOn / (N - 1))]], C.haze);
+    for (let i = 0; i < N; i++) {
+      const age = lt - (t0 + i * dt); if (age < 0) continue;
+      const [x, y] = at(i); sparkle(x, y, age < .15 ? 3 : age < .3 ? 2 : 1, C.cream, age < .3 ? C.gold : C.haze);
+    }
+    // the snowy field (its glow falls off fast, so the caption below sits on dark snow) + Clawd
+    const gy = x => Math.round(288 + Math.sin(x * .03) * 3 + Math.sin(x * .09 + 1) * 1.5);
+    for (let x = 0; x < LW; x++) { const top = gy(x); pset(x, top, C.cream); rectf(x, top + 1, 1, LH - top, grad([C.haze, C.dusk, C.navy, C.night], (xx, yy) => (yy - top) / 22)); }
+    // drifts nearer the viewer: moonlit crests over shadowed hollows, bigger lower down
+    [[352, 5, .021, 1.3], [398, 7, .016, 4.1], [446, 9, .012, 2.2]].forEach(([y0, a, f, ph]) => {
+      const dy = x => Math.round(y0 + Math.sin(x * f + ph) * a + Math.sin(x * f * 2.7 + ph * 2) * a * .3);
+      for (let x = 0; x < LW; x++) { const top = dy(x); pset(x, top, C.haze); pset(x, top - 1, veil(C.cream, .3)); rectf(x, top + 1, 1, LH - top, grad([C.dusk, C.navy, C.night, C.ink], (xx, yy) => (yy - top) / 30)); }
+    });
+    for (const [px, py, h] of [[18, 404, 34], [252, 428, 40], [238, 452, 24]]) pineTree(px, py, h, { ink: C.void, snow: C.haze });
+    const cx = 222, cyG = gy(cx);
+    // the prediction line runs on, and the next star slides down it
+    const ux = (P1[0] - P0[0]), uy = (P1[1] - P0[1]), L = Math.hypot(ux, uy), end = [cx - 2, cyG - 26];
+    const pk = rise(lt, b(1.9), .5, k => k);
+    if (pk > 0) pline(P1[0], P1[1], lerp(P1[0], end[0], pk), lerp(P1[1], end[1], pk), C.gold, { every: 3 });
+    const sk = rise(lt, b(2.2), .45, easeIn), holding = sk >= 1;
+    if (sk > 0 && !holding) sparkle(lerp(P1[0] + ux / L * 12, end[0], sk), lerp(P1[1] + uy / L * 12, end[1], sk), 2, C.cream, C.gold);
+    const c = clawdPx(cx, cyG, { u: 3, pose: 'sit', eyes: holding ? 'spark' : 'up', lookX: holding ? 0 : -1, hat: 'beanie', hatInk: C.rust, aL: sk > .3 ? 1.1 : 0, aR: sk > .3 ? 1.1 : 0 });
+    if (holding) { glow(cx, c.top - 6, 16, { tab: LIT, k: 1.2 }); sparkle(cx, c.top - 6, spulse(t, 3) > .5 ? 3 : 2, C.cream, C.gold); }
+    weather(t, 'snow', { n: 80 });
+  });
+
+  // ======================================================================
+  // V1.3 Gwern said "stack the compute high" — the tall frame is the tower: hooded GWERN conducts from the hill while glowing GPU
+  // boxes drop onto the stack faster and faster, seventeen of them, until it stands as high as the moon and a star sparkles on top.
+  vshot('V1.3', (p, lt, d, t, s) => {
+    sky({ vert: .5 });
+    starfield(t, { density: .9 });
+    moon(214, 74, 9, { phase: .15 });
+    const g = hill({ cx: 150, y: 288, w: 230, drop: 40, ink: C.void, rim: C.pine });
+    meadow(g, t, { flowers: [C.cream, C.violet] });
+    grass(0, LW, g, t);
+    const N = 17, BW = 32, BH = 11, SP = 13, bx = 136, gy = g(bx + BW / 2) - 1;
+    for (let i = 0; i < N; i++) {
+      const land = .08 + 2.45 * (i / (N - 1)) ** .7, age = lt - land;
+      if (age < -.2) break;
+      const slot = gy - SP * (i + 1) + 1, fall = age < 0 ? easeIn(clamp(1 + age / .2)) : 1, y = Math.round(lerp(slot - 60, slot, fall)) + (age > 0 && age < .08 ? 1 : 0);
+      gpuPx(bx, y, { w: BW, h: BH, hot: i >= N - 2 ? 1 : .4, k: t * 3 + i });
+    }
+    if (lt > 2.55) sparkle(bx + BW / 2, gy - SP * N - 6, spulse(t, 3) > .5 ? 3 : 2, C.cream, C.gold);
+    // Gwern, hood up, conducting: "higher"
+    const up = .75 + .35 * breathe(t, 1);
+    personPx(84, g(84), { u: 4, hair: 'hood', hoodC: C.ink, top: C.ink, pants: C.void, aR: up, aL: -1.1 });
+    paperPx(46, g(46) - 11, 13, 10, { lines: 3 });
+    weather(t, 'petals', { n: 30 });
+  });
+
+  // ======================================================================
+  // V1.4 Few-shot learners multiply — a meadow at night: one firefly becomes two, four, eight… sixty-four, doubling on the
+  // eighths, swarming up into the tall sky; then they fly into place as a big dot-matrix GPT-3, 175 BILLION PARAMETERS under it.
+  vshot('V1.4', (p, lt, d, t, s) => {
+    sky({ ramp: [C.void, C.ink, C.night, C.navy, C.dusk] });
+    starfield(t, { density: .6 });
+    ridge({ y: 278, amp: 12, seed: 11, ink: C.ink, rim: C.night, freq: 1 / 70 });
+    const g = hill({ cx: 135, y: 292, w: 240, drop: 26, ink: C.void, rim: C.pine });
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 50 });
+    grass(0, LW, g, t, { h: 4, step: 2 });
+    const C0 = [135, 214], N = 64, gen = j => j === 0 ? 0 : Math.floor(Math.log2(j)) + 1, tb = g0 => g0 === 0 ? 0 : .12 + .34 * (g0 - 1);
+    const formT = 2.25, targets = textDots('GPT-3', 135, 116, { scale: 6, align: 'center' });
+    const pos = [];
+    const wander = j => { const a = hash2(j, 1) * TAU + t * .5 * (hash2(j, 2) - .5), r = 6 + Math.sqrt(hash2(j, 3)) * (12 + 80 * clamp(lt / 2.3)); return [C0[0] + Math.cos(a) * r * 1.1 + Math.sin(t * 1.3 + j) * 3, C0[1] + Math.sin(a) * r * 1.05 + Math.cos(t * 1.1 + j * 2) * 3]; };
+    for (let j = 0; j < N; j++) {
+      const g0 = gen(j), age = lt - tb(g0);
+      if (age < 0) { pos.push(null); continue; }
+      const par = j === 0 ? null : pos[j - 2 ** (g0 - 1)], w = wander(j), k = easeOut(clamp(age / .35));
+      let x = par ? lerp(par[0], w[0], k) : w[0], y = par ? lerp(par[1], w[1], k) : w[1];
+      const tg = targets[j], fk = tg ? ease(clamp((lt - formT - hash(j) * .3) / .55)) : 0;
+      if (tg) { x = lerp(x, tg.x + 2, fk); y = lerp(y, tg.y + 2, fk); }
+      pos.push([x, y]);
+      if (fk >= 1) sparkle(x, y, hash2(j, sbeat(t)) < .15 && spulse(t, 3) > .5 ? 2 : 1, C.cream, C.gold);
+      else if (age < .15) { glow(x, y, 10, { tab: LIT, k: 1.1 }); sparkle(x, y, 2, C.cream, C.gold); }
+      else { const bl = breathe(t, 2, hash(j + 3)); glow(x, y, 6, { tab: WARM, k: .5 + .5 * bl }); sparkle(x, y, bl > .55 ? 1 : 0, bl > .3 ? C.cream : C.gold, C.amber); }
+    }
+    const lk = rise(lt, formT + .6, .4);
+    if (lk > 0) { ptext('175 BILLION', 135, 172, veil(C.haze, lk), { font: 3, scale: 2, align: 'center', shadow: veil(C.void, lk) }); ptext('PARAMETERS', 135, 186, veil(C.haze, lk), { font: 3, scale: 2, align: 'center', shadow: veil(C.void, lk) }); }
+    clawdPx(46, g(46), { u: 2, pose: 'sit', eyes: 'up', lookX: 1 });
+  });
+
+  // ======================================================================
+  // V1.5 ChatGPT, overnight — the valley town as a deep stack: rows of houses receding up the tall frame, under a time-lapse sky
+  // (the stars wheel, the moon arcs over). One near window lights mint and says "hi!"; then window after window, row after row,
+  // faster and faster, until the whole valley glows, while the counter under the date climbs to 100,000,000 users and dawn pales.
+  const VTOWN = (() => {
+    const rows = [
+      { y: 162, n: 40, w: [6, 8], h: [4, 5], wall: C.ink, roof: C.void, x0: 1, gap: [2, 8], win: 1, ws: 1, ridge: [158, 8, 21, C.ink, C.night] },
+      { y: 186, n: 30, w: [9, 11], h: [6, 7], wall: C.ink, roof: C.void, x0: 3, gap: [3, 9], win: 1, ws: 2, ridge: [181, 8, 25, C.ink, C.night] },
+      { y: 215, n: 20, w: [13, 16], h: [9, 10], wall: C.ink, roof: C.void, x0: -2, gap: [5, 12], win: 2, ws: 3, ridge: [209, 7, 22, C.ink, C.navy] },
+      { y: 250, n: 12, w: [22, 26], h: [13, 15], wall: C.night, roof: C.ink, x0: -6, gap: [8, 16], win: 2, ws: 4, ridge: [244, 6, 24, C.void, C.night] },
+      { y: 294, n: 6, w: [44, 50], h: [24, 27], wall: C.night, roof: C.ink, x0: -14, gap: [12, 22], win: 3, ws: 6, ridge: [288, 4, 23, C.void, C.night] },
+    ];
+    const H = []; let wi = 0;
+    rows.forEach((r, ri) => { let x = r.x0; for (let i = 0; i < r.n && x < 268; i++) { const w = Math.round(lerp(r.w[0], r.w[1], hash2(i, ri + 30))), h = Math.round(lerp(r.h[0], r.h[1], hash2(i, ri + 40))); H.push({ x, y: r.y + Math.round(hash2(i, ri + 50) * 2), w, h, row: ri, wall: r.wall, roof: r.roof, win: r.win, ws: r.ws, w0: wi }); wi += r.win; x += w + Math.round(lerp(r.gap[0], r.gap[1], hash2(i, ri + 60))); } });
+    const rank = Array.from({ length: wi }, (_, i) => i).sort((a, b) => hash(a * 13 + 7) - hash(b * 13 + 7));
+    const first = H.find(h => h.row === 4 && h.x > 100).w0 + 1;   // the first window: a near house, middle window, right of centre
+    rank.splice(rank.indexOf(first), 1); rank.unshift(first);
+    const order = new Int16Array(wi); rank.forEach((w, i) => { order[w] = i; });
+    return { H, order, N: wi, rows };
+  })();
+  vshot('V1.5', (p, lt, d, t, s) => {
+    sky();
+    starfield(t, { density: .9, rot: lt * .22 });   // time-lapse: the sky wheels overnight
+    const mk = clamp(lt / d), mx = lerp(20, 250, mk), my = 166 - Math.sin(mk * Math.PI) * 66;   // (rises from behind the far hills)
+    moon(mx, my, 7, { phase: .3 });
+    const dawn = rise(lt, 2.0, 1.2, k => k);
+    if (dawn > 0) { glow(135, 330, 300, { tab: LIT, k: 1.6 * dawn, ry: 150, pow: 1.3 }); glow(135, 330, 200, { tab: WARM, k: .8 * dawn, ry: 90 }); }
+    const k = clamp((lt - .25) / 2.35), nLit = k <= 0 ? 0 : Math.floor(VTOWN.N ** k);
+    const lit = w => VTOWN.order[w] < nLit;
+    let firstPos = null;
+    VTOWN.rows.forEach((R, row) => {
+      const [ry, amp, seed, ink, rim] = R.ridge;
+      ridge({ y: ry, amp, seed, ink, rim, freq: 1 / 46 });
+      for (const hs of VTOWN.H) if (hs.row === row) {
+        const wins = house(hs.x, hs.y, { w: hs.w, h: hs.h, wall: hs.wall, roof: hs.roof, windows: hs.win, ws: hs.ws, lit: i => lit(hs.w0 + i) ? C.mint : false, snow: row >= 2 ? C.haze : undefined, chimney: row >= 3 });
+        wins.forEach(([wx, wy], i) => { if (lit(hs.w0 + i)) { if (row > 1) glow(wx, wy, [0, 0, 7, 10, 16][row], { tab: GREEN, k: row === 4 ? 1.2 : .9 }); if (row < 3 && row > 0) pset(wx, wy, C.cream); } if (VTOWN.order[hs.w0 + i] === 0) firstPos = [wx, wy]; });
+      }
+    });
+    meadow(x => 296 + Math.round(Math.sin(x * .05) * 2), t, { ramp: [C.ink, C.void], ink: C.night, flowers: C.haze, n: 70 });
+    if (firstPos && lt > .3 && lt < 1.5) bubblePx('hi!', firstPos[0], firstPos[1] - 9, { font: 5, scale: 2, tail: [firstPos[0], firstPos[1] - 4], n: Math.ceil((lt - .3) * 12) });
+    // the counter, under the date
+    const users = k <= 0 ? 0 : Math.round(10 ** (8 * k)), txt = users.toLocaleString('en-US');
+    if (lt > .25) { ptext(txt, 135, 118, C.cream, { align: 'center', scale: 2, dots: true, off: C.ink }); ptext(users === 1 ? 'user' : 'users', 135, 137, C.haze, { align: 'center', scale: 2, shadow: C.void }); }
+    weather(t, 'snow', { n: 30 });
+  });
+
+  // ======================================================================
+  // V1.6 Sydney's chats gave Roose a fright — a tall sash window in a snowy brick wall: in the lower sash KEVIN at his laptop, lit
+  // blue by it; hearts pour up out of the screen into the upper sash, where the bubbles come: "I'm Sydney ♥", then a gold "I love
+  // you."; his hair stands on end, he slams the lid, the hearts fade, and one last heart slides down the glass. Snow banks below.
+  vshot('V1.6', (p, lt, d, t, s) => {
+    const WX = 34, WY = 110, WW = 202, WH = 178, RAIL = WY + 78;
+    // (on the words: "I'm Sydney" as "Sydney's" is sung, "I love you." on "chats", the fright on "Roose", the slam on "fright")
+    const sydT = sungAt(s, 'sydney') - .35, loveT = sungAt(s, 'chats'), frT = sungAt(s, 'roose') - .1, shutT = sungAt(s, 'fright') - .05;
+    const fright = lt > frT, shut = lt > shutT;
+    layer('v1.6-wall', () => {
+      rectf(0, 0, LW, LH, C.night);
+      for (let y = 0; y < LH; y += 5) { hline(0, LW, y, C.ink); for (let x = (y / 5) % 2 ? 0 : 9; x < LW; x += 18) vline(x, y, y + 4, C.ink); }
+      rectf(0, 0, LW, 46, C.ink); for (let x = 0; x < LW; x++) pset(x, 46 + (hash(x) < .5 ? 1 : 0), C.cream); rectf(0, 44, LW, 2, C.haze);
+      // the snow bank at the foot of the wall
+      for (let x = 0; x < LW; x++) { const top = Math.round(392 + Math.sin(x * .04 + 1) * 5 + Math.sin(x * .13) * 2); pset(x, top, C.cream); rectf(x, top + 1, 1, LH - top, grad([C.haze, C.dusk, C.navy, C.night], (xx, yy) => (yy - top) / 70)); }
+    });
+    // the room through the window
+    clipRect(WX, WY, WW, WH);
+    rectf(WX, WY, WW, WH, C.wine);
+    for (let x = WX + 6; x < WX + WW; x += 14) vline(x, WY, WY + 146, C.ink);   // wallpaper stripes
+    const DT = WY + 150, kx = WX + WW / 2 + 6;
+    glow(WX + 26, WY + 96, 56, { tab: WARM, k: .8 });                         // a warm lamp, off to the left
+    rectf(WX + 18, WY + 86, 16, 8, C.amber); vline(WX + 26, WY + 94, DT, C.void);
+    const hop = fright && !shut ? Math.round(3 * Math.abs(Math.sin((lt - frT) * 9))) : 0;
+    personPx(kx, DT + 16, { u: 8, dy: hop, top: C.dusk, hair: fright ? 'spiky' : 'short', hairC: C.void, eyes: fright ? 'wide' : 'dot', mouth: fright ? 'o' : 'smile', aL: fright ? 1.25 : -.6, aR: fright ? 1.25 : -.6, skin: C.gold });
+    if (!shut) glow(kx, DT - 20, 40, { tab: COOL, k: 1.1 });
+    rectf(WX, DT, WW, WH - (DT - WY), C.ink); hline(WX, WX + WW, DT, C.rust);   // desk
+    const lx = kx, ly = DT;
+    if (!shut) { rectf(lx - 20, ly - 24, 40, 24, C.navy); rectb(lx - 20, ly - 24, 40, 24, C.void); circf(lx, ly - 13, 2, C.dusk); hline(lx - 19, lx + 19, ly - 24, C.haze); }
+    else { rectf(lx - 21, ly - 3, 42, 3, C.navy); hline(lx - 21, lx + 20, ly - 3, C.haze); }
+    // hearts pour up out of the screen, up through the tall pane; after the slam they fade
+    for (let i = 0; i < 34; i++) {
+      const born = .1 + i / 34 * (shutT - .1), age = lt - born, fade = shut ? 1 - clamp((lt - shutT) / .5) : 1;
+      if (age < 0 || fade <= 0) continue;
+      const side = hash(i) < .5 ? -1 : 1, x = lx + side * (4 + age * (14 + hash2(i, 4) * 40)) + Math.sin(age * 3 + i) * 4, y = ly - 22 - age * (34 + hash2(i, 1) * 50);
+      if (fade < 1 && bay(Math.round(x), Math.round(y)) > fade) continue;
+      heartPx(x, y, hash2(i, 2) < .3 ? 2 : 1, hash2(i, 3) < .5 ? C.rust : C.clay, C.amber);
+    }
+    if (!shut) {
+      const bx = WX + WW / 2, by = RAIL - 10;
+      if (lt < loveT) { if (lt > sydT) bubblePx("I'm Sydney ♥", bx, by, { font: 5, scale: 2, tail: [lx - 10, RAIL + 8], n: Math.ceil((lt - sydT) * 22) }); }
+      else bubblePx('I love you.', bx, by, { font: 5, scale: 2, tail: [lx - 10, RAIL + 8], n: Math.ceil((lt - loveT) * 22), fill: C.gold });
+    }
+    noClip();
+    // window frame, the sashes' meeting rail, sill
+    rectb(WX - 1, WY - 1, WW + 2, WH + 2, C.void); rectb(WX - 2, WY - 2, WW + 4, WH + 4, C.ink);
+    rectf(WX, RAIL, WW, 3, C.void); hline(WX, WX + WW - 1, RAIL + 3, C.ink);
+    rectf(WX - 8, WY + WH + 2, WW + 16, 4, C.dusk); rectf(WX - 8, WY + WH + 1, WW + 16, 1, C.cream);
+    // one heart left stuck to the glass after the slam, sliding down the upper sash
+    if (shut) heartPx(WX + WW * .75, WY + 20 + Math.min(40, (lt - shutT) * 22), 2, C.rust, C.amber);
+    weather(t, 'snow', { n: 110 });
+  });
+
+  // ======================================================================
+  // V1.7 Six-month pause went nowhere fast — a deep stack on a night platform: the pause signal (6 MONTHS) high on its post at
+  // the back, the AI express thundering across the middle without slowing, and in front the letter-signers holding their PAUSE
+  // banner up over their heads; the banner flaps in the train's wind and their mouths fall open.
+  vshot('V1.7', (p, lt, d, t, s) => {
+    sky();
+    starfield(t, { density: .8 });
+    moon(54, 140, 8, { phase: .5 });
+    ridge({ y: 152, amp: 12, seed: 31, ink: C.ink, rim: C.night });
+    // the pause signal, tall, beyond the tracks on the right
+    vline(236, 96, 186, C.void); vline(237, 96, 186, C.ink);
+    circf(236, 86, 12, C.rust); circb(236, 86, 12, C.wine); rectf(230, 79, 4, 14, C.cream); rectf(238, 79, 4, 14, C.cream);
+    glow(236, 86, 26, { tab: WARM, k: .6 });
+    signPx('6 MONTHS', 228, 104, { font: 3, scale: 2 });
+    // rails
+    rectf(0, 182, LW, 7, C.ink); for (let x = 0; x < LW; x += 6) rectf(x, 188, 3, 1, C.night);
+    hline(0, LW, 185, C.dusk);
+    // the train: steam locomotive + lit carriages, never slowing
+    const head = -40 + (lt - .35) * 230, cars = 6, top = 148;
+    if (head > -400) {
+      for (let c = 0; c < cars; c++) {
+        const x1 = head - 42 - c * 50, x0 = x1 - 46;
+        if (x1 < -10 || x0 > LW + 10) continue;
+        rectf(x0, top + 2, 46, 30, C.ink); rectf(x0, top, 46, 2, C.night); hline(x0, x1, top + 2, C.navy);
+        for (let w = 0; w < 5; w++) { rectf(x0 + 4 + w * 9, top + 9, 5, 8, C.gold); pset(x0 + 4 + w * 9, top + 9, C.cream); }
+        rectf(x0 + 2, top + 30, 42, 2, C.void); circf(x0 + 8, top + 32, 2, C.void); circf(x1 - 8, top + 32, 2, C.void);
+      }
+      const lx = head - 42;
+      rectf(lx, top + 6, 36, 26, C.void); rectf(lx - 2, top - 6, 14, 38, C.void); rectf(lx + 26, top - 4, 5, 10, C.void);
+      rectf(lx + 1, top - 2, 8, 7, C.amber); circf(lx + 36, top + 16, 3, C.gold); glow(lx + 38, top + 16, 28, { tab: LIT, k: 1.2 });
+      polyf([[lx + 38, top + 13], [lx + 120, top - 8], [lx + 120, top + 44], [lx + 38, top + 20]], lit(.6));
+      for (let w = 0; w < 3; w++) circf(lx + 6 + w * 11, top + 32, 3, C.void);
+      ptext('AI', lx + 14, top + 12, C.rust, { font: 3, scale: 2 });
+      for (let i = 0; i < 10; i++) { const f = frac(t * .8 + i / 10), px = lx + 28 - f * 60, py = top - 10 - f * 34 - Math.sin(i) * 3; circf(px, py, 1 + f * 5, veil(C.haze, .75 * (1 - f))); }
+    }
+    // the platform, its front edge, and the near track we look across (the caption sits on its bed)
+    rectf(0, 192, LW, 102, C.night); hline(0, LW, 192, C.dusk); hline(0, LW, 193, C.navy);
+    for (let x = 1; x < LW; x += 3) pset(x, 197, C.amber);
+    for (let i = 0, y = 206; y < 290; i++, y += 8 + i * 4) hline(0, LW, y, C.ink);
+    for (let x = 0; x < LW; x += 3) pset(x, 290, C.amber);
+    hline(0, LW, 293, C.dusk); rectf(0, 294, LW, 12, C.ink); for (let x = 4; x < LW; x += 24) vline(x, 295, 305, C.void);
+    layer('v1.7-bed', () => {
+      rectf(0, 306, LW, LH - 306, mix(C.void, C.ink, .35));
+      for (let i = 0; i < 260; i++) pset(hash2(i, 71) * LW, 306 + hash2(i, 72) * (LH - 306), hash2(i, 73) < .5 ? C.night : C.ink);
+      for (let x = 2; x < LW; x += 22) { rectf(x, 380, 9, 66, C.ink); hline(x, x + 8, 380, C.night); }
+      for (const ry of [388, 432]) { rectf(0, ry, LW, 4, C.night); hline(0, LW, ry, C.haze); hline(0, LW, ry + 4, C.void); }
+    });
+    // the signers, their PAUSE banner held up over their heads (it flaps in the train's wind)
+    const wind = head > 40 && head < 640 ? 1 : 0;
+    const xs = [40, 66, 92, 118, 144, 170, 196, 222];
+    const B0 = 34, B1 = 228, BY = 214;
+    xs.forEach((x, i) => personPx(x, 288, { u: 3, skin: SKIN[i % 3], top: [C.teal, C.violet, C.dusk, C.clay, C.navy][i % 5], hair: ['short', 'long', 'curly', 'bun', 'short'][i % 5], hairC: [C.void, C.wine, C.gold, C.void][i % 4], aL: i === 0 ? 1.35 : -1.25, aR: i === xs.length - 1 ? 1.35 : -1.25, eyes: wind ? 'wide' : 'dot', lookX: wind ? -1 : 0, mouth: wind ? 'o' : 'none' }));
+    vline(B0 - 1, BY - 2, 262, C.clay); vline(B1 + 1, BY - 2, 262, C.clay);
+    const wave = x => wind ? Math.round(Math.sin(x * .22 - t * 18) * 1.8) : Math.round(Math.sin(x * .1 - t * 2) * .6);
+    for (let x = B0; x < B1; x++) { const wv = wave(x); vline(x, BY + wv, BY + 27 + wv, C.cream); pset(x, BY + 28 + wv, C.gold); }
+    ptext('PAUSE', (B0 + B1) / 2, BY + 4, C.rust, { scale: 3, align: 'center', each: (i, ch, x) => ({ dy: wave(x + 7) }) });
+    weather(t, 'petals', { n: wind ? 14 : 22, wind: wind ? 6 : 1 });
+  });
+
+  // ======================================================================
+  // V1.8 Eliezer's "shut-it-down" blast — tilted up at the city: ELIEZER (fedora, beard) on a low rooftop, lower left, aims his
+  // megaphone up at the tall towers; "SHUT IT / ALL DOWN" types across the sky, the sound rings roll up the towers and their
+  // windows go dark in a wave… then flicker back on, one by one.
+  const VTOWERS = [[100, 26, 168], [128, 30, 112], [160, 24, 146], [186, 32, 92], [220, 26, 132], [248, 28, 176]];
+  vshot('V1.8', (p, lt, d, t, s) => {
+    sky({ ramp: [C.void, C.ink, C.night, C.navy, C.dusk] });
+    starfield(t, { density: .7 });
+    const blast = sungAt(s, 'shut') - .1, back0 = blast + 1.1, front = lt > blast ? (lt - blast) * 280 : -1, MX0 = 78, MY0 = 222;   // (the blast on "shut-it-down")
+    VTOWERS.forEach(([x, w, top], bi) => {
+      rectf(x, top, w, LH - top, bi % 2 ? C.ink : C.void); hline(x, x + w - 1, top, C.navy);
+      if (bi === 3) { vline(x + w / 2, top - 14, top - 1, C.void); pset(x + w / 2, top - 15, spulse(t, 3) > .5 ? C.rust : C.wine); }
+      for (let wy = top + 4; wy < 300; wy += 5) for (let wx = x + 2; wx < x + w - 2; wx += 4) {
+        const hs = hash2(wx, wy); if (hs > .55) continue;
+        const d0 = Math.hypot(wx - MX0, wy - MY0), off = front > d0, back = lt > back0 + hs * .7;
+        if (off && !back) continue;
+        pset(wx, wy, hs < .15 ? C.cream : hs < .35 ? C.gold : C.amber); pset(wx + 1, wy, hs < .35 ? C.gold : C.clay);
+      }
+    });
+    // the rooftop he stands on, its facade below (the caption's ground)
+    rectf(0, 258, 96, LH - 258, C.void); hline(0, 95, 258, C.navy); rectf(96, 290, LW - 96, LH - 290, C.void); hline(96, LW, 290, C.night);
+    rectf(10, 236, 16, 22, C.void); rectf(8, 234, 20, 2, C.ink); vline(12, 258 - 4, 258, C.ink); vline(24, 254, 258, C.ink);
+    for (let wy = 376; wy < LH; wy += 16) for (let wx = 10; wx < LW; wx += 20) { const h = hash2(wx, wy + 5); rectf(wx, wy, 6, 9, h < .12 ? (h < .04 ? C.amber : C.wine) : C.ink); }
+    // Eliezer with the megaphone, aimed up at the towers
+    const shout = lt > blast && lt < back0;
+    const E = personPx(46, 258, { u: 6, hat: 'fedora', hatC: C.ink, beard: C.wine, top: C.ink, pants: C.void, aR: .55, mouth: shout ? 'o' : 'none', eyes: shout ? 'closed' : 'dot' });
+    const [hx, hy] = E.handR, ma = -.55, ca = Math.cos(ma), sa = Math.sin(ma), L = 22, Wd = 9;
+    const P = (u, v) => [hx + ca * u - sa * v, hy + sa * u + ca * v];
+    polyf([P(0, -2), P(L, -Wd), P(L, Wd), P(0, 2)], C.haze); pline(...P(L, -Wd), ...P(L, Wd), C.cream); pline(...P(0, -2), ...P(L, -Wd), C.cream);
+    rectf(hx - 2, hy - 2, 4, 4, C.dusk);
+    const [mx, my] = P(L + 1, 0);
+    // sound rings, rolling up the towers
+    for (let k = 0; k < 4; k++) {
+      const r = (lt - blast - k * .16) * 280; if (r <= 4 || r > 520) continue;
+      for (let a = ma - .75; a <= ma + .75; a += .7 / r) { const x = mx + Math.cos(a) * r, y = my + Math.sin(a) * r; if (bay(Math.round(x), Math.round(y)) < 1 - r / 560) pset(x, y, k === 0 ? C.cream : C.haze); }
+    }
+    const tk = clamp((lt - blast) / .6), n = Math.ceil(tk * 15);
+    if (tk > 0) { ptext('SHUT IT', 135, 118, C.cream, { align: 'center', scale: 3, n, shadow: C.rust }); ptext('ALL DOWN', 135, 146, C.cream, { align: 'center', scale: 3, n: n - 7, shadow: C.rust }); }
+  });
+
+  // ======================================================================
+  // V1.9 Sam got fired, then rehired — a tall brick facade, rows of dark windows climbing it, OPENAI over the lit door. SAM stands in
+  // the light; he is flung out in a high arc with his box of things and the door shuts; he sits alone in the leaves by the lamp. The
+  // door bursts open again, silhouettes in it hold up hearts, and he walks back into the light as it closes behind him.
+  vshot('V1.9', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    layer('v1.9v-facade', () => {
+      rectf(0, 0, LW, 290, C.ink);
+      for (let y = 0; y < 286; y += 6) { hline(0, LW, y, C.void); for (let x = (y / 6) % 2 ? 4 : 16; x < LW; x += 24) vline(x, y, y + 5, C.void); }
+      for (const wx of [20, 130, 196]) for (const wy of [40, 104, 168]) { rectf(wx, wy, 30, 40, C.void); rectf(wx + 2, wy + 2, 26, 36, C.night); vline(wx + 15, wy + 2, wy + 37, C.void); hline(wx + 2, wx + 27, wy + 20, C.void); }
+      for (const wy of [40, 104]) { rectf(66, wy, 30, 40, C.void); rectf(68, wy + 2, 26, 36, C.night); vline(81, wy + 2, wy + 37, C.void); hline(68, 93, wy + 20, C.void); }
+      rectf(0, 286, LW, LH - 286, C.night); hline(0, LW, 286, C.dusk); rectf(0, 292, LW, 2, C.navy);
+      rectf(0, 296, LW, LH - 296, mix(C.ink, C.void, .5));
+      for (let r = 0, y = 302; y < LH; r++, y += 7 + r * 2) { hline(0, LW, y, C.void); const w = 14 + r * 4; for (let x = (r % 2) * (w >> 1); x < LW; x += w) vline(x, y + 1, y + 6 + r * 2, C.void); }
+      for (let i = 0; i < 70; i++) { const x = hash2(i, 91) * LW, y = 300 + hash2(i, 92) ** .7 * (LH - 304); pset(x, y, [C.rust, C.clay, C.wine][i % 3]); if (y > 380) pset(x + 1, y, [C.rust, C.clay, C.wine][i % 3]); }
+    });
+    // a few windows up the facade are lit (late night at the office)
+    for (const [wx, wy, k] of [[132, 106, .2], [198, 42, .7], [22, 170, .45]]) if (breathe(t, 3, k) > .25) rectf(wx + 4, wy + 4, 9, 14, C.amber);
+    signPx('OPENAI', 81, 172, { font: 3, scale: 2, ink: C.haze });
+    const DX = 62, DY = 196, DW = 38, DH = 90;
+    const fired = b(.6), shutT = b(.9), reopen = b(2) - .1, inT = b(3.4);
+    const open = lt < shutT ? 1 : lt < reopen ? 0 : lt < inT ? 1 : 1 - clamp((lt - inT) / .25);
+    rectf(DX, DY, DW, DH, C.void);
+    if (open > 0) {
+      const ow = Math.round(DW * open);
+      rectf(DX, DY, ow, DH, grad([C.amber, C.gold, C.cream], (x, y) => 1 - (y - DY) / DH * .7));
+      polyf([[DX, DY + DH], [DX + ow, DY + DH], [DX + ow + 14 * open, DY + DH + 8], [DX - 6 * open, DY + DH + 8]], inkFn((x, y, u) => { const k = 1.6 - (y - DY - DH) / 12; return bay(x, y) < k - 1 ? (k > 1.3 ? C.gold : C.amber) : bay(x, y) < k ? LIT[LIT[u]] : LIT[u]; }));
+      ellf(DX + DW / 2 + 4, DY + DH + 10, 34 * open, 4, lit(1.2 * open));
+      hline(DX, DX + ow - 1, DY + DH, C.cream);
+      glow(DX + DW / 2, DY + DH / 2, 54, { tab: LIT, k: .9 * open });
+    }
+    // Sam: in the doorway → flung out in a high arc → sits in the leaves → walks back in
+    const landX = 190, landY = 288, sam = { top: C.navy, hair: 'short', hairC: C.wine };
+    const box = (x, y) => { rectf(x, y - 12, 18, 12, C.clay); hline(x, x + 17, y - 12, C.amber); vline(x + 9, y - 12, y - 1, C.rust); };
+    if (lt < fired) personPx(DX + DW / 2, DY + DH, { u: 4, ...sam });
+    else if (lt < fired + .5) {
+      const k = (lt - fired) / .5, x = lerp(DX + DW / 2, landX, k), y = lerp(DY + DH, landY, k) - Math.sin(k * Math.PI) * 80;
+      personPx(x, y, { u: 4, ...sam, aL: 1.2, aR: 1.2, eyes: 'wide', mouth: 'o' });
+      box(x - 40 * (1 - k) + 10, y - 50 - Math.sin(k * 3) * 14);
+    } else if (lt < reopen + .2) {
+      personPx(landX, landY, { u: 3, sit: true, ...sam, eyes: 'closed', mouth: 'frown' });
+      box(landX + 16, landY);
+    } else {
+      const k = clamp((lt - reopen - .2) / (inT - reopen - .2)), x = lerp(landX, DX + DW / 2, k), y = lerp(landY, DY + DH, k);
+      box(landX + 16, landY);
+      personPx(x, y, { u: 4, ...sam, walk: lt * 2.4, flip: true, eyes: 'happy', mouth: 'smile' });
+    }
+    // the reopened door: silhouettes holding up hearts
+    if (lt > reopen && lt < inT + .25) for (let i = 0; i < 3; i++) { const hx = DX + 7 + i * 12; personPx(hx, DY + DH, { u: 2, top: C.void, pants: C.void, skin: C.void, hair: 'none', eyes: 'none', aL: 1, aR: 1 }); heartPx(hx, DY + DH - 28 - Math.round(breathe(t, 1, i / 3) * 2), 2, C.rust); }
+    // streetlamp
+    vline(246, 150, 288, C.void); vline(247, 150, 288, C.void); rectf(238, 144, 18, 5, C.void); glow(247, 152, 44, { tab: LIT, k: 1.1 }); rectf(241, 149, 12, 3, C.gold); ellf(247, 289, 34, 4, lit(1));
+    weather(t, 'leaves', { n: 34 });
+  });
+
+  // ======================================================================
+  // V1.10 Weekend chaos, board expired — a tall dark room: high on the wall a window onto the night, and below it four tall
+  // candles on a plank marked THE BOARD. The weekend blows through the room on a draught from the left, as in the horizontal shot:
+  // calendar pages (FRI, SAT, SUN, MON, TUE), one after another, sail slowly across and down past the flames, rocking as they go,
+  // and the flames lean after them; on beats 1, 2 and 3 three of the flames go out, threads of smoke rising.
+  vshot('V1.10', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    rectf(0, 0, LW, LH, C.ink);
+    for (let x = 6; x < LW; x += 18) vline(x, 0, 266, mix(C.ink, C.night, .3));
+    // the window, high on the wall: the night outside
+    const WX = 118, WY = 70, WWd = 116, WHt = 112;
+    rectf(WX - 2, WY - 2, WWd + 4, WHt + 4, C.void); clipRect(WX, WY, WWd, WHt);
+    sky({ cy: 240, r: 220 }); starfield(t, { density: .7 }); city(t, { y: WY + WHt - 4, x0: WX, x1: WX + WWd, grow: .2, lit: .4 }); noClip();
+    vline(WX + WWd / 2, WY, WY + WHt - 1, C.void); hline(WX, WX + WWd - 1, WY + 52, C.void);
+    rectf(WX - 8, WY + WHt + 2, WWd + 16, 4, C.night); hline(WX - 8, WX + WWd + 7, WY + WHt + 2, C.navy);
+    // table + the board
+    rectf(0, 286, LW, LH - 286, C.void); hline(0, LW, 286, C.night);
+    for (let y = 300; y < LH; y += 9 + ((y * 7) % 5)) hline(0, LW, y, mix(C.void, C.ink, .4));   // the table's grain
+    ellf(135, 292, 120, 6, warm(.8 * (lt < b(3) - .1 ? 1 : .55)));                         // candlelight pooled on it
+    const px0 = 22, px1 = 248;
+    rectf(px0, 264, px1 - px0, 20, C.rust); hline(px0, px1 - 1, 264, C.clay); hline(px0, px1 - 1, 283, C.wine); rectf(px0 + 2, 284, px1 - px0 - 4, 2, C.void);
+    for (let x = px0 + 9; x < px1; x += 29) { pset(x, 268, C.wine); pset(x + 13, 279, C.wine); }
+    ptext('THE BOARD', 135, 268, C.gold, { align: 'center', font: 3, scale: 2, shadow: C.wine });
+    // four candles; three go out, one on each beat
+    const outs = [b(1) - .1, -1, b(2) - .1, b(3) - .1], xs = [56, 106, 164, 214], hs = [66, 84, 56, 74];
+    xs.forEach((x, i) => { const since = outs[i] < 0 ? 0 : lt - outs[i], gk = outs[i] < 0 || since < 0 ? 1 : clamp(1 - since / .35); if (gk > 0) glow(x, 264 - hs[i] - 8, 70, { tab: WARM, k: 1.1 * gk }); });
+    xs.forEach((x, i) => {
+      const h = hs[i], top = 264 - h, lit = outs[i] < 0 || lt < outs[i], since = outs[i] < 0 ? 0 : lt - outs[i];
+      rectf(x - 7, top, 15, h, C.cream); rectf(x + 5, top + 1, 3, 263 - top, C.gold); vline(x + 7, top + 2, 263, C.amber); vline(x - 7, top + 1, 263, mix(C.cream, C.gold, .3));
+      rectf(x - 7, top, 3, 5 + (i % 2) * 5, C.cream); pset(x - 6, top + 6 + (i % 2) * 5, C.gold); hline(x - 7, x + 7, top, C.gold); rectf(x - 9, 262, 19, 2, C.amber);
+      vline(x, top - 3, top - 1, C.void);
+      if (lit) {
+        const lean = lt > .2 && lt < 2.6 ? 1 : 0, fl = fx(i) < .4 ? 1 : 0;
+        polyf([[x - 4 + lean, top - 3], [x + 5 + lean, top - 3], [x + 4.5 + lean * 2, top - 12], [x + .5 + lean * 3, top - 21 + fl], [x - 3.5 + lean * 2, top - 12]], C.amber);
+        polyf([[x - 2.5 + lean, top - 3], [x + 3.5 + lean, top - 3], [x + 2.5 + lean * 2, top - 10], [x + .5 + lean * 2.5, top - 16 + fl]], C.gold);
+        rectf(x + lean, top - 8, 2, 5, C.cream);
+      } else if (since < 2.5) smoke(x, top - 4, t, { h: 70, n: 12 });
+    });
+    // the weekend blows through, left to right: calendar pages sailing across and slowly down past the flames, each in one long
+    // swaying glide, rocking (narrowing and widening a little) as it goes
+    ['FRI', 'SAT', 'SUN', 'MON', 'TUE'].forEach((dname, i) => {
+      const k = (lt - .05 - i * .36) / 1.8; if (k <= 0 || k >= 1) return;
+      const sway = Math.sin(k * Math.PI * 1.6 + i * 1.3), rock = .5 + .5 * Math.cos(k * Math.PI * 2.4 + i * 2);
+      const pw = 30 - Math.round(rock * 8), x = Math.round(lerp(-34, LW + 4, k) + (30 - pw) / 2), y = Math.round(lerp(112 + i * 4, 206 + i * 6, k) + sway * 9);
+      rectf(x + 1, y + 1, pw, 28, C.void); rectf(x, y, pw, 28, C.cream); rectf(x, y, pw, 7, C.rust); pset(x + 5, y + 1, C.void); pset(x + pw - 6, y + 1, C.void);
+      if (rock > .5) vline(x + pw - 1, y + 7, y + 27, mix(C.cream, C.haze, .5));   // (turned a little away: its far edge in shade)
+      ptext(dname, x + Math.round(pw / 2), y + 12, C.void, { align: 'center' });
+    });
+  });
+
+  // ======================================================================
+  // V1.11 Ilya saw what Ilya saw — the tall sky is the question: where the telescope points, stars join one by one into a huge "?"
+  // filling the upper sky; on beat 2 it flares and a faint gold sightline links it to the lens, and ILYA's eyes go wide.
+  vshot('V1.11', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky();
+    starfield(t, { density: 1 });
+    const g = hill({ cx: 226, y: 280, w: 140, drop: 60, ink: C.void, rim: C.pine });
+    meadow(g, t, { flowers: [C.cream, C.violet], n: 70 });
+    grass(0, LW, g, t);
+    const qx = 80, qy = 76, sc = 3.9, pts = QMARK.map(([x, y]) => [qx + x * sc, qy + y * sc]);
+    const n = clamp((lt - .1) / 1.4) * (pts.length - 1), sure = lt > b(2) - .1;
+    for (let i = 0; i < Math.floor(n); i++) pline(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], sure ? C.haze : C.dusk, { every: 2 });
+    if (n % 1 > 0 && n < pts.length - 1) { const i = Math.floor(n), f = n - i; pline(pts[i][0], pts[i][1], lerp(pts[i][0], pts[i + 1][0], f), lerp(pts[i][1], pts[i + 1][1], f), C.dusk, { every: 2 }); }
+    pts.forEach(([x, y], i) => { if (i <= n + .01) sparkle(x, y, sure && spulse(t, 3) > .4 ? 3 : 2, C.cream, sure ? C.gold : C.haze); });
+    const dotK = rise(lt, 1.55, .2), dx = qx + 13 * sc, dy = qy + 52 * sc;
+    if (dotK > 0) { sparkle(dx, dy, 3, C.cream, C.gold); if (sure) glow(dx, dy, 18, { tab: LIT, k: 1.1 }); }
+    if (sure) glow(qx + 13 * sc, qy + 20 * sc, 80, { tab: LIT, k: .5 * rise(lt, b(2) - .1, .3) });
+    // the telescope on the hill, pointing up at it
+    const tx = 196, ty = g(196) - 1;
+    thick(tx, ty - 34, tx - 13, ty, 2, C.void); thick(tx, ty - 34, tx + 13, ty, 2, C.void); thick(tx, ty - 34, tx + 1, ty, 2, C.void);
+    thick(tx + 14, ty - 20, tx - 26, ty - 72, 10, C.navy); pline(tx + 14, ty - 25, tx - 26, ty - 77, C.dusk); thick(tx - 22, ty - 66, tx - 32, ty - 79, 12, C.night);
+    rectf(tx - 3, ty - 38, 6, 6, C.void); thick(tx + 14, ty - 20, tx + 20, ty - 13, 4, C.void);
+    circf(tx - 31, ty - 79, 5, C.haze); pset(tx - 33, ty - 81, C.cream);
+    if (sure) pline(tx - 34, ty - 84, qx + 13 * sc, qy + 30 * sc, veil(C.gold, .4), { every: 3 });
+    personPx(232, g(232), { u: 5, hair: 'bald', hairC: C.dusk, top: C.ink, pants: C.void, eyes: sure ? 'wide' : 'dot', mouth: sure ? 'o' : 'none', lookX: -1, aL: .2, skin: C.gold });
+    weather(t, 'petals', { n: 18 });
+  });
+
+  // ======================================================================
+  // V1.12 EU writes the AI law — twelve gold stars take their places in a ring high in the sky; out of the ring a scroll titled AI ACT
+  // unrolls downward, long, its lines writing themselves under a quill, and the vote lands at its foot: 523 FOR, 46 AGAINST.
+  vshot('V1.12', (p, lt, d, t, s) => {
+    sky({ ramp: [C.ink, C.night, C.navy, C.navy, C.dusk], cy: 150, cx: 140, r: 280, vert: 0 });
+    starfield(t, { density: .35 });
+    const cx = 140, cy = 150, R = 60;
+    glow(cx, cy, 110, { tab: LIT, k: .5 });
+    for (let i = 0; i < 12; i++) {
+      const born = .08 + i * .09, age = lt - born; if (age < 0) continue;
+      const a = -Math.PI / 2 + i / 12 * TAU, x = Math.round(cx + Math.cos(a) * R), y = Math.round(cy + Math.sin(a) * R);
+      if (age < .18) sparkle(x, y, 3, C.cream, C.gold);
+      else { spr(STAR5, x - 2, y - 2); if (hash2(i, sbeat(t)) < .3 && spulse(t, 3) > .5) pset(x, y, C.cream); }
+    }
+    ridge({ y: 284, amp: 8, seed: 41, ink: C.ink, rim: C.night });
+    meadow(x => Math.round(ridgeY(x, { y: 284, amp: 8, seed: 41 })), t, { ramp: [C.ink, C.void], fall: 60, ink: C.night, n: 60 });
+    // the scroll, unrolling downward out of the ring
+    const uk = rise(lt, .8, .7, easeOut), SW = 88, sx = cx - SW / 2, sy = cy - 38, sh = Math.round(160 * uk);
+    if (uk > 0) {
+      rectf(sx - 3, sy - 4, SW + 6, 5, C.gold); hline(sx - 3, sx + SW + 2, sy - 4, C.cream);
+      rectf(sx + 2, sy + 1, SW, sh, C.void); rectf(sx, sy, SW, sh, C.cream);
+      rectf(sx - 3, sy + sh, SW + 6, 5, C.gold); hline(sx - 3, sx + SW + 2, sy + sh + 4, C.amber);
+      if (sh > 18) ptext('AI ACT', cx, sy + 5, C.navy, { align: 'center', font: 3, scale: 2 });
+      const w0 = sungAt(s, 'writes') - .15, nl = Math.floor(clamp((lt - w0) / 1.1) * 18);   // (it writes itself on "writes")
+      for (let i = 0; i < nl && 22 + i * 6 < sh - 4 && i < 18; i++) hline(sx + 6, sx + SW - 7 - (hash(i) * 16 | 0), sy + 22 + i * 6, i % 4 === 3 ? C.rust : C.haze);
+      if (nl < 18 && lt > w0 && 22 + nl * 6 < sh) { const qx = sx + 6 + (frac(lt * 1.5) * 50 | 0), qy = sy + 22 + nl * 6; pline(qx, qy, qx + 7, qy - 11, C.void); pline(qx + 1, qy - 2, qx + 8, qy - 12, C.haze); }
+    }
+    // the vote, at the scroll's foot
+    const vk = rise(lt, sungAt(s, 'ai'), .3);   // (the vote as "the AI law" is sung)
+    if (vk > 0) { ptext('523 FOR', cx, sy + sh - 30, veil(C.navy, vk), { font: 3, scale: 2, align: 'center' }); ptext('46 AGAINST', cx, sy + sh - 16, veil(C.rust, vk), { font: 3, scale: 2, align: 'center' }); }
+  });
+
+  // ======================================================================
+  // V1.13 Strawberry thinks, link by link — the chain of thought climbs straight up the tall sky: from the round-eyed strawberry
+  // (o1) on its hill, link after link zig-zags from star to star up to the top one, which bursts gold; sparkle eyes.
+  vshot('V1.13', (p, lt, d, t, s) => {
+    sky({ ramp: [C.void, C.ink, C.night, C.navy, C.violet] });
+    starfield(t, { density: .7 });
+    const g = hill({ cx: 70, y: 284, w: 200, drop: 50, ink: C.void, rim: C.pine });
+    meadow(g, t, { flowers: [C.cream, C.rust], n: 80 });
+    grass(0, LW, g, t);
+    const sx = 66, sy = g(66) + 2;
+    const nodes = [[sx + 18, sy - 56], [118, 210], [160, 186], [126, 160], [176, 138], [140, 114], [196, 96], [160, 76], [222, 66]];
+    const tEnd = sungAt(s, -1) - .05, n = clamp((lt - .3) / (tEnd - .3)) * (nodes.length - 1), done = lt > tEnd;   // (the last link on the last "link")
+    for (let i = 0; i < nodes.length - 1; i++) {
+      const f = clamp(n - i); if (f <= 0) break;
+      const [x0, y0] = nodes[i], [x1, y1] = nodes[i + 1], L = Math.hypot(x1 - x0, y1 - y0), ux = (x1 - x0) / L, uy = (y1 - y0) / L, steps = Math.floor(L / 5 * f);
+      for (let k = 1; k < steps; k++) {
+        const x = x0 + ux * k * 5, y = y0 + uy * k * 5;
+        if (k % 2) { ringf(x, y, 1.4, 2.8, C.haze); pset(x - 1, y - 2, C.cream); }
+        else { thick(x - ux * 3, y - uy * 3, x + ux * 3, y + uy * 3, 2, C.dusk); pset(x, y, C.haze); }
+      }
+    }
+    nodes.forEach(([x, y], i) => { if (i > 0 && i <= n + .01) sparkle(x, y, 2, C.cream, C.gold); });
+    if (lt < .5) for (let i = 0; i < 3; i++) if (lt > i * .12) circf(sx + 10 + i * 5, sy - 52 - i * 5, i === 2 ? 2 : 1, C.haze);
+    if (done) {
+      const k = clamp((lt - tEnd) / .4), [x, y] = nodes[nodes.length - 1];
+      glow(x, y, 50, { tab: LIT, k: 1.4 * easeOut(k) });
+      starburst(x, y, 20, easeOut(k), { n: 8, ink: C.gold, fringe: C.amber, inner: .4, rot: lt * .3 });
+      sparkle(x, y, 3, C.cream, C.cream);
+    }
+    strawberry(sx, sy, { eyes: done ? 'spark' : 'closed' });
+    tagPx('o1', sx - 34, sy - 38, { font: 5, scale: 2 });
+  });
+
+  // ======================================================================
+  // V1.14 Newsom vetoes, doesn't blink — close on GAVIN at his balcony desk under the lamp, the palm tree towering up behind him with
+  // an owl in it. He raises the stamp and slams VETO onto SB 1047 (a ring pulses out). Everything else blinks on the beat: the stars,
+  // the owl, tiny Clawd on the balcony rail. Gavin stares straight at us, wide-eyed, and never does.
+  vshot('V1.14', (p, lt, d, t, s) => {
+    sky({ ramp: [C.void, C.ink, C.night, C.navy, C.violet] });
+    starfield(t, { density: 1, bright: .5 });
+    // the palm, towering up the right side, with the owl
+    for (let i = 0; i < 90; i++) { const k = i / 90; rectf(232 - Math.sin(k * 1.5) * 30, 290 - k * 196, 5, 3, C.void); }
+    const top = [232 - Math.sin(1.5) * 30 + 2, 94];
+    [[-54, 20], [-38, 32], [44, 22], [34, 36], [-10, 42], [12, -16], [-26, -10]].forEach(([dx, dy], i) => { const sw = Math.round(Math.sin(t * 1.2 + i) * 1.5); polyf([[top[0], top[1]], [top[0] + dx * .5, top[1] + dy * .3 - 7 + sw], [top[0] + dx, top[1] + dy + sw], [top[0] + dx * .5, top[1] + dy * .3 + sw]], C.void); });
+    owl(top[0] - 26, top[1] + 16, frac(sbp(t)) < .2);
+    // the balcony rail behind the desk; Clawd sits on it
+    rectf(0, 226, LW, 3, C.void); hline(0, LW, 226, C.dusk); for (let x = 4; x < LW; x += 12) rectf(x, 229, 4, 40, C.void);
+    clawdPx(30, 226, { u: 2, eyes: frac(sbp(t) + .5) < .2 ? 'closed' : 'open', lookX: 1, blink: false });
+    // the desk lamp's pool of light
+    const DT = 256, px = 196, py = DT + 2, slam = sungAt(s, 'veto') - .05, raised = lt > slam - .45 && lt < slam;   // (VETO on "vetoes")
+    glow(52, 200, 44, { tab: WARM, k: 1 });
+    polyf([[44, 192], [60, 192], [90, DT], [14, DT]], lit(.8));
+    // Gavin, close: wide awake, staring straight at us
+    const G = personPx(118, 292, { u: 11, top: C.ink, suit: true, tie: C.navy, hair: 'slick', hairC: C.wine, skin: C.gold, eyes: 'wide', mouth: 'flat', aR: raised ? 1.25 : -.15, aL: -.9 });
+    // at this size the face gets its own features: ears, level brows over the unblinking stare, a nose, a tight mouth, slicked hair
+    { const hx = 107, hy = G.top, hs = 23, ey = hy + 10;
+      for (const ex of [hx - 2, hx + hs]) { rectf(ex, hy + 8, 2, 7, C.amber); pset(ex + (ex < hx ? 0 : 1), hy + 10, C.clay); }
+      for (const px of [110, 126]) { rectf(px - 3, ey - 4, 6, 2, C.wine); rectf(px - 2, ey - 1, 4, 4, C.cream); rectf(px - 1, ey, 2, 2, C.void); }
+      vline(118, ey + 3, ey + 7, C.amber); pset(119, ey + 7, C.clay);
+      hline(114, 122, hy + hs - 3, C.wine); hline(115, 121, hy + hs - 2, C.amber);
+      rectf(hx, hy - 3, hs, 4, C.wine); hline(hx + 3, hx + hs - 4, hy - 3, C.rust); pset(hx + 6, hy - 2, C.void); rectf(hx - 1, hy - 1, 2, 6, C.wine); rectf(hx + hs - 1, hy - 1, 2, 6, C.wine); }
+    rectf(0, DT, LW, 8, C.navy); hline(0, LW, DT, C.dusk); ellf(52, DT + 3, 40, 3, lit(.8));
+    rectf(0, DT + 8, LW, LH - DT - 8, C.ink); hline(0, LW, DT + 8, C.void);
+    for (let y = DT + 20; y < LH; y += 11 + (y % 3)) hline(0, LW, y, mix(C.ink, C.void, .5));
+    rectb(20, 384, 100, 44, C.void); rectb(150, 384, 100, 44, C.void); rectf(64, 404, 12, 3, C.amber); rectf(194, 404, 12, 3, C.amber);
+    pline(52, DT, 52, 194, C.void); polyf([[38, 194], [66, 194], [60, 180], [44, 180]], C.amber); hline(39, 65, 194, C.gold);
+    // the bill + the stamp
+    rectf(px - 32, py - 2, 64, 13, C.cream); hline(px - 32, px + 31, py + 10, C.haze); ptext('SB 1047', px, py, C.navy, { font: 3, align: 'center', scale: 2 });
+    if (lt < slam) { const [hx, hy] = raised ? G.handR : [px + 20, py - 6]; rectf(hx - 7, hy + 1, 15, 5, C.rust); rectf(hx - 1, hy - 8, 4, 9, C.clay); circf(hx + 1, hy - 9, 2, C.rust); }
+    else {
+      const k = clamp((lt - slam) / .14);
+      rectf(px - 28, py - 26, 56, 22, C.cream); rectb(px - 28, py - 26, 56, 22, C.rust); rectb(px - 26, py - 24, 52, 18, C.rust); ptext('VETO', px, py - 22, C.rust, { align: 'center', scale: 2 });
+      if (k < 1) circb(px, py - 14, 18 + k * 30, veil(C.cream, 1 - k));
+    }
+  });
+
+  // ======================================================================
+  // V1.15 Hinton takes his medal, scolds — a tall red-curtained stage, one spotlight from high above. The gold medal comes down on its
+  // ribbon the whole height of the frame onto GEOFF's chest (white hair, glasses, suit) and glints; on "scolds" he wags a finger at us:
+  // "be careful." NOBEL PRIZE · PHYSICS on the stage front; rows of audience heads below in the dark, one of them small and orange.
+  vshot('V1.15', (p, lt, d, t, s) => {
+    layer('v1.15v-stage', () => {
+      rectf(0, 0, LW, LH, C.void);
+      for (let x = 0; x < LW; x++) { const f = Math.min(x, LW - 1 - x); if (f < 54) { const fold = Math.sin(x * .45) > 0 ? C.wine : C.rust; vline(x, 0, 262, f < 46 - Math.sin(x * .1) * 6 ? fold : C.void); } }
+      rectf(0, 0, LW, 46, C.wine); for (let x = 0; x < LW; x += 16) rectf(x, 46, 8, 5, C.wine); hline(0, LW, 46, C.rust);
+      rectf(0, 262, LW, 30, C.night); hline(0, LW, 262, C.dusk);
+      rectf(0, 292, LW, 96, C.wine); hline(0, LW, 292, C.rust); for (let x = 6; x < LW; x += 22) vline(x, 294, 386, C.ink);
+      rectf(0, 388, LW, LH - 388, C.void);
+    });
+    // the audience: rows of heads in the dark, nearer and bigger toward the bottom; one is small and orange
+    [[402, 4, 13, 0], [428, 6, 17, 7], [462, 8, 22, 3]].forEach(([y, r, sp, off], ri) => { for (let x = off; x < LW + sp; x += sp) { const hx = x + (Math.floor(x / sp) % 2) * 3, hy = y + (Math.floor(x / sp) % 3); circf(hx, hy, r, C.night); hline(hx - r + 2, hx + r - 2, hy - r, ri ? C.navy : C.wine); } });
+    clawdPx(166, 408, { u: 1, eyes: 'up', shadow: false });
+    // spotlight cone + pool
+    polyf([[118, 44], [152, 44], [196, 262], [74, 262]], lit(2));
+    ellf(135, 264, 70, 6, lit(2.4));
+    // the medal comes all the way down on its ribbon, then settles on his chest
+    const mk = rise(lt, .05, sungAt(s, 'medal') - .05, ease), chestY = 216, my = lerp(-14, chestY, mk);   // (it settles on "medal")
+    const wagT = sungAt(s, 'scold') - .1, wag = lt > wagT;   // (he scolds on "scolds")
+    const P = personPx(135, 264, { u: 9, hair: 'short', hairC: C.cream, glasses: true, suit: true, top: C.ink, tie: C.rust, skin: C.gold, eyes: 'dot', mouth: wag ? 'o' : 'smile', aR: wag ? 1.4 + (Math.floor(lt * 5) % 2 ? .22 : -.18) : -.4, aL: -.4 });
+    if (mk < 1) { pline(129, -2, 133, my - 4, C.rust); pline(141, -2, 137, my - 4, C.rust); medalPx(135, my, { r: 5, ribbon: false }); }
+    else { pline(129, 209, 133, chestY - 5, C.rust); pline(141, 209, 137, chestY - 5, C.rust); medalPx(135, chestY, { r: 5, ribbon: false, shine: spulse(t, 3) }); }
+    if (wag) {
+      const [hx, hy] = P.handR; rectf(hx, hy - 7, 2, 6, C.gold);
+      bubblePx('be careful.', 172, hy - 22, { font: 5, scale: 2, tail: [hx + 6, hy - 8], n: Math.ceil((lt - wagT) * 20) });
+    }
+    signPx('NOBEL PRIZE · PHYSICS', 135, 270, { font: 3, scale: 2, ink: C.gold, plate: C.void, edge: C.wine });
+  });
+
+  // ======================================================================
+  // V1.16 Demis wins for protein folds — a chain of coloured beads hangs down the tall sky like a string, swaying; then it folds,
+  // bead by bead, into a turning protein (a helix and a hairpin, lit by depth). On beat 3 it glows, ALPHAFOLD appears under it, and
+  // a gold medal drops around DEMIS's neck on the hill below; he closes his eyes, smiling. Clawd and its lantern nearby.
+  vshot('V1.16', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky();
+    starfield(t, { density: .8 });
+    const g = hill({ cx: 120, y: 284, w: 210, drop: 46, ink: C.void, rim: C.pine });
+    meadow(g, t, { n: 80 });
+    grass(0, LW, g, t);
+    const cx = 138, cy = 150, won = lt > b(3) - .1, rot = .4 + lt * .8, S = 2.9;
+    const P = [];
+    for (let i = 0; i < BEADS; i++) {
+      const k = ease(clamp((lt - .2 - i * .03) / 1.6)), [fx0, fy0, fz0] = folded(i);
+      const sxp = Math.sin(i * .5 + lt * 2.2) * 5 + Math.sin(lt * .9) * i * .25, syp = 30 + i * 7.4 - cy;
+      const x3 = lerp(sxp, fx0 * S, k), y3 = lerp(syp, fy0 * S, k), z3 = lerp(0, fz0 * S, k);
+      const a = rot * k, ca = Math.cos(a), sa = Math.sin(a);
+      P.push({ x: cx + x3 * ca + z3 * sa, y: cy + y3, z: -x3 * sa + z3 * ca, i });
+    }
+    if (won) glow(cx, cy, 84, { tab: LIT, k: 1.1 * rise(lt, b(3) - .1, .4) });
+    const order = [...P].sort((a, c) => a.z - c.z);
+    const bonds = []; for (let i = 0; i + 1 < BEADS; i++) bonds.push([P[i], P[i + 1]]);
+    bonds.sort((u, v) => (u[0].z + u[1].z) - (v[0].z + v[1].z)).forEach(([u, v]) => { const z = (u.z + v.z) / 2; thick(u.x, u.y, v.x, v.y, 2, z < -6 ? C.night : z < 6 ? C.navy : C.dusk); });
+    order.forEach(q => { const c = beadCol(q.i), r = q.z > 10 ? 3.5 : q.z < -10 ? 2.5 : 3; circf(q.x, q.y, r, q.z < -8 ? DIM[c] : c); if (q.z > 0) pset(q.x - 1, q.y - 1, LIT[c]); });
+    if (won) ptext('ALPHAFOLD', cx, cy + 74, veil(C.gold, rise(lt, b(3), .3)), { font: 3, scale: 2, align: 'center', shadow: C.void });
+    personPx(96, g(96), { u: 4, top: C.navy, hair: 'short', hairC: C.void, skin: C.clay, eyes: won ? 'closed' : 'up', mouth: won ? 'smile' : 'none', aR: won ? 1.2 : -1.1, aL: won ? 1.2 : -1.1 });
+    if (won) { const mk = rise(lt, b(3) - .1, .35, easeOut), my = g(96) - 24; medalPx(96, lerp(150, my, mk), { r: 4, ribbon: false, shine: 1 }); if (mk >= 1) { pline(92, my - 9, 94, my - 4, C.rust); pline(100, my - 9, 98, my - 4, C.rust); } }
+    handLantern(230, g(230));
+    clawdPx(208, g(208), { u: 2, pose: 'sit', eyes: 'up', lookX: -1 });
+  });
+
+  // The vertical shots set lower in the frame, onto the lowered caption (VERTICAL.md, "the tall frame"): their stages were composed
+  // with the floor at y ≈ 290; lowered 40 px it stands just above the caption's band, and the land fills the bottom fifth.
+  vlower('V1.1', 40); vlower('V1.2', 40); vlower('V1.3', 40, 'sky'); vlower('V1.4', 40); vlower('V1.5', 40); vlower('V1.7', 40); vlower('V1.8', 40);
+  vlower('V1.9', 40, d => {   // (the facade's brick, continued up the uncovered rows)
+    rectf(0, 0, LW, d, C.ink);
+    for (let y = 0; y < d; y++) { const k = y - d, r = Math.floor(k / 6); if (((k % 6) + 6) % 6 === 0) hline(0, LW, y, C.void); for (let x = (((r % 2) + 2) % 2) ? 4 : 16; x < LW; x += 24) pset(x, y, C.void); }
+  });
+  vlower('V1.10', 40, 'extend'); vlower('V1.11', 40); vlower('V1.12', 40); vlower('V1.13', 40); vlower('V1.14', 40); vlower('V1.15', 24, 'extend'); vlower('V1.16', 40);
+  vlower('V1.6', 56, d => rectf(0, 0, LW, d, C.ink));   // (56: its wall's top edge clears the date's rows)
 })();
 
 ;
@@ -3501,14 +4606,16 @@ OVERLAYS.push((t, s) => {
     vline(x - 6, y - 19, y - 4, C.ink); vline(x + 6, y - 19, y - 4, C.ink);
   }
 
-  // snap an lt to the nearest slow beat of the window
-  const snap = (s, lt) => { const bs = beatsIn(s); let best = lt, bd = 9; for (const b of bs) if (Math.abs(b - lt) < bd) { bd = Math.abs(b - lt); best = b; } return best; };
+  // The sub-shots cut as their lines are sung (sungLines: each line from its first word to the end of its last, where the lines'
+  // own starts can come seconds early), and the jar's lid pops on "contain".
+  const lineTimes = s => sungLines('C1').map(l => ({ a: l.start - s.start, b: l.end - s.start }));
+  const popAt = s => sungAt({ sec: 'C1', n: 4, start: s.start }, 'contain') - .05;
 
   section('C1', (p, lt, d, t, s) => {
     dissolveIn(1.2);
-    const L = linesOf('C1').map(l => ({ a: l.start - s.start, b: l.end - s.start }));
+    const L = lineTimes(s);
     const cut1 = L[1].a - .2, cut2 = L[2].a - .25, cut3 = L[3].a - .25, cut4 = L[3].b + .05;
-    const popT = snap(s, L[3].a + .66 * (L[3].b - L[3].a));
+    const popT = popAt(s);
 
     // --- 1: "We didn't start the scaling": the V1 stars connect, one by one --------------------------------
     const shotA = () => {
@@ -3621,6 +4728,140 @@ OVERLAYS.push((t, s) => {
     else if (lt < cut3 + .5) crossfade(cf(cut3), shotC, shotD);
     else crossfade(cf(cut4, .6), shotD, shotE);
   });
+
+  // ######################################################################################################################
+  // VERTICAL (the 270×480 frame; see ../VERTICAL.md). The same five sub-shots on the tall home scene (homeScene in the tall frame):
+  // the V1 stars connect just over the hill; aurora curtains climb the tall sky along steeper exponentials; close on Clawd shaking
+  // its head; the jar, with the ribbon coming down from the top of the frame and streaming back up off it; wide again.
+  // No big tilt: the tall frame already gives the sky the room the horizontal shot tilts up for, and a tilt would push Clawd's
+  // hilltop down into the caption band.
+  // ######################################################################################################################
+  const VCURVES = [
+    { x0: 0, y0: 262, y1: -70, c: 2.6, len: 70, cols: [C.pine, C.teal, C.mint], ph: 1.7, k: .75 },
+    { x0: 26, y0: 298, y1: -10, c: 2.4, len: 84, cols: [C.pine, C.teal, C.mint, C.cream], ph: 0, k: 1 },
+    { x0: 84, y0: 320, y1: 100, c: 2.8, len: 52, cols: [C.pine, C.teal], ph: 3.1, k: .7 },
+  ];
+  // k: intensity, gain: how far the right ends have climbed (0..1), rs: how far they have risen from behind the land
+  function vcurtains(t, dy, k, gain, rs = 1, o = {}) {
+    const low = 160 * (1 - rs) + dy * .3 + (o.dy ?? 0);
+    VCURVES.forEach(S => { const kk = k * S.k; if (kk > 0) aurora(t, { k: kk, len: S.len, cols: S.cols, shimmer: 1, x0: S.x0 - 30, curve: x => curveY(S, x, low, gain, t) }); });
+  }
+  vshot('C1', (p, lt, d, t, s) => {
+    dissolveIn(1.2);
+    const L = lineTimes(s);
+    const cut1 = L[1].a - .2, cut2 = L[2].a - .25, cut3 = L[3].a - .25, cut4 = L[3].b + .05;
+    const popT = popAt(s);
+    const HX = HOME_V.hillX - 2;                         // where Clawd sits in the tall home scene
+
+    // --- 1: "We didn't start the scaling": the V1 stars connect, one by one, just over the hill -------------------
+    const shotA = () => {
+      const dy = Math.round(lerp(0, 6, clamp(lt / cut1))), lk = rise(lt, .45, 2.1, k => k);
+      const head = lk * (V1N - 1), hs = LEDGER[Math.min(V1N - 1, Math.round(head))];
+      homeScene(t, { dy, ledger: { links: lk, linkInk: C.haze }, clawd: { eyes: 'up', lookX: clamp((hs.vx - HX) / 40, -1, 1), lookY: -.6 }, weather: 'leaves' });
+      shootingStar(236, 84, 120, 150, (lt - .3) / 1.3, { len: 34 });   // (one falls across the open sky as the chorus begins)
+      for (let i = 0; i < V1N; i++) {
+        const age = (head - i) * 2.1 / (V1N - 1); if (age < 0) continue;
+        if (age > .7) { sparkle(LEDGER[i].vx, LEDGER[i].vy + dy * .3, 1, C.cream, C.gold); continue; }
+        const S = LEDGER[i], y = S.vy + dy * .3;
+        glow(S.vx, y, 14, { tab: LIT, k: 1.4 * (1 - age / .7) });
+        sparkle(S.vx, y, age < .2 ? 3 : age < .45 ? 2 : 1, C.cream, C.gold);
+      }
+    };
+
+    // --- 2: "It was always training, and the curves kept gaining": aurora climbs the tall sky along exponentials ---------
+    const shotB = () => {
+      const k2 = clamp((lt - L[1].a) / (L[1].b - L[1].a)), dy = Math.round(lerp(6, 12, ease(k2)));
+      homeScene(t, {
+        dy, ledger: { links: 1, linkInk: C.haze, band: .8 * rise(lt, L[1].a + 1, 2) },
+        clawd: { eyes: 'up', lookX: .4 + .3 * Math.sin(lt * .8), lookY: -1 },
+        behind: dy2 => vcurtains(t, dy2, .8 * rise(lt, L[1].a - .2, 1.6), ease(k2) * .95, rise(lt, L[1].a - .2, 2.6)),
+        weather: 'leaves',
+      });
+    };
+
+    // aurora light on Clawd's top: the upper rows of warm pixels turn mint, thinning out downward
+    const auroraRim = (c, rows) => {
+      for (let j = 0; j < rows; j++) {
+        const k = 1 - j / rows;
+        rectf(c.left - 2, c.top + j, c.right - c.left + 5, 1, inkFn((x, y, u) => (u === C.clay || u === C.amber || u === C.rust) && bay(x, y) < k * .9 ? (j === 0 ? C.cream : C.mint) : -1));
+      }
+    };
+
+    // --- 3: "We didn't start the scaling": close on Clawd, eyes closed, shaking its head (not us) ----------------------
+    const shotC = () => {
+      sky({ cy: 520, r: 480 });
+      starfield(t, { density: .7 });
+      vcurtains(t, 0, .8, 1, 1, { dy: -14 });
+      const g = hill({ cx: 140, y: 326, w: 300, drop: 34, ink: C.void, rim: C.pine });
+      glow(130, g(130) + 2, 130, { tab: AUR, k: .9, ry: 12 });
+      meadow(g, t, { ramp: [C.pine, C.void], fall: 50, ink: C.teal, n: 70 });
+      grass(0, LW, g, t, { h: 4, step: 2, ink: C.teal });
+      bigLantern(226, g(226));
+      const ph = (lt - L[2].a) / 1.05, sway = Math.round(Math.sin(ph * TAU) * 3 * rise(lt, L[2].a + .15, .4));
+      const c = clawdPx(122 + sway, g(122), { u: 9, pose: 'sit', eyes: 'closed', mouth: 'smile', aL: .55, aR: .55, lookX: Math.sign(sway) * .5 });
+      auroraRim(c, 6);
+      if (Math.abs(sway) === 3) { const sx = sway > 0 ? c.right + 16 : c.left - 16; for (let j = 0; j < 3; j++) pset(sx, c.top + 10 + j * 4, C.haze); }
+      weather(t, 'leaves', { n: 14 });
+    };
+
+    // --- 4: "No, we didn't preordain it, but we can't contain it!": the aurora in a jar -------------------------------
+    const shotD = () => {
+      const t0 = L[3].a, catchT = t0 + .55, fullT = t0 + 1.9, lidT = fullT + .45;
+      sky({ cy: 520, r: 480 });
+      starfield(t, { density: .8 });
+      vcurtains(t, 0, .8, 1, 1, { dy: -24 });
+      const g = hill({ cx: 120, y: 328, w: 320, drop: 28, ink: C.void, rim: C.pine });
+      glow(110, g(110) + 2, 120, { tab: AUR, k: .8, ry: 10 });
+      meadow(g, t, { ramp: [C.pine, C.void], fall: 50, ink: C.teal, n: 70 });
+      grass(0, LW, g, t, { h: 4, step: 2, ink: C.teal });
+      bigLantern(28, g(28));
+      const armK = rise(lt, fullT, .4), aR = lerp(1.1, .3, armK);
+      const popped = lt > popT, pk = clamp((lt - popT) / 1.3);
+      const shake = !popped && lt > lidT + .15 ? Math.round((hash2(3, boilFrame(T)) - .5) * 2.4 * clamp((lt - lidT - .15) / (popT - lidT - .15))) : 0;
+      const eyes = popped ? (pk < .4 ? 'wide' : 'up') : lt < catchT + .3 ? 'up' : lt < lidT ? 'happy' : 'open';
+      const cx = 104, gy = g(cx), jw = 32, jh = 40;
+      const opts = { u: 7, pose: 'sit', eyes, aR, aL: lt > lidT - .5 && lt < lidT + .2 ? 1 : popped ? .9 : -.3, mouth: popped && pk < .5 ? 'o' : lt > catchT + .3 && lt < lidT ? 'smile' : undefined, lookX: popped ? .6 : .5, lookY: popped && pk > .4 ? -1 : -.4, blink: !popped };
+      const tmp = FB.slice(); const c0 = clawdPx(cx, gy, opts); FB.set(tmp);   // where the paw ends up (this draw is discarded)
+      const jx = c0.handR[0] + 8 + shake, jy = c0.handR[1] + 3;
+      const inK = rise(lt, t0 + .05, catchT - t0 + .5, k => k), fillK = clamp((lt - catchT) / (fullT - catchT)) * (popped ? 1 - clamp(pk * 1.6) : 1);
+      // the ribbon comes down from the aurora at the top of the frame into the jar…
+      if (inK > 0 && lt < fullT + .2) ribbon(236, 30, jx, jy - jh + 3, clamp((lt - catchT) / (fullT - catchT + .1)), inK, t, { wig: 20 });
+      // …and after the pop streams back up, off the top of the frame
+      if (popped) ribbon(jx, jy - jh, 200, -40, clamp((pk - .45) * 1.9), easeOut(clamp(pk * 1.4)), t, { wig: 22, r: 2.8 });
+      const c = clawdPx(cx, gy, opts);
+      auroraRim(c, 5);
+      const lid = lt < lidT ? (lt > lidT - .45 ? { dy: 12 * (1 - ease(clamp((lt - lidT + .45) / .45))) } : false)
+        : !popped ? true : { dy: 90 * easeOut(clamp(pk * 1.2)), dx: 20 * pk, tilt: Math.sin(pk * 6) * .6 };
+      jarPx(jx, jy, { w: jw, h: jh, fill: fillK, lid });
+      if (popped && pk < .5) for (let i = 0; i < 6; i++) { const a = -Math.PI / 2 + (i - 2.5) * .45, r = 10 + pk * 38; sparkle(jx + Math.cos(a) * r, jy - jh + Math.sin(a) * r, 1, C.cream, C.mint); }
+      weather(t, 'leaves', { n: 12 });
+    };
+
+    // --- 5: end wide, the curve still rising -------------------------------------------------------------------
+    const shotE = () => {
+      const k = clamp((lt - cut4) / (d - cut4 + .5)), dy = Math.round(lerp(4, 12, k));
+      homeScene(t, {
+        dy, ledger: { links: 1, linkInk: C.haze },
+        clawd: { eyes: 'up', lookX: .3 + k * .7, lookY: -1 },
+        ground: g => jarPx(HX + 13 + 12, g(HX + 25), { w: 6, h: 7, fill: 0, glint: true }),
+        behind: dy2 => {
+          vcurtains(t, dy2, .8, 1, 1);
+          // the escaped light runs on up the curve and off the top of the frame
+          const S = VCURVES[1], y = x => curveY(S, x, dy2 * .3, 1, t);
+          const hx = lerp(120, 330, easeIn(clamp(k * 1.1)));
+          for (let i = 0; i < 36; i++) { const x = hx - i * 2.5; if (x < 60) break; pset(x, y(x) - 2, i < 8 ? C.cream : veil(C.mint, 1 - i / 36)); pset(x, y(x) - 3, veil(C.mint, .6 - i / 60)); }
+          glow(hx, y(hx) - 2, 20, { tab: GREEN, k: 1.3 }); sparkle(hx, y(hx) - 2, 3, C.cream, C.mint);
+        },
+        weather: 'leaves',
+      });
+    };
+
+    const cf = (at, dur = .5) => rise(lt, at, dur, k => k);
+    if (lt < cut1 + .5) crossfade(cf(cut1), shotA, shotB);
+    else if (lt < cut2 + .5) crossfade(cf(cut2), shotB, shotC);
+    else if (lt < cut3 + .5) crossfade(cf(cut3), shotC, shotD);
+    else crossfade(cf(cut4, .6), shotD, shotE);
+  });
 })();
 
 ;
@@ -3646,7 +4887,8 @@ OVERLAYS.push((t, s) => {
 
   // ======================================================================
   // V2.1 DeepSeek New Year sticker shock — red lanterns rise over a snowy town at Lunar New Year; among them floats a
-  // big blue whale lantern with a tiny price tag, $5.6M. The ticker on the tower flips to NVDA ↓17% and the city shivers.
+  // big blue whale lantern with a tiny price tag, $5.6M. Firecrackers pop on "New Year"; on "sticker shock" the ticker on the tower
+  // flips to NVDA ↓17% and the city shivers.
   function whaleLantern(x, y, t, tagK) {
     x = Math.round(x); y = Math.round(y);
     const S = 2;
@@ -3685,7 +4927,7 @@ OVERLAYS.push((t, s) => {
     }
   }
   line('V2', 1, (p, lt, d, t, s) => {
-    const b = i => B(s, i), crash = b(2) - .1, pops = b(3) - .1;
+    const b = i => B(s, i), crash = sungAt(s, 'sticker') - .05, pops = sungAt(s, 'new') - .05;   // (on "sticker shock" and "New Year")
     const shiver = lt > crash && lt < crash + .9;
     sky({ cy: 320, r: 380 });
     starfield(t, { density: .7 });
@@ -3723,7 +4965,7 @@ OVERLAYS.push((t, s) => {
     // the whale lantern, rising
     const wy = lerp(128, 104, easeOut(clamp(lt / (d + .4)))) + Math.sin(t * 1.1) * 2, wx = 146 + lt * 3;
     whaleLantern(wx, wy, t, rise(lt, b(.7), .3));
-    // firecrackers pop on beat 3
+    // firecrackers pop on "New Year"
     [[40, 200], [300, 188], [236, 206]].forEach(([x, y], i) => {
       const k = clamp((lt - pops - i * .12) / .35); if (k <= 0) return;
       if (k < 1) starburst(x, y, 11, easeOut(k), { n: 8, ink: i % 2 ? C.gold : C.rust, fringe: C.wine, inner: .35 });
@@ -3786,8 +5028,9 @@ OVERLAYS.push((t, s) => {
   });
 
   // ======================================================================
-  // V2.3 Hit "Accept All," never ask — ANDREJ dozes in a hammock, laptop on his belly; on every beat it flashes ACCEPT ALL
-  // and another lit room is bolted onto the crooked house of code behind him, taller and wobblier.
+  // V2.3 Hit "Accept All," never ask — ANDREJ dozes in a hammock, his laptop open on his belly, its screen toward him and one hand
+  // on it; on every beat it flashes ACCEPT ALL and another lit room is bolted onto the crooked house of code behind him, taller and
+  // wobblier.
   const ROOMS = [[74, 28], [66, 26], [78, 28], [60, 24], [70, 26], [56, 22], [64, 24], [50, 20]];
   function noteSpr(x, y, ink) { vline(x + 3, y - 7, y, ink); rectf(x, y - 1, 4, 3, ink); hline(x + 3, x + 5, y - 7, ink); pset(x + 6, y - 6, ink); }
   line('V2', 3, (p, lt, d, t, s) => {
@@ -3830,10 +5073,14 @@ OVERLAYS.push((t, s) => {
     const hy = x => hy0 + sag * Math.sin(Math.PI * clamp((x - hx0) / (hx1 - hx0)));
     pline(T1 + 6, 128, hx0, hy0, C.haze); pline(T1 + 6, 132, hx0, hy0 + 2, C.dusk);
     pline(T2 - 6, 128, hx1, hy0, C.haze); pline(T2 - 6, 132, hx1, hy0 + 2, C.dusk);
-    // Andrej lying in it, head at the left end
+    // Andrej lying in it, head at the left end on a pillow: a teal top, dark trousers
     const body = x => hy(x) - 8;
-    const headX = 78, hipX = 196, footX = 270;
-    for (let x = headX + 10; x <= footX; x++) { const top = Math.round(body(x)), tor = x < hipX; rectf(x, top - (tor ? 8 : 4), 1, tor ? 12 : 7, tor ? C.navy : C.ink); if (tor) pset(x, top - 8, C.dusk); }
+    const headX = 78, hipX = 138, footX = 204;
+    for (let x = headX + 8; x <= footX; x++) {
+      const top = Math.round(body(x));
+      if (x < hipX) { rectf(x, top - 8, 1, 12, C.teal); pset(x, top - 8, C.mint); rectf(x, top + 1, 1, 3, C.pine); }
+      else { rectf(x, top - 4, 1, 7, C.ink); pset(x, top - 4, C.night); }
+    }
     rectf(footX, Math.round(body(footX)) - 9, 5, 9, C.void);
     // head (tilted back on a pillow), eyes closed, smiling
     const hdy = Math.round(body(headX)) - 16;
@@ -3842,22 +5089,24 @@ OVERLAYS.push((t, s) => {
     rectf(headX - 9, hdy - 2, 20, 5, C.void); vline(headX - 9, hdy, hdy + 9, C.void); vline(headX - 8, hdy, hdy + 5, C.void);
     hline(headX - 3, headX, hdy + 8, C.void); hline(headX + 4, headX + 7, hdy + 8, C.void);
     hline(headX - 1, headX + 5, hdy + 13, C.rust); pset(headX - 2, hdy + 12, C.rust); pset(headX + 6, hdy + 12, C.rust);
-    // an arm resting behind the head
-    thick(headX + 12, hdy + 20, headX + 2, hdy - 4, 4, C.navy); rectf(headX - 1, hdy - 6, 5, 4, C.gold);
     // the hammock fabric (over the lower body)
     for (let x = hx0; x <= hx1; x++) { const yy = Math.round(hy(x)); vline(x, yy - 4, yy + 1, (x >> 1) % 2 ? C.rust : C.clay); pset(x, yy - 5, C.amber); pset(x, yy + 2, C.wine); }
     tagPx('ANDREJ', headX, hdy - 12, { font: 5 });
-    // laptop on the belly, lid open toward him
-    const lx = 150, ly = Math.round(body(lx)) - 8;
+    // the laptop open on his belly: hinged at the far end, the lid tilted back, its lit screen toward his face; it flashes on
+    // every beat, and his free hand rests on it, clicking
     const flash = beats.some(bt => lt > bt - .05 && lt < bt + .3);
-    glow(lx - 8, ly - 10, 34, { tab: GREEN, k: flash ? 1.8 : 1 });
-    rectf(lx - 16, ly, 34, 3, C.dusk); hline(lx - 16, lx + 17, ly, C.haze);
-    polyf([[lx - 16, ly], [lx - 24, ly - 22], [lx - 20, ly - 24], [lx - 12, ly]], C.void);
-    pline(lx - 15, ly - 1, lx - 22, ly - 21, flash ? C.cream : C.mint);
+    const lx = 114, lb = x => Math.round(body(x)) - 8, hx2 = lx + 14, hy2 = lb(hx2);
+    glow(hx2 - 22, hy2 - 16, 30, { tab: GREEN, k: flash ? 1.6 : 1 });
+    polyf([[lx - 14, lb(lx - 14) - 1], [hx2, hy2 - 1], [hx2, hy2 + 2], [lx - 14, lb(lx - 14) + 2]], C.dusk); pline(lx - 14, lb(lx - 14) - 1, hx2, hy2 - 1, C.haze);
+    polyf([[hx2 - 9, hy2 - 1], [hx2 + 1, hy2 - 1], [hx2 + 7, hy2 - 23], [hx2 - 3, hy2 - 23]], C.void);
+    polyf([[hx2 - 7, hy2 - 3], [hx2 - 1, hy2 - 3], [hx2 + 4, hy2 - 21], [hx2 - 2, hy2 - 21]], flash ? C.cream : C.mint);
+    for (let j = 0; j < 5; j++) { const y = hy2 - 6 - j * 3, xl = Math.round(hx2 - 6 + (hy2 - 3 - y) * 5 / 18); hline(xl, xl + 1 + (j * 2) % 3, y, flash ? C.gold : C.teal); }
+    const shX = headX + 18, shY = Math.round(body(shX)) - 5, tx = lx - 9, ty = lb(tx) - 2 + (flash ? 1 : 0);
+    thick(shX, shY, tx - 1, ty, 4, C.teal); pline(shX, shY + 2, tx - 2, ty + 2, C.pine); rectf(tx - 2, ty - 1, 5, 3, C.gold); pset(tx + 2, ty, C.amber);
     // "ACCEPT ALL" buttons pop out of the laptop on each beat and float up
     beats.forEach((bt, i) => {
       const age = lt - bt + .05; if (age < 0 || age > 1.8) return;
-      const bx = lx + 6 + Math.sin(age * 2 + i) * 8 + i * 6, by = ly - 38 - age * 40, k = 1 - clamp((age - 1.1) / .7);
+      const bx = 156 + Math.sin(age * 2 + i) * 8 + i * 6, by = hy2 - 40 - age * 40, k = 1 - clamp((age - 1.1) / .7);
       rboxf(bx - 34, by - 2, 68, 15, veil(C.void, k), 2); rboxf(bx - 33, by - 1, 66, 13, veil(C.teal, k), 2); hline(bx - 31, bx + 30, by - 1, veil(C.mint, k));
       ptext('ACCEPT ALL', bx, by + 2, veil(C.cream, k), { align: 'center' });
       if (age < .15) sparkle(bx + 34, by - 2, 2, C.cream, C.mint);
@@ -4028,12 +5277,12 @@ OVERLAYS.push((t, s) => {
 
   // ======================================================================
   // V2.6 Superintelligence — buy three! — a late-night TV glows in a dark room: an infomercial with three boxed
-  // SUPERINTELLIGENCEs on a shelf, and the dusty-red starburst "BUY 3!" pops on the first beat.
+  // SUPERINTELLIGENCEs on a shelf, and the dusty-red starburst "BUY 3!" pops on "buy three!".
   // the labs Meta held talks to buy that June: SSI, Thinking Machines ("Thinky") and Perplexity
   const BOXES = [['SSI', C.teal, C.pine], ['THINKY', C.dusk, C.navy], ['PERPLEXITY', C.violet, C.wine]];
   line('V2', 6, (p, lt, d, t, s) => {
     cutIn();
-    const burstT = B(s, 0) - .02;
+    const burstT = sungAt(s, 'buy') - .1;   // (on "buy three!")
     rectf(0, 0, LW, LH, C.void);
     // wall and floor of the dark room
     rectf(0, 0, LW, 214, C.ink); for (let x = 12; x < LW; x += 26) vline(x, 0, 213, C.void);
@@ -4077,7 +5326,7 @@ OVERLAYS.push((t, s) => {
       rectf(SX0, SY0 + SH - 12, SW, 12, C.rust); hline(SX0, SX0 + SW, SY0 + SH - 12, C.clay);
       const msg = 'CALL NOW · OPERATORS STANDING BY · 1-800-SUPER-AI · ', mw = ptextW(msg, { font: 3 }), off = (lt * 60) % mw;
       for (let k = -1; k < 3; k++) ptext(msg, SX0 + 4 - off + k * mw, SY0 + SH - 9, C.cream, { font: 3 });
-      // BUY 3! bursts in on the first beat
+      // BUY 3! bursts in on "buy three!"
       const bk = clamp((lt - burstT) / .22);
       if (bk > 0) {
         // (clear of the boxes' labels, PERPLEXITY's the longest)
@@ -4162,7 +5411,7 @@ OVERLAYS.push((t, s) => {
 
   // ======================================================================
   // V2.8 Two labs win Olympiad gold — two robots squeeze onto the top step of a starlit podium; gold medals come down
-  // around their necks while π, √ and ∑ drift around them like fireflies. "35/42" above.
+  // around their necks on "win" while π, √ and ∑ drift around them like fireflies. "35/42" above on "Olympiad gold".
   const MATH = [
     ['#####', '.#.#.', '.#.#.', '.#.#.', '.#..#'],                          // π
     ['....###', '....#..', '#...#..', '.#.#...', '..#....'],                // √
@@ -4188,7 +5437,7 @@ OVERLAYS.push((t, s) => {
     rectf(0, 242, LW, 28, C.void); hline(0, LW, 242, C.ink);
     ptext('IMO 2025', PX, 230, C.dusk, { font: 3, align: 'center' });
     // the two robots, squeezed together onto the top step
-    const medK = rise(lt, b(1) - .3, .45, easeOut), won = medK >= 1;
+    const medK = rise(lt, sungAt(s, 'win') - .4, .45, easeOut), won = medK >= 1;   // (the medals land on "win")
     const bots = [[PX - 26, C.teal, 'OPENAI'], [PX + 26, C.violet, 'DEEPMIND']];
     bots.forEach(([bx, body, name], i) => {
       const hop = won && lt < b(3.2) ? Math.round(Math.max(0, Math.sin((lt - b(1.2)) * 5 + i * 1.6)) * 3) : 0;
@@ -4200,7 +5449,7 @@ OVERLAYS.push((t, s) => {
       medalPx(bx, Math.round(my), { r: 6, ribbon: false, shine: won ? spulse(t + i * .3, 3) : 0 });
     });
     // score
-    const sk = rise(lt, b(2) - .1, .3);
+    const sk = rise(lt, sungAt(s, 'olympiad') - .1, .3);   // (on "Olympiad gold")
     if (sk > 0) {
       ptext('35/42', PX, 26, veil(C.gold, sk), { scale: 3, dots: true, align: 'center', off: veil(C.ink, sk) });
       ptext('GOLD', PX, 52, veil(C.amber, sk), { font: 3, align: 'center' });
@@ -4414,8 +5663,8 @@ OVERLAYS.push((t, s) => {
   });
 
   // ======================================================================
-  // V2.12 Yudkowsky drops "Everyone Dies" — a book falls out of the sky like a meteor and lands with a thud on a pedestal;
-  // a BESTSELLER ribbon unrolls across it. ELIEZER stands beside it, arms folded.
+  // V2.12 Yudkowsky drops "Everyone Dies" — on "drops" a book falls out of the sky like a meteor and lands with a thud on a
+  // pedestal on "Everyone Dies"; a BESTSELLER ribbon unrolls across it. ELIEZER stands beside it, arms folded.
   function doomBook(x, y) {   // (x, y) = bottom-centre; 56 × 78
     const x0 = Math.round(x - 28), y0 = Math.round(y - 78);
     rectf(x0 + 56, y0 + 3, 4, 75, C.cream); for (let yy = y0 + 5; yy < y0 + 76; yy += 3) hline(x0 + 56, x0 + 59, yy, C.gold);
@@ -4428,7 +5677,8 @@ OVERLAYS.push((t, s) => {
   }
   line('V2', 12, (p, lt, d, t, s) => {
     const b = i => B(s, i);
-    const landT = b(1.1) - .1, ribT = b(2.2) - .1;
+    // the book falls on "drops", lands with its thud on "Everyone Dies", and the ribbon unrolls as "Dies" comes
+    const fall0 = sungAt(s, 'drops') - .15, landT = sungAt(s, 'everyone') - .05, ribT = landT + .5;
     sky({ cy: 320, r: 380 });
     starfield(t, { density: .8 });
     ridge({ y: 208, amp: 8, seed: 121, ink: C.ink, rim: C.navy, freq: 1 / 60 });
@@ -4440,7 +5690,7 @@ OVERLAYS.push((t, s) => {
     rectf(PX - 22, PT + 9, 44, GY - PT - 17, C.dusk); for (let x = PX - 18; x < PX + 20; x += 6) vline(x, PT + 10, GY - 9, C.navy); vline(PX + 21, PT + 9, GY - 9, C.navy);
     rectf(PX - 30, GY - 8, 60, 8, C.haze); hline(PX - 30, PX + 29, GY - 8, C.cream);
     // the falling book
-    const k = clamp(lt / landT), e = easeIn(k);
+    const k = clamp((lt - fall0) / (landT - fall0)), e = easeIn(k);
     const landed = k >= 1, since = lt - landT;
     const bx = lerp(470, PX, e), by = lerp(-60, PT, e) - (landed && since < .15 ? Math.round(Math.sin(since / .15 * Math.PI) * 3) : 0);
     if (!landed) {
@@ -4723,6 +5973,1057 @@ OVERLAYS.push((t, s) => {
     weather(t, 'leaves', { n: 18, wind: 2 });
   });
 
+  // ######################################################################################################################
+  // VERTICAL (the 270×480 frame; see ../VERTICAL.md). The stage floor sits at y ≈ 290, just above the caption band (y 296–340
+  // for verse 2's two-line captions); the near land below it is dark texture. Each line's gag rises, falls, stacks or climbs
+  // through the tall sky: the lanterns rise the full height, the house of code grows to the top of the frame, the MCP plug climbs
+  // from socket to socket up to a star, the meteor-book falls the whole height, the street becomes a canyon of windows.
+  // ######################################################################################################################
+
+  // snow drifts in the near land: moonlit crests over shadowed hollows, bigger lower down (V1.2's)
+  function vDrifts(rows) {
+    rows.forEach(([y0, a, f, ph]) => {
+      const dy = x => Math.round(y0 + Math.sin(x * f + ph) * a + Math.sin(x * f * 2.7 + ph * 2) * a * .3);
+      for (let x = 0; x < LW; x++) { const top = dy(x); pset(x, top, C.dusk); pset(x, top - 1, veil(C.haze, .3)); rectf(x, top + 1, 1, LH - top, grad([C.navy, C.night, C.ink, C.void], (xx, yy) => (yy - top) / 30)); }
+    });
+  }
+
+  // ======================================================================
+  // V2.1 DeepSeek New Year sticker shock — Lunar New Year over a snowy town: red lanterns rise the whole height of the tall sky,
+  // and among them the big blue whale lantern, looking across at the skyscraper on the right, its $5.6M tag dangling. High on the
+  // tower the ticker flips NVDA to ↓17% on "sticker shock" and every window shivers; firecrackers pop over the rooftops on "New Year".
+  vshot('V2.1', (p, lt, d, t, s) => {
+    const b = i => B(s, i), crash = sungAt(s, 'sticker') - .05, pops = sungAt(s, 'new') - .05;   // (on "sticker shock" and "New Year")
+    const shiver = lt > crash && lt < crash + .9;
+    sky();
+    starfield(t, { density: .7 });
+    city(t, { y: 266, x0: 0, x1: 160, grow: .5, lit: shiver ? (fx(1) < .5 ? .06 : .3) : .32, seed: 12 });
+    // the ticker skyscraper (right), its ticker high in the sky
+    const TX = 156, TY = 92, TW = 98;
+    rectf(TX, TY, TW, 300 - TY, C.ink); hline(TX, TX + TW - 1, TY, C.navy); vline(TX, TY, 300, C.night);
+    rectf(TX + 46, TY - 24, 4, 24, C.ink); pset(TX + 47, TY - 25, hash2(4, sbeat(t)) < .5 ? C.rust : C.wine);
+    for (let wy = TY + 78; wy < 296; wy += 9) for (let wx = TX + 7; wx < TX + TW - 6; wx += 10) {
+      const h = hash2(wx, wy); if (h > .5) continue;
+      const on = !shiver || fx(wx + wy) < .45;
+      rectf(wx, wy, 5, 5, on ? (h < .15 ? C.gold : C.amber) : C.night);
+    }
+    const flipped = lt > crash, scramble = flipped && lt < crash + .14;
+    const SX = TX + 6, SW = TW - 12, SCX = 205;
+    rectf(SX, TY + 6, SW, 64, C.void); rectb(SX - 1, TY + 5, SW + 2, 66, C.navy);
+    const lnB = flipped ? (scramble ? '#%*@' : '↓17%') : '142.6', ink = flipped ? C.clay : C.mint;
+    ptext('NVDA', SCX, TY + 11, ink, { scale: 3, dots: true, off: C.ink, align: 'center' });
+    ptext(lnB, SCX, TY + 41, ink, { scale: 3, dots: true, off: C.ink, align: 'center' });
+    if (flipped && lt < crash + .6) glow(SCX, TY + 40, 70, { tab: WARM, k: .9 * (1 - (lt - crash) / .6) });
+    // the snowy town: a far row and a near row of rooftops on the floor
+    layer('v2.1v-town', () => {
+      ridge({ y: 268, amp: 5, seed: 51, ink: C.ink, rim: C.navy, freq: 1 / 40 });
+      [[-6, 26], [24, 22], [52, 28], [86, 20], [112, 26], [176, 24], [206, 28], [240, 26]].forEach(([x, w], i) => house(x, 276 + (i % 3), { w, h: 12 + (i % 2) * 3, wall: C.night, roof: C.ink, snow: C.cream, windows: 2, ws: 3, lit: j => hash2(i, j + 2) < .7 ? (hash2(i, j + 7) < .5 ? C.amber : C.gold) : false, chimney: i % 3 === 1 }));
+      [[-10, 46], [42, 40], [92, 50], [150, 42], [200, 48], [252, 40]].forEach(([x, w], i) => house(x, 298, { w, h: 20 + (i % 2) * 4, wall: C.ink, roof: C.void, snow: C.cream, windows: 2, ws: 5, lit: j => hash2(i, j + 30) < .65 ? (hash2(i, j + 35) < .5 ? C.amber : C.gold) : false, chimney: i % 2 === 0 }));
+      // the snowy street in front, and drifts nearer the viewer
+      for (let x = 0; x < LW; x++) { const top = 298 + Math.round(Math.sin(x * .05) * 1.5); pset(x, top, C.haze); rectf(x, top + 1, 1, LH - top, grad([C.dusk, C.navy, C.night, C.ink], (xx, yy) => (yy - top) / 24)); }
+    });
+    vDrifts([[388, 6, .02, 1.3], [432, 8, .015, 4.1], [462, 9, .012, 2.2]]);
+    // a string of paper lanterns across the near street
+    for (let x = 0; x < LW; x++) pset(x, 360 + Math.round(Math.sin(x / LW * Math.PI) * 14), C.void);
+    for (let i = 0; i < 8; i++) { const x = 16 + i * 34, y = 361 + Math.round(Math.sin(x / LW * Math.PI) * 14) + 6 + Math.round(Math.sin(t * 1.3 + i) * 1); redLantern(x, y, 1, .5); }
+    // red lanterns drifting up from the rooftops, the full height of the sky
+    const wy = lerp(196, 160, easeOut(clamp(lt / (d + .4)))) + Math.sin(t * 1.1) * 2, wx = 86 + lt * 2;
+    for (let i = 0; i < 30; i++) {
+      const sp = 14 + hash2(i, 1) * 10, y0 = 286 - frac(hash2(i, 2) + (t * sp) / 330) * 330, x0 = 8 + hash2(i, 3) * 254 + Math.sin(t * .6 + i) * 5;
+      if (x0 > TX - 8 && y0 > TY - 30 && y0 < TY + 76) continue;            // keep the ticker readable
+      if (Math.abs(x0 - wx) < 76 && Math.abs(y0 - wy - 10) < 52) continue;  // and the whale
+      if (x0 < 98 && y0 < 108) continue;                                     // and the date
+      redLantern(x0, y0, hash2(i, 4) < .45 ? 2 : 1);
+    }
+    // the whale lantern, rising
+    whaleLantern(wx, wy, t, rise(lt, b(.7), .3));
+    // firecrackers pop over the rooftops on "New Year"
+    [[34, 246], [140, 232], [96, 258]].forEach(([x, y], i) => {
+      const k = clamp((lt - pops - i * .12) / .35); if (k <= 0) return;
+      if (k < 1) starburst(x, y, 11, easeOut(k), { n: 8, ink: i % 2 ? C.gold : C.rust, fringe: C.wine, inner: .35 });
+      for (let j = 0; j < 10; j++) { const a = j / 10 * TAU, age = lt - pops - i * .12, r = 6 + easeOut(clamp(age / .5)) * 16; if (age < 1.2) pset(x + Math.cos(a) * r, y + Math.sin(a) * r + age * age * 10, age < .4 ? C.cream : age < .8 ? C.gold : C.clay); }
+    });
+    weather(t, 'snow', { n: 80 });
+  });
+
+  // ======================================================================
+  // V2.2 Half a trillion Stargate talk — the ring stands high and big in the tall sky, its chevrons locking one by one, the dot-
+  // matrix $500,000,000,000 scrolling across its mouth… through which there is only more night. Below, TRUMP at his podium with
+  // MASA, SAM (cheering) and LARRY; off on a far rise to the right ELON (X on his black tee) says what he thinks of it.
+  vshot('V2.2', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    const cx = 138, cy = 148, R = 84, Ri = 68;
+    sky();
+    starfield(t, { density: .9 });
+    // the gate
+    glow(cx, cy, R + 16, { tab: LIT, k: .5 });
+    ringf(cx, cy, Ri, R, C.night);
+    circb(cx, cy, R, C.dusk); circb(cx, cy, Ri + 1, C.dusk);
+    ringf(cx, cy, Ri + 5, Ri + 7, C.ink);
+    for (let i = 0; i < 39; i++) { const a = i / 39 * TAU, r = Ri + 11; pset(cx + Math.cos(a) * r, cy + Math.sin(a) * r, C.navy); pset(cx + Math.cos(a) * (r + 1), cy + Math.sin(a) * (r + 1), C.navy); }
+    // chevrons lock one by one, clockwise from the top (placed to keep clear of the date in the corner)
+    const nOn = clamp((lt - .1) / (b(1.6) - .1)) * 9;
+    for (let i = 0; i < 9; i++) {
+      const a = -Math.PI * 7 / 18 + i / 9 * TAU, on = i < nOn, ox = cx + Math.cos(a) * (R - 1), oy = cy + Math.sin(a) * (R - 1), ix = cx + Math.cos(a) * (Ri + 4), iy = cy + Math.sin(a) * (Ri + 4), px = -Math.sin(a) * 6, py = Math.cos(a) * 6;
+      if (on) glow(ix, iy, 14, { tab: WARM, k: 1.1 });
+      polyf([[ox + px, oy + py], [ox - px, oy - py], [ix, iy]], on ? C.amber : C.wine);
+      polyf([[ox + px * .5, oy + py * .5], [ox - px * .5, oy - py * .5], [lerp(ox, ix, .6), lerp(oy, iy, .6)]], on ? C.gold : C.rust);
+    }
+    // the money marquee across the ring's mouth
+    const mk = lt - .3;
+    if (mk > 0) {
+      const x0 = cx + Ri - 8 - mk * 100;
+      rectf(cx - Ri + 6, cy - 12, 2 * Ri - 12, 22, veil(C.void, .5));
+      clipRect(cx - Ri + 8, cy - 11, 2 * Ri - 16, 20);
+      ptext('$500,000,000,000', Math.round(x0), cy - 7, C.gold, { scale: 2, dots: true, off: C.ink });
+      noClip();
+      hline(cx - Ri + 6, cx + Ri - 7, cy - 12, C.dusk); hline(cx - Ri + 6, cx + Ri - 7, cy + 9, C.dusk);
+    }
+    // the far rise where Elon stands, and the stage
+    const rg = hill({ cx: 236, y: 262, w: 70, drop: 22, ink: C.ink, rim: C.navy });
+    ridge({ y: 274, amp: 6, seed: 61, ink: C.ink, rim: C.navy, freq: 1 / 60 });
+    const EX = 222, EG = rg(EX);
+    personPx(EX, EG, { u: 3, top: C.void, pants: C.ink, hair: 'short', hairC: C.void, skin: C.gold, aR: .6, aL: -1.1, mouth: lt > b(1.3) ? 'o' : 'none' });
+    { const { tx, ty, tw } = torso(EX, EG, 3); pline(tx + 2, ty + 2, tx + tw - 3, ty + 8, C.cream); pline(tx + tw - 3, ty + 2, tx + 2, ty + 8, C.cream); }
+    tagPx('ELON', EX, EG - 30, { scale: 2 });
+    layer('v2.2v-stage', () => {
+      rectf(0, 290, LW, 82, C.night); hline(0, LW, 290, C.dusk); hline(0, LW, 291, C.haze);
+      for (let x = 8; x < LW; x += 26) vline(x, 293, 371, C.ink);
+      for (let x = 0; x < LW; x++) { const y = 293 + Math.round(Math.abs(Math.sin(x * Math.PI / 45)) * 7); pset(x, y, C.rust); if (x % 45 < 2 || x % 45 > 43) continue; vline(x, 293, y - 1, x % 90 < 45 ? C.wine : C.navy); }
+      rectf(0, 372, LW, LH - 372, C.void); hline(0, LW, 372, C.ink);
+    });
+    // the press in the dark: rows of heads and a few cameras, one flashing on the beat
+    [[392, 5, 15, 0], [420, 7, 20, 6], [456, 9, 26, 2]].forEach(([y, r, sp, off], ri) => { for (let x = off; x < LW + sp; x += sp) { const j = Math.floor(x / sp), hx = x + (j % 2) * 3, hy = y + (j % 3); circf(hx, hy, r, C.night); hline(hx - r + 2, hx + r - 2, hy - r, C.navy); if ((j + ri) % 4 === 1) { rectf(hx - r, hy - r - 6, r * 2, r + 2, C.ink); rectf(hx - 2, hy - r - 9, 4, 3, C.ink); if (hash2(j + ri * 9, sbeat(t)) < .3 && spulse(t, 5) > .5) { glow(hx, hy - r - 4, 18, { tab: LIT, k: 1.6 }); rectf(hx - 2, hy - r - 5, 4, 2, C.cream); } } } });
+    // the backers, then TRUMP at the podium (his name on its front)
+    [[32, 'MASA', C.amber, 'bald', C.void, C.teal], [70, 'SAM', C.clay, 'short', C.wine, C.rust], [168, 'LARRY', C.gold, 'bald', C.haze, C.navy]].forEach(([x, n, skin, hair, hc, tie]) => {
+      const sam = n === 'SAM';
+      personPx(x, 290, { u: 4, suit: true, top: C.ink, tie, skin, hair, hairC: hc, eyes: 'dot', mouth: 'smile', aL: sam ? 1.3 : -1.1, aR: sam ? .2 : -1.1, name: n, tag: { scale: 2 } });
+    });
+    trumpPx(116, 290, { u: 6, aL: -1.1, aR: .9 + spulse(t, 2) * .3, mouth: frac(lt * 2.4) < .6 ? 'o' : 'none' });
+    rectf(94, 256, 44, 34, C.navy); rectb(94, 256, 44, 34, C.dusk); hline(95, 136, 257, C.haze);
+    circf(116, 266, 5, C.gold); circf(116, 266, 3, C.amber); pset(115, 265, C.cream);
+    ptext('TRUMP', 116, 276, C.gold, { font: 3, scale: 2, align: 'center', shadow: C.void });
+    // Elon's verdict
+    const ek = lt - b(1.1);
+    if (ek > 0) {
+      const bb = bubblePx("they don't actually have the money", 126, 234, { font: 5, scale: 2, maxW: 150, n: Math.ceil(ek * 44) }), tx = bb.x + bb.w - 18, ty = bb.y + bb.h;
+      triPx(tx - 6, ty, tx + 5, ty, EX - 8, EG - 21, C.void); triPx(tx - 4, ty - 1, tx + 3, ty - 1, lerp(tx, EX - 8, .75), lerp(ty, EG - 21, .75), C.cream);
+    }
+  });
+
+  // ======================================================================
+  // V2.3 Hit "Accept All," never ask — ANDREJ dozes in a hammock slung from a tree to the corner of the house of code, his laptop
+  // open on his belly, its screen toward him and one hand on it; on every beat ACCEPT ALL pops up off the laptop and another lit
+  // room is bolted on top, the house growing up the tall frame, taller and wobblier, leaning, until it nearly reaches the top.
+  const VROOMS = [[78, 28], [70, 26], [74, 26], [62, 24], [68, 24], [58, 22], [62, 22], [52, 20], [56, 20]];
+  vshot('V2.3', (p, lt, d, t, s) => {
+    const beats = beatsIn(s);
+    const nAdd = beats.filter(bt => lt > bt - .05).length;   // one room per beat
+    sky();
+    starfield(t, { density: .8 });
+    moon(232, 72, 7, { phase: .35 });
+    ridge({ y: 272, amp: 8, seed: 71, ink: C.ink, rim: C.navy, freq: 1 / 60 });
+    // the crooked house of code, one room bolted on per beat
+    const nR = Math.min(VROOMS.length, 4 + nAdd), baseX = 198, sway = Math.sin(t * 1.4);
+    let y = 290, lean = 0;
+    const rooms = [];
+    for (let i = 0; i < nR; i++) {
+      const [w, h] = VROOMS[i], bt = i >= 4 ? beats[i - 4] : -9, age = lt - bt;
+      lean += (i % 2 ? 5 : -4) - i * 1.1 + sway * i * .45;
+      const drop = age < .2 ? Math.round((1 - age / .2) ** 2 * 34) : 0, x = Math.round(baseX + lean - w / 2);
+      const ry = y - h - drop;
+      rooms.push([x, ry, w, h]);
+      rectf(x, ry, w, h, C.night); rectb(x, ry, w, h, C.dusk); hline(x, x + w - 1, ry, C.haze);
+      triPx(x - 2, ry + 1, x + 8, ry + 1, x - 2, ry - 5, C.ink);                        // a crooked eave
+      rectf(x + 4, ry + 4, w - 8, h - 8, C.ink);
+      for (let l = 0; l < (h - 10) / 3; l++) { const ind = (l % 3) * 4, lw = 6 + Math.floor(hash2(i, l) * (w - 26)); hline(x + 7 + ind, x + 7 + ind + lw, ry + 6 + l * 3, [C.mint, C.gold, C.haze, C.clay][(i + l) % 4]); }
+      if (age >= 0 && age < .6) glow(x + w / 2, ry + h / 2, w * .9, { tab: GREEN, k: 1.3 * (1 - age / .6) });
+      pset(x + 2, ry + h - 3, C.gold); pset(x + w - 3, ry + h - 3, C.gold); pset(x + 2, ry + 2, C.gold);
+      if (i > 0) pline(x + w - 4, ry + h, x + w + 6, ry + h + 10, C.clay);
+      y = ry + 1;
+    }
+    if (nR >= VROOMS.length && lt > beats[beats.length - 1] + .3) { const [x, ry, w] = rooms[nR - 1]; sparkle(x + w / 2, ry - 9, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.mint); }
+    // the ground and the tree
+    const g = x => 290 + Math.round(Math.sin(x * .05) * 1.5);
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 50, n: 70, flowers: [C.cream, C.violet] });
+    for (let x = 0; x < LW; x++) pset(x, g(x), C.pine);
+    grass(0, LW, g, t);
+    const T1 = 16;
+    rectf(T1 - 6, 140, 12, 152, C.ink); vline(T1 + 5, 142, 290, C.void); vline(T1 - 6, 142, 290, C.night);
+    circf(T1, 126, 30, C.pine); circf(T1 + 24, 140, 20, C.pine); circf(T1 - 4, 112, 20, mix(C.pine, C.teal, .3)); circf(T1 + 18, 118, 14, mix(C.pine, C.teal, .3));
+    // the hammock: from the tree to the corner of the house's second room (it sways with the house)
+    const [r1x, r1y] = rooms[1] || rooms[0], hx0 = T1 + 8, hy0 = 228, hx1 = r1x + 1, hy1 = r1y + 8, sag = 40 + Math.round(breathe(t, 2) * 2);
+    const hy = x => lerp(hy0, hy1, clamp((x - hx0) / (hx1 - hx0))) + sag * Math.sin(Math.PI * clamp((x - hx0) / (hx1 - hx0)));
+    pline(T1 + 2, 216, hx0, hy0, C.haze); pline(T1 + 2, 220, hx0, hy0 + 2, C.dusk);
+    pline(hx1 + 8, hy1 - 6, hx1, hy1, C.haze); rectf(hx1, hy1 - 1, 3, 3, C.gold);
+    // Andrej lying in it, head on the left on a pillow: a teal top, dark trousers
+    const body = x => hy(x) - 7;
+    const headX = 50, hipX = 98, footX = 144;
+    for (let x = headX + 7; x <= footX; x++) {
+      const top = Math.round(body(x));
+      if (x < hipX) { rectf(x, top - 7, 1, 10, C.teal); pset(x, top - 7, C.mint); rectf(x, top + 1, 1, 2, C.pine); }
+      else { rectf(x, top - 4, 1, 6, C.ink); pset(x, top - 4, C.night); }
+    }
+    rectf(footX, Math.round(body(footX)) - 8, 4, 8, C.void);
+    const hdy = Math.round(body(headX)) - 14;
+    rectf(headX - 13, hdy + 9, 15, 7, C.cream);
+    rectf(headX - 7, hdy, 15, 15, C.gold); rectf(headX + 7, hdy + 1, 1, 14, C.amber);
+    rectf(headX - 8, hdy - 2, 17, 4, C.void); vline(headX - 8, hdy, hdy + 8, C.void); vline(headX - 7, hdy, hdy + 4, C.void);
+    hline(headX - 3, headX - 1, hdy + 7, C.void); hline(headX + 3, headX + 5, hdy + 7, C.void);
+    hline(headX - 1, headX + 4, hdy + 11, C.rust); pset(headX - 2, hdy + 10, C.rust); pset(headX + 5, hdy + 10, C.rust);
+    for (let x = hx0; x <= hx1; x++) { const yy = Math.round(hy(x)); vline(x, yy - 4, yy + 1, (x >> 1) % 2 ? C.rust : C.clay); pset(x, yy - 5, C.amber); pset(x, yy + 2, C.wine); }
+    tagPx('ANDREJ', headX + 2, hdy - 8, { scale: 2 });
+    // the laptop open on his belly: hinged at the far end, the lid tilted back, its lit screen toward his face; it flashes on
+    // every beat, and his free hand rests on it, clicking
+    const flash = beats.some(bt => lt > bt - .05 && lt < bt + .3);
+    const lx = 80, lb = x => Math.round(body(x)) - 7, hx2 = lx + 12, hy2 = lb(hx2);
+    glow(hx2 - 19, hy2 - 14, 26, { tab: GREEN, k: flash ? 1.6 : 1 });
+    polyf([[lx - 12, lb(lx - 12) - 1], [hx2, hy2 - 1], [hx2, hy2 + 2], [lx - 12, lb(lx - 12) + 2]], C.dusk); pline(lx - 12, lb(lx - 12) - 1, hx2, hy2 - 1, C.haze);
+    polyf([[hx2 - 8, hy2 - 1], [hx2 + 1, hy2 - 1], [hx2 + 6, hy2 - 20], [hx2 - 3, hy2 - 20]], C.void);
+    polyf([[hx2 - 6, hy2 - 3], [hx2 - 1, hy2 - 3], [hx2 + 3, hy2 - 18], [hx2 - 2, hy2 - 18]], flash ? C.cream : C.mint);
+    for (let j = 0; j < 4; j++) { const y = hy2 - 6 - j * 3, xl = Math.round(hx2 - 5 + (hy2 - 3 - y) * 4 / 15); hline(xl, xl + 1 + (j * 2) % 3, y, flash ? C.gold : C.teal); }
+    const shX = headX + 15, shY = Math.round(body(shX)) - 5, tx = lx - 8, ty = lb(tx) - 2 + (flash ? 1 : 0);
+    thick(shX, shY, tx - 1, ty, 3, C.teal); pline(shX, shY + 2, tx - 2, ty + 2, C.pine); rectf(tx - 2, ty - 1, 4, 3, C.gold); pset(tx + 1, ty, C.amber);
+    // ACCEPT ALL pops up off the laptop on each beat and floats up the sky
+    beats.forEach((bt, i) => {
+      const age = lt - bt + .05; if (age < 0 || age > 1.5) return;
+      const up = easeOut(clamp(age / .18)), bx = 84 + Math.sin(age * 2 + i) * 5 - (i % 2) * 8, by = lerp(hy2 - 22, 176, up) - age * 40, k = 1 - clamp((age - .9) / .6);
+      const w = ptextW('ACCEPT ALL', { scale: 2 }) + 12;
+      rboxf(bx - w / 2 - 1, by - 3, w + 2, 22, veil(C.void, k), 2); rboxf(bx - w / 2, by - 2, w, 20, veil(C.teal, k), 2); hline(bx - w / 2 + 2, bx + w / 2 - 3, by - 2, veil(C.mint, k));
+      ptext('ACCEPT ALL', bx, by + 2, veil(C.cream, k), { align: 'center', scale: 2, shadow: veil(C.pine, k) });
+      if (age < .15) sparkle(bx + w / 2, by - 3, 2, C.cream, C.mint);
+    });
+    for (let i = 0; i < 3; i++) { const f = frac(t * .35 + i / 3); noteSpr(54 + i * 8 + Math.sin(f * 6 + i) * 5, hdy - 26 - f * 50, veil(i % 2 ? C.haze : C.gold, 1 - f)); }
+    weather(t, 'snow', { n: 30, y1: 290 });
+  });
+
+  // ======================================================================
+  // V2.4 MCP for every task — Clawd in the street flings its glowing MCP plug, and it climbs the frame from socket to socket on
+  // the half-beats, the cable following it through everything it plugs: the streetlamp lights, a window up the house wall lights,
+  // and the last hop takes it up the tall sky into a star, which flares.
+  function vPlug(x, y) {           // the MCP plug, a size up for the phone; (x, y) = centre of its body
+    rectf(x - 14, y - 8, 28, 17, C.teal); rectb(x - 14, y - 8, 28, 17, C.mint); hline(x - 13, x + 13, y - 7, C.cream);
+    ptext('MCP', x, y - 4, C.cream, { font: 3, scale: 2, align: 'center', shadow: C.pine });
+    rectf(x + 14, y - 5, 5, 2, C.haze); rectf(x + 14, y + 3, 5, 2, C.haze);
+  }
+  vshot('V2.4', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky();
+    starfield(t, { density: .7 });
+    // the house on the right: a tall wall with one window, a roof against the sky
+    layer('v2.4v-house', () => {
+      ridge({ y: 270, amp: 8, seed: 64, ink: C.ink, rim: C.navy, freq: 1 / 50 });
+      rectf(150, 150, 120, 140, C.ink); for (let yy = 154; yy < 290; yy += 5) hline(150, 270, yy, mix(C.ink, C.void, .5));
+      polyf([[140, 151], [278, 151], [278, 104], [214, 104]], C.void); hline(214, 270, 104, C.night); pline(140, 151, 214, 104, C.navy);
+      rectf(238, 84, 9, 20, C.void);
+      rectf(170, 236, 22, 54, C.void); pset(188, 262, C.gold);
+    });
+    const SOCK = [[110, 238], [200, 210], [152, 78]];   // the lamp's socket, the window sill's, the star
+    const LAND = [b(0), b(.55), b(1.15)], HOP = .32;
+    const landed = i => lt > LAND[i];
+    // the window: dark → lit when the plug arrives
+    const wk = landed(1) ? rise(lt, LAND[1], .3) : 0, WX = 200, WY = 182;
+    rectf(WX - 18, WY - 16, 36, 30, wk > 0 ? mix(C.night, C.gold, wk) : C.night);
+    if (wk > .5) { rectf(WX - 16, WY - 2, 10, 15, C.amber); circf(WX + 8, WY - 8, 3, C.amber); }
+    rectb(WX - 19, WY - 17, 38, 32, C.void); vline(WX, WY - 16, WY + 13, C.void); hline(WX - 18, WX + 17, WY - 2, C.void);
+    if (wk > 0) glow(WX, WY, 50, { tab: WARM, k: 1.1 * wk });
+    rectf(WX - 22, WY + 15, 44, 3, C.dusk); hline(WX - 22, WX + 21, WY + 15, C.haze);
+    // the streetlamp
+    const LX = 110;
+    rectf(LX - 1, 160, 3, 130, C.void); rectf(LX - 3, 282, 7, 8, C.void); hline(LX - 1, LX + 24, 158, C.void); hline(LX, LX + 24, 159, C.void);
+    polyf([[LX + 14, 160], [LX + 30, 160], [LX + 27, 166], [LX + 17, 166]], C.void);
+    const lk = landed(0) ? rise(lt, LAND[0], .25) : 0;
+    hline(LX + 17, LX + 27, 166, lk > 0 ? C.gold : C.navy); hline(LX + 18, LX + 26, 167, lk > 0 ? C.cream : C.night);
+    if (lk > 0) { glow(LX + 22, 172, 44, { tab: LIT, k: 1.4 * lk }); polyf([[LX + 17, 168], [LX + 27, 168], [LX + 56, 289], [LX - 12, 289]], lit(.8 * lk)); ellf(LX + 22, 290, 36, 4, lit(1.2 * lk)); for (let i = 0; i < 9; i++) hline(LX + 16 - i, LX + 28 + i, 366 + i * 3, veil(C.navy, .7 - i * .06)); }
+    rectf(LX - 4, SOCK[0][1] - 5, 9, 10, C.navy); rectb(LX - 4, SOCK[0][1] - 5, 9, 10, C.dusk);
+    // the street
+    layer('v2.4v-street', () => {
+      rectf(0, 290, LW, LH - 290, C.night); hline(0, LW, 290, C.dusk); rectf(0, 298, LW, LH - 298, C.ink); hline(0, LW, 298, C.navy);
+      for (let x = 6; x < LW; x += 44) hline(x, x + 18, 344, C.navy);
+      rectf(0, 392, LW, LH - 392, mix(C.ink, C.void, .4)); hline(0, LW, 392, C.dusk); hline(0, LW, 393, C.night);
+      for (let r = 0, yy = 400; yy < LH; r++, yy += 12 + r * 4) for (let x = (r % 2) * 9; x < LW; x += 18 + r * 4) { rectf(x + 1, yy, 14 + r * 4, 6 + r * 2, C.ink); hline(x + 1, x + 14 + r * 4, yy, C.night); }
+      for (let i = 0; i < 160; i++) pset(hash2(i, 81) * LW, 300 + hash2(i, 82) * 90, hash2(i, 83) < .5 ? C.night : C.void);
+    });
+    // the star
+    const sk = landed(2) ? rise(lt, LAND[2], .3) : 0, [SX, SY] = SOCK[2];
+    if (sk > 0) { glow(SX, SY, 56, { tab: LIT, k: 1.6 * sk }); starburst(SX, SY, 18, easeOut(sk) * (1 + .05 * breathe(t, 1)), { n: 8, ink: C.gold, fringe: C.amber, inner: .4, rot: lt * .3 }); }
+    sparkle(SX, SY, sk > 0 ? 3 : 1, C.cream, sk > 0 ? C.cream : C.haze);
+    // Clawd
+    const throwing = lt < LAND[0] + .1, after = lt > LAND[2];
+    const c = clawdPx(52, 290, { u: 4, eyes: after ? 'happy' : 'up', lookX: .6, lookY: -1, aR: throwing ? 1.2 : after ? 1.1 : .3, aL: after ? 1.1 : -.3, mouth: after ? 'smile' : undefined });
+    const hand = c.handR;
+    // the cable: from the spool behind Clawd, through every socket the plug has reached, to the plug
+    const P0 = [hand[0], hand[1] + 1];
+    let from = P0, plug = null, inPaw = false;
+    for (let i = 0; i < 3; i++) {
+      const t1 = LAND[i], t0 = t1 - HOP;
+      if (lt >= t1) { cableSeg(from[0], from[1], SOCK[i][0], SOCK[i][1], i === 2 ? 6 : 8, t); from = SOCK[i]; continue; }
+      const k = lt < t0 ? 0 : (lt - t0) / HOP, e = easeOut(k), px = lerp(from[0], SOCK[i][0], e), py = lerp(from[1], SOCK[i][1], e) - Math.sin(k * Math.PI) * 26;
+      if (k > 0) cableSeg(from[0], from[1], px, py, 10 * (1 - k), t);
+      plug = [px, py]; inPaw = k === 0; break;
+    }
+    cableSeg(-10, 286, P0[0] - 4, P0[1] + 2, 6, t);
+    if (plug) vPlug(plug[0] + (inPaw ? 14 : 0), plug[1]);
+    // plug-in flashes
+    LAND.forEach((tt, i) => { const a = lt - tt, [x, y] = SOCK[i]; if (a > 0 && a < .4) { sparkle(x, y, a < .15 ? 3 : 2, C.cream, C.mint); glow(x, y, 16, { tab: GREEN, k: 1.2 * (1 - a / .4) }); } });
+    weather(t, 'petals', { n: 22 });
+  });
+
+  // ======================================================================
+  // V2.5 Zuck's nine-figure poaching spree — ZUCK fishes off a pier with a $100M money bag for bait, the line running straight down
+  // into the deep water that fills the lower frame. Far down a researcher glints, swims up to the bait, grabs it, and is reeled up
+  // the whole height and swung over into the bucket marked MSL; then the next one, and the next.
+  // Whatever is drawn in fn() below the surface y0 is dimmed k steps (dithered): seen through the dark water.
+  function underwater(y0, k, fn) {
+    const before = FB.slice(); fn();
+    for (let y = Math.max(0, y0 - VY); y < LH; y++) for (let x = 0, row = y * LW; x < LW; x++) {
+      const i = row + x; if (FB[i] === before[i]) continue;
+      let c = FB[i], v = k + (y + VY - y0) * .012; while (v >= 1) { c = DIM[c]; v -= 1; } if (v > 0 && bay(x, y) < v) c = DIM[c]; FB[i] = c;
+    }
+  }
+  vshot('V2.5', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    const SURF = 196, DECK = 206;
+    sky({ cy: 260, r: 320 });
+    starfield(t, { density: .8, y1: SURF - 6 });
+    moon(222, 78, 9, { phase: .3 });
+    city(t, { y: SURF - 4, x0: 60, grow: .5, lit: .35, seed: 21 });
+    ridge({ y: SURF - 2, amp: 3, seed: 81, ink: C.ink, rim: C.navy, freq: 1 / 50 });
+    water(SURF, { k: 1.2, fade: .02, to: SURF + 44 });
+    rectf(0, SURF + 45, LW, LH - SURF - 45, grad([C.night, C.ink, C.ink, C.void], (x, y) => (y - SURF - 45) / 230));
+    // the deep: moonlight shafts slanting down, the moon's glitter on the surface, kelp swaying on the bottom
+    for (let i = 0; i < 4; i++) {
+      const x0 = 40 + i * 62 + Math.sin(t * .3 + i * 1.7) * 8, w = 14 + (i % 2) * 10, k0 = .55 - (i % 2) * .15;
+      polyf([[x0, SURF + 2], [x0 + w, SURF + 2], [x0 + w - 60, 476], [x0 - 60, 476]], inkFn((x, y, u) => bay(x, y) < k0 * (1 - (y - SURF) / 290) ? LIT[u] : -1));
+    }
+    for (let i = 0; i < 14; i++) { const yy = SURF + 3 + i * 3 + (i > 6 ? i - 6 : 0), w = Math.max(2, 14 - i), x = 222 + Math.round(Math.sin(t * 2.4 + i * 1.3) * (2 + i * .4)) - (w >> 1); hline(x, x + w, yy, i < 4 ? C.gold : i < 9 ? veil(C.amber, .7) : veil(C.clay, .5)); }
+    layer('v2.5v-bed', () => {
+      for (let x = 0; x < LW; x++) { const top = Math.round(452 + Math.sin(x * .045) * 6 + Math.sin(x * .13 + 2) * 2); rectf(x, top, 1, LH - top, grad([C.night, C.ink, C.void], (xx, yy) => (yy - top) / 16)); pset(x, top, C.navy); }
+    });
+    for (let i = 0; i < 9; i++) {
+      const kx = 14 + i * 30 + hash2(i, 3) * 12, kh = 50 + hash2(i, 4) * 60, base = 458;
+      for (let j = 0; j < kh; j += 2) { const sw = Math.sin(t * 1.1 + i + j * .08) * j * .09; pset(kx + sw, base - j, C.pine); pset(kx + sw + 1, base - j, j % 6 < 2 ? C.teal : C.pine); if (j % 10 === 4) pset(kx + sw + 2, base - j - 1, C.pine); }
+    }
+    // the catches: a researcher swims up to the bait → reeled up → swung over to the bucket → dropped in; the bait is cast back
+    const WX = 206, WY = 250, BX = 36, BTOP = DECK - 36, D = 1.05, HANG = [BX + 4, BTOP - 46], TOPY = 96;
+    const catches = [b(0) - .15, b(1.4), b(2.5)];
+    let bag = [WX, WY], ferry = -1, inBucket = 0, swim = null;
+    catches.forEach((c0, i) => {
+      const u = (lt - c0) / D;
+      if (u >= .8) inBucket = i + 1;
+      if (u < 0 && u > -.85) swim = { i, k: 1 + u / .85 };
+      if (u < 0 || u >= 1) return;
+      if (u < .35) { const k = ease(u / .35); bag = [lerp(WX, WX - 14, k), lerp(WY, TOPY, k)]; ferry = i; }
+      else if (u < .8) { const k = ease((u - .35) / .45); bag = [lerp(WX - 14, HANG[0], k), lerp(TOPY, HANG[1], k) - Math.sin(k * Math.PI) * 40]; ferry = i; }
+      else { const k = ease((u - .8) / .2); bag = [lerp(HANG[0], WX, k), lerp(HANG[1], WY, k) - Math.sin(k * Math.PI) * 50]; }
+    });
+    const resting = bag[1] >= WY - 1;
+    if (resting) bag = [bag[0], WY + Math.round(Math.sin(t * 2.2) * 1.5)];
+    const who = i => ({ top: [C.teal, C.violet, C.rust][i], hair: ['short', 'long', 'curly'][i], hairC: [C.void, C.wine, C.void][i], skin: SKIN[i % 3] });
+    // under the surface: the line, the bait, and the next researcher swimming up out of the deep, glinting
+    const swimY = swim ? lerp(440, WY + 52, easeOut(swim.k)) : 0, swimX = WX + (swim ? Math.sin(swim.k * 7) * 6 * (1 - swim.k) : 0);
+    underwater(SURF + 1, .5, () => {
+      if (bag[1] - 18 > SURF) pline(bag[0], SURF + 1, bag[0], bag[1] - 18, C.haze);
+      if (bag[1] > SURF) moneyBag(bag[0], bag[1]);
+      if (swim) personPx(swimX, swimY, { u: 4, ...who(swim.i), aL: 1.4, aR: 1.4, eyes: 'up', walk: lt * 3 });
+      if (ferry >= 0 && bag[1] + 50 > SURF) personPx(bag[0], bag[1] + 50, { u: 4, ...who(ferry), aL: 1.4, aR: 1.4, eyes: 'up', mouth: 'o' });
+    });
+    if (swim) { sparkle(swimX + 9, swimY - 30, spulse(t, 3) > .4 ? 3 : 2, C.cream, C.gold); for (let j = 0; j < 4; j++) { const f = frac(t * 1.2 + j / 4); pset(swimX - 4 + j * 3 + Math.sin(f * 9 + j) * 2, swimY - 40 - f * 30, veil(C.haze, 1 - f)); } }
+    if (resting) for (let r = 0; r < 3; r++) { const f = frac(t * .6 + r / 3); ellf(WX, SURF + 3, 8 + f * 26, 1 + f * 3, veil(C.haze, .5 * (1 - f))); }
+    // the pier
+    layer('v2.5v-pier', () => {
+      rectf(0, DECK, 162, 6, C.navy); hline(0, 161, DECK, C.dusk); for (let x = 8; x < 162; x += 16) vline(x, DECK + 1, DECK + 5, C.ink);
+      for (const px of [10, 76, 142]) { rectf(px, DECK + 6, 6, 140, C.ink); vline(px + 5, DECK + 6, DECK + 145, C.void); }
+      rectf(0, DECK + 6, 162, 2, C.void);
+    });
+    // the bucket
+    polyf([[BX - 24, BTOP], [BX + 24, BTOP], [BX + 20, DECK], [BX - 20, DECK]], C.dusk);
+    hline(BX - 24, BX + 23, BTOP, C.haze); hline(BX - 23, BX + 22, BTOP + 1, C.cream); vline(BX + 20, BTOP + 2, DECK - 1, C.navy);
+    hline(BX - 22, BX + 21, BTOP + 30, C.navy);
+    ptext('MSL', BX, BTOP + 9, C.cream, { align: 'center', scale: 2, shadow: C.navy });
+    pline(BX - 23, BTOP, BX, BTOP - 16, C.haze); pline(BX + 23, BTOP, BX, BTOP - 16, C.haze);
+    for (let i = 0; i < inBucket; i++) {
+      const hx = BX - 13 + i * 13, hy = BTOP - 5 - (i === inBucket - 1 ? Math.round(breathe(t, 1) * 2) : 0);
+      rectf(hx - 4, hy - 4, 9, 9, SKIN[i % 3]); rectf(hx - 4, hy - 6, 9, 3, [C.void, C.wine, C.rust][i]);
+      pset(hx - 2, hy, C.void); pset(hx + 2, hy, C.void); hline(hx - 1, hx + 1, hy + 3, C.rust);
+      if (i === inBucket - 1) { rectf(hx - 7, hy - 5, 2, 4, SKIN[i % 3]); rectf(hx + 6, hy - 5, 2, 4, SKIN[i % 3]); }
+      rectf(BX - 22, BTOP, 44, 1, C.haze);
+    }
+    // Zuck with the rod
+    const Z = personPx(106, DECK, { u: 7, top: C.haze, pants: C.ink, hair: 'curly', hairC: C.wine, skin: C.gold, eyes: 'dot', mouth: 'smile', aR: .55, aL: -.9 });
+    const [hx, hy] = Z.handR, aim = Math.atan2(Math.min(bag[1], 150) - 64 - hy, bag[0] - hx), RL = 112;
+    const tipX = hx + Math.cos(aim) * RL, tipY = hy + Math.sin(aim) * RL;
+    for (let i = 0; i <= 40; i++) { const f = i / 40, x = lerp(hx, tipX, f), y = lerp(hy, tipY, f) + Math.sin(f * Math.PI) * (ferry >= 0 ? 10 : 4); pset(x, y, f < .25 ? C.clay : C.dusk); if (f < .15) pset(x, y + 1, C.rust); }
+    circf(hx + 5, hy + 2, 2, C.void); pset(hx + 5, hy + 2, C.haze);
+    rectf(hx - 2, hy - 2, 4, 4, C.gold);
+    pline(tipX, tipY, bag[0], Math.min(bag[1] - 18, SURF), C.haze);
+    if (bag[1] <= SURF) {
+      if (ferry >= 0) { personPx(bag[0], bag[1] + 50, { u: 4, ...who(ferry), aL: 1.4, aR: 1.4, eyes: 'up', mouth: 'o' }); sparkle(bag[0] + 18, bag[1] - 6, spulse(t, 3) > .5 ? 3 : 2, C.cream, C.gold); }
+      moneyBag(bag[0], bag[1]);
+      if (ferry >= 0 && bag[1] + 52 > SURF) for (let i = 0; i < 4; i++) pset(bag[0] - 6 + i * 4, bag[1] + 52 + ((lt * 30 + i * 7) % 9), C.haze);   // dripping
+    }
+    weather(t, 'fireflies', { n: 8, x0: 160, x1: 270, y0: 140, y1: 192 });
+  });
+
+  // ======================================================================
+  // V2.6 Superintelligence — buy three! — a hard cut to a dark room and a big old TV: the late-night infomercial stacks the three
+  // boxed SUPERINTELLIGENCEs (SSI, THINKY, PERPLEXITY) into a tower on a turning sunburst, the dusty-red BUY 3! starburst pops on
+  // "buy three!", the ticker begs you to call now. Below, Clawd watches from the couch, a silhouette lit by the screen.
+  vshot('V2.6', (p, lt, d, t, s) => {
+    cutIn();
+    const burstT = sungAt(s, 'buy') - .1;   // (on "buy three!")
+    layer('v2.6v-room', () => {
+      rectf(0, 0, LW, LH, C.ink); for (let x = 10; x < LW; x += 22) vline(x, 0, 296, C.void);
+      rectf(0, 296, LW, LH - 296, C.void); hline(0, LW, 296, C.night);
+      // the TV cabinet under the set
+      rectf(26, 292, 218, 60, C.night); hline(26, 243, 292, C.navy); rectb(34, 300, 98, 44, C.ink); rectb(138, 300, 98, 44, C.ink); rectf(78, 320, 10, 3, C.dusk); rectf(182, 320, 10, 3, C.dusk);
+      rectf(32, 352, 6, 8, C.night); rectf(232, 352, 6, 8, C.night);
+    });
+    glow(135, 180, 200, { tab: LIT, k: 1.2, ry: 170 });
+    // the TV
+    const X0 = 16, Y0 = 92, X1 = 254, Y1 = 292;
+    rboxf(X0, Y0, X1 - X0, Y1 - Y0, C.night, 2); rboxf(X0 + 1, Y0 + 1, X1 - X0 - 2, Y1 - Y0 - 2, C.ink, 2); hline(X0 + 3, X1 - 4, Y0 + 1, C.navy);
+    for (let i = 0; i < 5; i++) hline(X1 - 76, X1 - 30, Y1 - 20 + i * 3, C.void);
+    circf(X0 + 22, Y1 - 14, 4, C.dusk); circf(X0 + 40, Y1 - 14, 4, C.dusk); pset(X0 + 22, Y1 - 17, C.haze); pset(X0 + 40, Y1 - 17, C.haze);
+    pline(110, Y0, 92, Y0 - 34, C.night); pline(160, Y0, 182, Y0 - 38, C.night); circf(92, Y0 - 34, 2, C.dusk); circf(182, Y0 - 38, 2, C.dusk);
+    const SX0 = X0 + 11, SY0 = Y0 + 11, SW = X1 - X0 - 22, SH = Y1 - Y0 - 42;
+    clipRect(SX0, SY0, SW, SH);
+    const on = clamp(lt / .14);
+    if (on < 1) {
+      rectf(SX0, SY0, SW, SH, C.void);
+      const hh = Math.max(1, Math.round(SH * on * .5)), mid = SY0 + SH / 2;
+      rectf(SX0, mid - hh, SW, hh * 2, C.haze); hline(SX0, SX0 + SW, mid, C.cream);
+    } else {
+      const cx = 128, cy = 190, rot = lt * .25;
+      rectf(SX0, SY0, SW, SH, inkFn((x, y) => { const a = Math.atan2(y - cy, x - cx) + rot; return (Math.floor(a / TAU * 24) & 1) ? C.wine : C.violet; }));
+      glow(cx, 170, 130, { tab: LIT, k: .8, ry: 90 });
+      ptext('AS SEEN ON TV', SX0 + 6, SY0 + 5, C.gold, { font: 3, shadow: C.void });
+      // the three boxes, stacked into a tower on the shelf
+      const shelfY = SY0 + SH - 18, BW = 112, BH = 36;
+      BOXES.forEach(([brand, face, side], i) => {
+        const bx = SX0 + 14 + [0, 6, 2][i], by = shelfY - BH * (i + 1);
+        polyf([[bx, by], [bx + 6, by - 6], [bx + BW + 6, by - 6], [bx + BW, by]], LIT[face]);
+        polyf([[bx + BW, by], [bx + BW + 6, by - 6], [bx + BW + 6, by + BH - 6], [bx + BW, by + BH]], side);
+        rectf(bx, by, BW, BH, face); rectb(bx, by, BW, BH, C.void);
+        rectf(bx + 1, by + 1, BW - 2, 14, C.void); ptext(brand, bx + BW / 2, by + 3, C.gold, { font: 3, scale: 2, align: 'center' });
+        ptext('SUPERINTELLIGENCE', bx + BW / 2, by + 20, C.cream, { align: 'center', shadow: C.void });
+        sparkle(bx + BW - 8, by + 30, hash2(i, sbeat(t)) < .5 ? 2 : 1, C.cream, C.gold);
+      });
+      rectf(SX0, shelfY, SW, 4, C.clay); hline(SX0, SX0 + SW, shelfY, C.amber); rectf(SX0, shelfY + 4, SW, 2, C.wine);
+      // ticker
+      rectf(SX0, SY0 + SH - 12, SW, 12, C.rust); hline(SX0, SX0 + SW, SY0 + SH - 12, C.clay);
+      const msg = 'CALL NOW · 1-800-SUPER-AI · OPERATORS STANDING BY · ', mw = ptextW(msg, { font: 3, scale: 2 }), off = (lt * 50) % mw;
+      for (let k = -1; k < 2; k++) ptext(msg, SX0 + 4 - off + k * mw, SY0 + SH - 10, C.cream, { font: 3, scale: 2 });
+      // BUY 3! bursts in on "buy three!"
+      const bk = clamp((lt - burstT) / .22);
+      if (bk > 0) {
+        const bxc = 200, byc = 146, R = 36 * (1 + .04 * breathe(t, 1));
+        starburst(bxc, byc, R, easeOut(bk), { n: 16, inner: .55, rot: lt * .2, fringe: C.wine });
+        if (bk > .6) ptext('BUY 3!', bxc + 1, byc - 6, C.cream, { scale: 2, align: 'center', shadow: C.wine });
+        if (bk < 1) glow(bxc, byc, 70, { tab: LIT, k: 1.4 * (1 - bk) });
+      }
+      for (let y = SY0 + 1; y < SY0 + SH; y += 2) rectf(SX0, y, SW, 1, dim(.3));
+    }
+    noClip();
+    rectb(SX0 - 1, SY0 - 1, SW + 2, SH + 2, C.void);
+    // the couch, and Clawd's back, lit by the screen
+    const c = clawdPx(135, 424, { u: 7, pose: 'sit', eyes: 'none', aL: .3, aR: .3, shadow: false, blink: false });
+    hline(c.left + 1, c.right - 2, c.top, C.haze); hline(c.left, c.right - 1, c.top + 1, mix(C.dusk, C.rust, .5));
+    rboxf(0, 404, LW, 20, C.ink, 2); hline(2, LW - 3, 404, C.navy); rectf(0, 424, LW, LH - 424, C.void);
+    rboxf(-10, 412, 40, 68, C.ink, 2); rboxf(240, 412, 40, 68, C.ink, 2); hline(-8, 28, 412, C.navy); hline(242, 278, 412, C.navy);
+  });
+
+  // ======================================================================
+  // V2.7 Grok goes MechaHitler mode — tasteful: the robot stands big on its hill, its screen glitching red behind a black REDACTED
+  // bar, sparks crackling; its cord loops up to a socket high on a pole. A hand comes down from the top of the frame, takes hold of
+  // the plug and yanks it out and away up the sky. The screen collapses to a line, a dot, dark.
+  vshot('V2.7', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    const reach = b(.7), yank = b(1.5);
+    const dead = lt > yank, dieK = clamp((lt - yank) / .3);
+    sky();
+    starfield(t, { density: .8 });
+    ridge({ y: 270, amp: 10, seed: 91, ink: C.ink, rim: C.navy, freq: 1 / 70 });
+    const g = hill({ cx: 120, y: 288, w: 260, drop: 18, ink: C.void, rim: C.pine });
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 50, n: 70 });
+    grass(0, LW, g, t);
+    const x = 104, gy = g(x), slump = dead ? Math.round(3 * rise(lt, yank + .2, .4)) : 0;
+    // the pole on the right with the socket box high up
+    const PX = 228, PY = 132;
+    rectf(PX - 2, PY - 6, 5, g(PX) - PY + 8, C.ink); vline(PX + 2, PY, g(PX), C.void); hline(PX - 10, PX + 10, PY - 18, C.ink); rectf(PX - 2, PY - 30, 5, 14, C.ink);
+    for (const ix of [PX - 10, PX + 10]) { rectf(ix - 1, PY - 22, 3, 4, C.dusk); }
+    rboxf(PX - 11, PY - 8, 23, 24, C.navy, 1); rectb(PX - 11, PY - 8, 23, 24, C.dusk); hline(PX - 10, PX + 10, PY - 7, C.haze);
+    rectf(PX - 4, PY, 2, 5, C.void); rectf(PX + 3, PY, 2, 5, C.void);
+    // the hand: down from the top of the frame to the plug, then up and away with it
+    const handK = rise(lt, reach - .45, .45, easeOut), pull = dead ? easeIn(clamp((lt - yank) / .4)) : 0;
+    const plug = dead ? [lerp(PX, PX + 6, pull), lerp(PY + 20, -40, pull)] : [PX, PY + 20];
+    // the cord: from the robot's back, looping up to the plug under the socket
+    const bdy = gy - 18 - 46 + slump, hdy = bdy - 6 - 60 + slump;
+    const c0 = [x + 34, bdy + 30], sag = dead ? 40 + 30 * pull : 26;
+    for (let i = 0; i <= 60; i++) { const f = i / 60, cxp = lerp(c0[0], plug[0], f), cyp = lerp(c0[1], plug[1] + 6, f) + Math.sin(f * Math.PI) * sag; pset(cxp, cyp, C.void); pset(cxp, cyp - 1, C.ink); }
+    rectf(plug[0] - 5, plug[1] - 4, 11, 12, C.haze); vline(plug[0] + 5, plug[1] - 3, plug[1] + 7, C.dusk); hline(plug[0] - 5, plug[0] + 5, plug[1] - 4, C.cream);
+    if (dead) { rectf(plug[0] - 4, plug[1] - 8, 2, 4, C.dusk); rectf(plug[0] + 3, plug[1] - 8, 2, 4, C.dusk); }
+    if (handK > 0) {
+      // (x, y) = the fist round the plug; the sleeve runs back up to the top-right corner, off the frame
+      const fx0 = dead ? plug[0] + 2 : lerp(300, plug[0] + 2, handK), fy0 = dead ? plug[1] - 2 : lerp(-60, plug[1] - 2, handK), ex = fx0 + 120, ey = fy0 - 150;
+      thick(fx0 + 8, fy0 - 10, ex, ey, 15, C.navy); pline(fx0 + 2, fy0 - 14, ex - 6, ey - 4, C.dusk);
+      thick(fx0 + 6, fy0 - 7, fx0 + 10, fy0 - 12, 15, C.haze); pline(fx0 + 1, fy0 - 11, fx0 + 11, fy0 - 2, C.cream);
+      rboxf(fx0 - 9, fy0 - 7, 16, 14, C.gold, 2); rectf(fx0 - 12, fy0 - 4, 4, 9, C.gold); hline(fx0 - 8, fx0 + 5, fy0 + 6, C.amber);
+      for (let i = 0; i < 3; i++) hline(fx0 - 8, fx0 - 4, fy0 - 4 + i * 4, C.amber);
+    }
+    if (dead && lt < yank + .3) for (let i = 0; i < 6; i++) pset(PX + (fx(i) - .5) * 16, PY + 8 + (fx(i, 1) - .5) * 14, i % 2 ? C.cream : C.gold);
+    // the robot
+    rectf(x - 22, gy - 18, 13, 18, C.dusk); rectf(x + 10, gy - 18, 13, 18, C.dusk); rectf(x - 24, gy - 3, 17, 3, C.navy); rectf(x + 8, gy - 3, 17, 3, C.navy);
+    rectf(x - 34, bdy, 68, 46, C.navy); rectb(x - 34, bdy, 68, 46, C.dusk); hline(x - 33, x + 32, bdy + 1, C.haze); vline(x + 32, bdy + 2, bdy + 44, C.night);
+    rectf(x - 27, bdy + 6, 54, 20, C.void); ptext('GROK', x + 1, bdy + 9, dead ? C.dusk : C.cream, { align: 'center', scale: 2 });
+    for (let i = 0; i < 4; i++) rectf(x - 21 + i * 12, bdy + 33, 4, 4, dead ? C.ink : hash2(i, boilFrame(T) >> 1) < .5 ? C.rust : C.gold);
+    const armA = dead ? .05 : .45;
+    for (const sd of [-1, 1]) { const ax = x + sd * 36, ay = bdy + 6; thick(ax, ay, ax + sd * Math.sin(armA) * 10, ay + Math.cos(armA) * 30, 8, C.dusk); rectf(ax + sd * Math.sin(armA) * 10 - 4, ay + Math.cos(armA) * 30 - 1, 9, 6, C.navy); }
+    rectf(x - 6, bdy - 6, 12, 6, C.dusk);
+    rectf(x - 46, hdy, 92, 60, C.dusk); rectb(x - 46, hdy, 92, 60, C.navy); hline(x - 45, x + 44, hdy + 1, C.haze); vline(x + 44, hdy + 2, hdy + 58, C.navy);
+    vline(x, hdy - 14, hdy, C.navy); circf(x, hdy - 16, 3, dead ? C.ink : spulse(t, 3) > .4 ? C.rust : C.wine);
+    const SX = x - 40, SY = hdy + 6, SW = 80, SH = 48;
+    rectf(SX, SY, SW, SH, C.void);
+    if (!dead) {
+      glow(x, SY + SH / 2, 70, { tab: WARM, k: .8 + .4 * fx(9) });
+      rectf(SX, SY, SW, SH, C.void);
+      for (let r = 0; r < SH; r += 2) { const o = Math.round((fx(r) - .5) * 12), on2 = fx(r, 3) < .72; if (on2) hline(SX + 2 + Math.max(0, o), SX + SW - 3 + Math.min(0, o), SY + r, fx(r, 5) < .3 ? C.clay : fx(r, 6) < .5 ? C.rust : C.wine); }
+      rectf(SX + 18, SY + 36, 44, 4, C.void);
+      const rw = ptextW('REDACTED', { scale: 2 }) + 14;
+      rectf(x - rw / 2, SY + 8, rw, 22, C.void); rectb(x - rw / 2, SY + 8, rw, 22, C.ink);
+      ptext('REDACTED', x, SY + 12, C.cream, { align: 'center', scale: 2 });
+      for (let i = 0; i < 7; i++) if (fx(i, 11) < .55) { const a = fx(i, 12) * TAU, r = 56 + fx(i, 13) * 12, sx = x + Math.cos(a) * r, sy = hdy + 30 + Math.sin(a) * r * .75; pset(sx, sy, C.cream); pset(sx + (fx(i, 14) < .5 ? 1 : -1), sy + 1, C.gold); pset(sx, sy - 1, C.gold); }
+    } else if (dieK < 1) {
+      if (dieK < .5) { const hh = Math.max(1, Math.round((1 - dieK * 2) * SH / 2)); rectf(SX, SY + SH / 2 - hh, SW, hh * 2, C.haze); hline(SX, SX + SW - 1, SY + SH / 2, C.cream); }
+      else circf(x, SY + SH / 2, Math.max(0, 6 * (1 - dieK)), C.cream);
+    }
+    weather(t, 'fireflies', { n: dead ? 16 : 8, y0: 250, y1: 380 });
+  });
+
+  // ======================================================================
+  // V2.8 Two labs win Olympiad gold — the podium on the floor, the two robots squeezed onto its top step; two gold medals come down
+  // on their ribbons from the top of the frame on "win"; π, √, ∑ drift up the tall sky like fireflies; 35/42 lights up high on
+  // "Olympiad gold".
+  vshot('V2.8', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky({ cy: 230, cx: 135, r: 340, vert: .25 });
+    starfield(t, { density: 1, bright: .4 });
+    glow(135, 220, 170, { tab: LIT, k: .7, ry: 140 });
+    // math symbols drifting up like fireflies, at twice the size
+    for (let i = 0; i < 18; i++) {
+      const rows = MATH[i % MATH.length], sp = 7 + hash2(i, 7) * 6, gx = 16 + hash2(i, 1) * 226 + Math.sin(t * .5 + i * 2.1) * 10, gy = 300 - frac(hash2(i, 2) + t * sp / 260) * 260;
+      if (gx < 100 && gy < 110) continue;
+      if (Math.abs(gx - 150) < 66 && gy > 86 && gy < 142) continue;
+      const bl = breathe(t, 3, hash(i + 5)); if (bl < .15) continue;
+      if (bl > .6) glow(gx + 4, gy + 4, 12, { tab: WARM, k: .9 });
+      const ink = bl < .4 ? C.amber : bl < .7 ? C.gold : C.cream;
+      rows.forEach((r, j) => [...r].forEach((c, k) => { if (c === '#') rectf(Math.round(gx) + k * 2, Math.round(gy) + j * 2, 2, 2, ink); }));
+    }
+    // the podium
+    const PX = 135, TOP = 236;
+    layer('v2.8v-podium', () => {
+      rectf(PX - 66, TOP, 132, 56, C.navy); hline(PX - 66, PX + 65, TOP, C.haze); vline(PX + 65, TOP + 1, 291, C.night);
+      rectf(4, 256, 65, 36, C.night); hline(4, 68, 256, C.dusk);
+      rectf(201, 266, 65, 26, C.night); hline(201, 265, 266, C.dusk);
+      ptext('1', PX, TOP + 8, C.gold, { scale: 3, align: 'center', shadow: C.void });
+      ptext('2', 36, 266, C.haze, { scale: 2, align: 'center' });
+      ptext('3', 233, 272, C.haze, { scale: 2, align: 'center' });
+      ptext('IMO 2025', PX, TOP + 36, C.dusk, { font: 3, scale: 2, align: 'center' });
+    });
+    // the dark hall below: a stage edge and rows of seats
+    layer('v2.8v-hall', () => {
+      rectf(0, 292, LW, 70, C.ink); hline(0, LW, 292, C.dusk); for (let x = 12; x < LW; x += 24) vline(x, 294, 360, C.void);
+      rectf(0, 362, LW, LH - 362, C.void);
+      [[388, 4, 13, 0], [414, 6, 17, 7], [450, 8, 22, 3]].forEach(([y, r, sp, off], ri) => { for (let x = off; x < LW + sp; x += sp) { const j = Math.floor(x / sp), hx = x + (j % 2) * 3, hy = y + (j % 3); circf(hx, hy, r, C.ink); hline(hx - r + 2, hx + r - 2, hy - r, ri ? C.night : C.navy); } });
+    });
+    // the two robots, squeezed together onto the top step; medals come down from the top of the frame
+    const medK = rise(lt, sungAt(s, 'win') - .5, .55, easeOut), won = medK >= 1;   // (the medals land on "win")
+    [[PX - 30, C.teal, 'OPENAI'], [PX + 30, C.violet, 'DEEPMIND']].forEach(([bx, body, name], i) => {
+      const hop = won && lt < b(3.2) ? Math.round(Math.max(0, Math.sin((lt - b(1.2)) * 5 + i * 1.6)) * 3) : 0;
+      const r = botPx(bx, TOP, { u: 6, body, face: won ? 'happy' : 'dot', aL: i === 1 && won ? 1.2 : -1.1, aR: i === 0 && won ? 1.2 : -1.1, dy: hop, antenna: C.gold });
+      tagPx(name, bx + (i ? 6 : -6), r.top - 3 - hop, { scale: 2 });
+      const chest = TOP - 6 - 22 - hop, my = lerp(-24, chest, medK);
+      if (medK < 1) { pline(bx - 4, -2, bx - 2, my - 5, C.rust); pline(bx + 4, -2, bx + 2, my - 5, C.rust); }
+      else { thick(bx - 7, chest - 12, bx - 1, my - 4, 2, C.rust); thick(bx + 7, chest - 12, bx + 1, my - 4, 2, C.wine); glow(bx, my, 18, { tab: WARM, k: 1 }); }
+      medalPx(bx, Math.round(my), { r: 6, ribbon: false, shine: won ? spulse(t + i * .3, 3) : 0 });
+    });
+    // the score, high
+    const sk = rise(lt, sungAt(s, 'olympiad') - .1, .3);   // (on "Olympiad gold")
+    if (sk > 0) {
+      ptext('35/42', 152, 94, veil(C.gold, sk), { scale: 4, dots: true, align: 'center', off: veil(C.ink, sk) });
+      ptext('GOLD', 152, 128, veil(C.amber, sk), { font: 3, scale: 2, align: 'center', shadow: veil(C.void, sk) });
+    }
+  });
+
+  // ======================================================================
+  // V2.9 GPT-5 breaks 4o hearts — the 4o heart balloon floats up the tall sky away from the two fans with their #keep4o signs;
+  // high up it cracks down the middle. Then its string snaps down to the paywall post between them and ties on ($20/MO), the
+  // balloon is hauled back down over it, and a bandage covers the crack.
+  vshot('V2.9', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    const crackT = b(.9), tieT = b(1.9);
+    sky();
+    starfield(t, { density: .8 });
+    ridge({ y: 272, amp: 10, seed: 101, ink: C.ink, rim: C.navy, freq: 1 / 70 });
+    const g = hill({ cx: 135, y: 290, w: 300, drop: 12, ink: C.void, rim: C.pine });
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 50, n: 80, flowers: [C.rust, C.cream] });
+    grass(0, LW, g, t);
+    // far off on the ridge, more fans with signs
+    for (let i = 0; i < 7; i++) { const x = 14 + i * 38 + hash2(i, 5) * 10, y = Math.round(ridgeY(x, { y: 272, amp: 10, seed: 101, freq: 1 / 70 })); personPx(x, y + 1, { u: 1, top: [C.teal, C.violet, C.clay, C.dusk][i % 4], aL: 1.3, aR: 1.3 }); rectf(x - 4, y - 18 - (hash2(i, sbeat(t)) < .4 ? 1 : 0), 9, 5, C.haze); }
+    const tied = lt > tieT, tk = rise(lt, tieT, .5, easeOut);
+    // the balloon: drifting up and away, then hauled back down over the post
+    const PX = 135, PY = g(PX) - 66;
+    const up = easeOut(clamp(lt / (tieT + .2))), fx0 = lerp(128, 152, up), fy0 = lerp(184, 98, up);
+    const hx = tied ? lerp(fx0, PX + 4, tk) : fx0, hy = (tied ? lerp(fy0, PY - 76, tk) : fy0) + Math.sin(t * 1.4) * 2;
+    // the paywall post
+    rectf(PX - 3, PY, 7, g(PX) - PY + 2, C.dusk); rectf(PX - 5, PY - 3, 11, 4, C.haze); hline(PX - 5, PX + 5, PY - 3, C.cream); vline(PX + 3, PY + 1, g(PX), C.navy);
+    for (let y = PY + 8; y < g(PX) - 4; y += 10) hline(PX - 3, PX + 3, y, C.gold);
+    // the string
+    const sy0 = hy + 43;
+    if (!tied) { for (let i = 0; i < 60; i++) { const f = i / 60; pset(hx + Math.sin(f * 7 + t * 3) * 5 * f, sy0 + f * 70, C.haze); } }
+    else { const n = 40; for (let i = 0; i < n; i++) { const f = i / n, x = lerp(hx, PX, f) + Math.sin(f * Math.PI) * 8 * (1 - tk), y = lerp(sy0, PY + 4, f); pset(x, y, C.haze); } circf(PX, PY + 4, 1, C.cream); }
+    // the two fans with their signs held high
+    [[50, C.teal, 'long', C.wine, 0], [220, C.violet, 'curly', C.void, 1]].forEach(([x, top, hair, hairC, i]) => {
+      const P = personPx(x, g(x), { u: 6, top, hair, hairC, skin: SKIN[i + 1], eyes: tied ? 'closed' : 'up', mouth: tied ? 'smile' : lt > crackT ? 'o' : 'none', aL: 1.3, aR: i ? 1.1 : -.8, flip: !!i, lookX: i ? -1 : 1, dy: tied && hash2(i, sbeat(t)) < .6 ? Math.round(spulse(t, 3) * 3) : 0 });
+      const [sx, sy] = i ? P.handR : P.handL; vline(sx, sy - 14, sy, C.clay); vline(sx + 1, sy - 14, sy, C.rust);
+      // (the hashtag in F5, as it was written: F3's 3-px "#" is a blob at phone size)
+      const sw = ptextW('#keep4o', { scale: 2 }) + 10, scx = clamp(sx, 18 + sw / 2, 238 - sw / 2);
+      rectf(scx - sw / 2, sy - 40, sw, 26, C.cream); rectb(scx - sw / 2, sy - 40, sw, 26, C.void);
+      ptext('#keep4o', scx, sy - 35, C.rust, { scale: 2, align: 'center' });
+    });
+    // the paywall's price tag, tied on in front of the fan beside it: "$20" big, "/mo" small (in F5: F3's 3-px "$" is a squiggle)
+    if (tied) { const tg = rise(lt, tieT + .25, .3); if (tg > 0) { pline(PX + 4, PY + 10, PX + 12, PY + 18, C.haze); rboxf(PX + 8, PY + 15, 62, 21, veil(C.cream, tg), 1); if (tg > .5) { ptext('$20', PX + 13, PY + 19, C.wine, { scale: 2 }); ptext('/mo', PX + 49, PY + 26, C.wine); } } }
+    // the balloon itself
+    const crackK = clamp((lt - crackT) / .35), split = lt > crackT + .35 && !tied ? 2 : 0;
+    heartBalloon(hx, hy, crackK, split, rise(lt, tieT + .4, .3), t);
+    if (lt > crackT && lt < crackT + .4) for (let i = 0; i < 7; i++) pset(hx + (fx(i) - .5) * 20, hy - 18 + fx(i, 1) * 56, C.cream);
+    weather(t, 'fireflies', { n: 12, y0: 200, y1: 284 });
+  });
+
+  // ======================================================================
+  // V2.10 Nano Banana tops the charts — the skyline is a tall bar chart of app icons; the moon rises as a golden banana, arcs up
+  // the frame from behind the bars and perches on the tallest one, nudging its icon off; it puts on sunglasses. #1.
+  const VBARS = [[10, 66, C.violet], [52, 104, C.teal], [94, 138, C.rust], [136, 180, C.mint], [178, 122, C.clay], [220, 86, C.gold]];
+  vshot('V2.10', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    const landT = b(2) - .1, shadesT = b(2.6) - .1, AX = 290;
+    sky();
+    starfield(t, { density: .8 });
+    const tb = VBARS[3], topX = tb[0] + 18, topY = AX - tb[1] - 12;
+    const k = clamp(lt / landT), e = ease(k);
+    const bx = lerp(230, topX, e), by = lerp(236, topY, e) - Math.sin(k * Math.PI) * 44 + (k >= 1 ? Math.round(breathe(t, 2)) : 0);
+    glow(bx, by - 12, 60, { tab: LIT, k: k < 1 ? 1.1 : .6 });
+    // the banana moon rises from behind the bars (drawn first); once it has landed it sits on top
+    if (k < 1) bananaPx(bx, by);
+    // chart gridlines
+    for (let gy = AX - 30; gy > 70; gy -= 30) pline(8, gy, 262, gy, C.night, { every: 3 });
+    // the bars (buildings), each topped with an app icon; below the axis their lower floors run down into the dark
+    VBARS.forEach(([x, h, ic], i) => {
+      const top = AX - h, w = 38;
+      rectf(x, top, w, LH - top, C.ink); hline(x, x + w - 1, top, C.navy); vline(x + w - 1, top + 1, LH, C.void);
+      for (let wy = top + 6; wy < LH; wy += 7) for (let wx = x + 4; wx < x + w - 4; wx += 6) { const hh = hash2(wx, wy); if (hh < (wy < AX ? .45 : .12)) rectf(wx, wy, 2, 3, wy > AX ? C.clay : hh < .2 ? C.gold : C.amber); }
+      if (i !== 3) { rboxf(x + 10, top - 18, 18, 18, ic, 2); rectf(x + 14, top - 14, 10, 10, DIM[ic]); pset(x + 15, top - 13, LIT[ic]); }
+    });
+    rectf(0, AX + 1, LW, LH - AX - 1, tint(DIM, 1.6));
+    const nudge = k >= 1 ? Math.round(rise(lt, landT, .3) * 24) : 0, ny = Math.round(nudge * .4);
+    rboxf(tb[0] + 10 + nudge, AX - tb[1] - 18 + ny, 18, 18, C.mint, 2); rectf(tb[0] + 14 + nudge, AX - tb[1] - 14 + ny, 10, 7, C.teal); pset(tb[0] + 16 + nudge, AX - tb[1] - 7 + ny, C.teal);
+    hline(4, 266, AX, C.haze); for (const [x] of VBARS) vline(x + 19, AX + 1, AX + 3, C.dusk);
+    // banana + sunglasses
+    const sk = lt > shadesT ? 1 - rise(lt, shadesT, .25, easeIn) : null;
+    if (k >= 1) bananaPx(bx, by, sk === null ? undefined : Math.round(sk * 26));
+    if (k >= 1 && lt < landT + .3) sparkle(bx, by + 4, 3, C.cream, C.gold);
+    // #1
+    const nk = rise(lt, shadesT + .2, .3);
+    if (nk > 0) {
+      ptext('#1', topX + 40, topY - 32, veil(C.gold, nk), { scale: 3, shadow: veil(C.wine, nk) });
+      sparkle(topX + 82, topY - 34, spulse(t, 3) > .5 ? 3 : 2, C.cream, C.gold);
+    }
+    weather(t, 'fireflies', { n: 10, y0: 140, y1: 280 });
+  });
+
+  // ======================================================================
+  // V2.11 Billion-five: Anthropic's prize — the books fly up out of the library's windows like birds and settle in a row on the
+  // telephone wire high above, little faces looking down; at the foot of the steps a sheepish Clawd (blushing, a sweat drop)
+  // unfurls a giant cheque: $1,500,000,000 to THE AUTHORS.
+  vshot('V2.11', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    const chequeT = b(1.2) - .1;
+    sky();
+    starfield(t, { density: .7 });
+    moon(48, 132, 7, { phase: .45 });
+    ridge({ y: 272, amp: 8, seed: 111, ink: C.ink, rim: C.navy, freq: 1 / 60 });
+    // the library
+    layer('v2.11v-library', () => {
+      const L0 = 10, L1 = 178, top = 170;
+      rectf(L0 + 6, top, L1 - L0 - 12, 290 - top, C.night); triPx(L0 - 2, top + 1, L1 + 2, top + 1, (L0 + L1) / 2, top - 44, C.navy); triPx(L0 + 12, top - 2, L1 - 12, top - 2, (L0 + L1) / 2, top - 34, C.ink);
+      rectf(L0, top - 5, L1 - L0, 6, C.navy); hline(L0, L1 - 1, top - 5, C.dusk);
+      ptext('LIBRARY', (L0 + L1) / 2, top - 22, C.haze, { font: 3, scale: 2, align: 'center' });
+      for (let i = 0; i < 5; i++) { const cx = L0 + 14 + i * 36; rectf(cx, top + 4, 10, 106, C.dusk); vline(cx, top + 4, top + 109, C.haze); vline(cx + 9, top + 4, top + 109, C.navy); rectf(cx - 2, top + 2, 14, 3, C.haze); rectf(cx - 2, top + 108, 14, 3, C.navy); }
+      for (let i = 0; i < 4; i++) { const wx = L0 + 30 + i * 36; rectf(wx, top + 24, 16, 30, C.gold); rectf(wx, top + 24, 16, 3, C.amber); vline(wx + 8, top + 24, top + 53, C.clay); for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) rectf(wx + 1 + c * 4, top + 30 + r * 8, 2, 6, [C.rust, C.teal, C.violet, C.clay][(c + r + i) % 4]); }
+      rectf(L0 - 4, 282, L1 - L0 + 8, 4, C.navy); hline(L0 - 4, L1 + 3, 282, C.dusk); rectf(L0 - 10, 286, L1 - L0 + 20, 4, C.dusk); hline(L0 - 10, L1 + 9, 286, C.haze);
+      // the street in front
+      rectf(0, 290, LW, LH - 290, C.ink); hline(0, LW, 290, C.navy);
+      for (let i = 0, yy = 312; yy < LH; i++, yy += 16 + i * 5) hline(0, LW, yy, mix(C.ink, C.void, .5));
+      for (let i = 0; i < 140; i++) pset(hash2(i, 91) * LW, 292 + hash2(i, 92) * (LH - 292), hash2(i, 93) < .5 ? C.night : C.void);
+    });
+    for (let i = 0; i < 4; i++) glow(48 + i * 36, 209, 20, { tab: WARM, k: .8 });
+    // the telephone pole and its wire
+    const wireY = x => 118 + Math.round(Math.sin(clamp(x / 238) * Math.PI) * 14);
+    rectf(236, 100, 5, 190, C.ink); vline(240, 102, 289, C.void); hline(226, 250, 106, C.ink); rectf(228, 102, 3, 4, C.dusk); rectf(246, 102, 3, 4, C.dusk);
+    for (let x = 0; x < 238; x++) pset(x, wireY(x), C.void);
+    // the books: out of the windows, flapping, up onto the wire with faces
+    const n = 7;
+    for (let i = 0; i < n; i++) {
+      const t0 = .05 + i * .14, kk = clamp((lt - t0) / .7), ox = 48 + (i % 4) * 36, oy = 209, tx = 104 + i * 18, ty = wireY(tx);
+      if (lt < t0) continue;
+      const c = BOOKC[i];
+      if (kk < 1) {
+        const e2 = ease(kk), x = lerp(ox, tx, e2), y = lerp(oy, ty - 8, e2) - Math.sin(kk * Math.PI) * (30 + i * 4), flap = Math.sin(lt * 18 + i) > 0;
+        polyf([[x, y], [x - 8, y + (flap ? -6 : 3)], [x - 9, y + (flap ? -4 : 5)], [x, y + 2]], c);
+        polyf([[x, y], [x + 8, y + (flap ? -6 : 3)], [x + 9, y + (flap ? -4 : 5)], [x, y + 2]], LIT[c]);
+        pset(x, y + 1, C.cream);
+      } else {
+        const hop = hash2(i, sbeat(t)) < .3 ? Math.round(spulse(t, 3) * 2) : 0, happy = lt > chequeT + .3;
+        const x = tx - 6, y = ty - 17 - hop;
+        rectf(x, y, 12, 17, c); vline(x, y, y + 16, DIM[c]); hline(x + 1, x + 11, y, LIT[c]); rectf(x + 10, y + 1, 2, 16, C.cream);
+        if (happy) { pset(x + 3, y + 5, C.void); pset(x + 2, y + 6, C.void); pset(x + 4, y + 6, C.void); pset(x + 7, y + 5, C.void); pset(x + 6, y + 6, C.void); pset(x + 8, y + 6, C.void); }
+        else { rectf(x + 3, y + 6, 1, 2, C.void); rectf(x + 7, y + 6, 1, 2, C.void); }
+        hline(x + 4, x + 6, y + 11, happy ? C.void : DIM[c]);
+      }
+    }
+    // Clawd, sheepish, with a giant cheque
+    const ck = rise(lt, chequeT, .45, easeOut);
+    const cx = 214, c = clawdPx(cx, 290, { u: 5, eyes: 'open', lookX: -1, lookY: .5, blush: true, aL: .15 + .75 * ck, aR: -.3 });
+    const sw = frac(t * .6), sdx = c.right + 4, sdy = c.top + 4 + sw * 10;
+    pset(sdx, sdy - 2, C.haze); rectf(sdx - 1, sdy - 1, 3, 3, C.haze); pset(sdx, sdy, C.cream);
+    if (ck > 0) {
+      const [hx, hy] = c.handL, W = 176, H = 66, x0 = Math.round(hx - W + 8), y0 = Math.round(hy - 74);
+      clipRect(x0 + Math.round((W + 4) * (1 - ck)), y0 - 2, W + 6, H + 6);   // it unfurls leftward from Clawd's paw
+      rectf(x0 + 2, y0 + 2, W, H, C.void); rectf(x0, y0, W, H, C.cream); rectb(x0 + 2, y0 + 2, W - 4, H - 4, C.gold);
+      ptext('PAY TO:', x0 + 8, y0 + 8, C.dusk, { font: 3 });
+      ptext('THE AUTHORS', x0 + 36, y0 + 6, C.navy, { font: 3, scale: 2 });
+      ptext('$1,500,000,000', x0 + W / 2, y0 + 24, C.rust, { align: 'center', scale: 2 });
+      hline(x0 + 96, x0 + W - 10, y0 + 56, C.haze); ptext('Clawd', x0 + 104, y0 + 47, C.clay);
+      ptext('ANTHROPIC', x0 + 8, y0 + 52, C.dusk, { font: 3 });
+      noClip();
+      if (ck < 1) vline(x0 + Math.round((W + 4) * (1 - ck)), y0, y0 + H - 1, C.gold);
+      rectf(hx - 3, hy - 3, 5, 5, C.clay);
+    }
+    weather(t, 'leaves', { n: 16 });
+  });
+
+  // ======================================================================
+  // V2.12 Yudkowsky drops "Everyone Dies" — on "drops" the book falls out of the top of the frame like a meteor, its fiery trail
+  // the whole height of the sky, and lands with a thud on a pedestal on "Everyone Dies": dust rings, a flash. The cover is big enough to read; a BESTSELLER
+  // ribbon unrolls across the pedestal; ELIEZER stands beside it, arms folded, eyes shut at the thud.
+  function vDoomBook(x, y) {   // (x, y) = bottom-centre; 110 × 120
+    const x0 = Math.round(x - 55), y0 = Math.round(y - 120);
+    rectf(x0 + 110, y0 + 4, 5, 116, C.cream); for (let yy = y0 + 6; yy < y0 + 118; yy += 3) hline(x0 + 110, x0 + 114, yy, C.gold);
+    rectf(x0, y0, 110, 120, C.void); rectb(x0, y0, 110, 120, C.ink); vline(x0 + 4, y0 + 1, y0 + 118, C.ink);
+    ptext('IF ANYONE', x0 + 57, y0 + 8, C.haze, { font: 3, scale: 2, align: 'center' });
+    ptext('BUILDS IT,', x0 + 57, y0 + 22, C.haze, { font: 3, scale: 2, align: 'center' });
+    ptext('EVERYONE', x0 + 57, y0 + 44, C.cream, { scale: 2, align: 'center' });
+    ptext('DIES', x0 + 57, y0 + 66, C.rust, { scale: 3, align: 'center' });
+    hline(x0 + 20, x0 + 94, y0 + 102, C.dusk); hline(x0 + 28, x0 + 86, y0 + 108, C.dusk);
+  }
+  vshot('V2.12', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    // the book falls on "drops", lands with its thud on "Everyone Dies", and the ribbon unrolls as "Dies" comes
+    const fall0 = sungAt(s, 'drops') - .15, landT = sungAt(s, 'everyone') - .05, ribT = landT + .5;
+    dissolveIn(.25);   // (a quick dissolve, so the fall down the tall sky isn't half lost in it)
+    sky();
+    starfield(t, { density: .8 });
+    ridge({ y: 272, amp: 8, seed: 121, ink: C.ink, rim: C.navy, freq: 1 / 60 });
+    const GY = 290;
+    const g = x => GY + Math.round(Math.sin(x * .04) * 1.2);
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 50, n: 80 });
+    for (let x = 0; x < LW; x++) pset(x, g(x), C.pine);
+    grass(0, LW, g, t);
+    // pedestal
+    const PX = 118, PT = 226;
+    rectf(PX - 40, PT, 80, 6, C.haze); hline(PX - 40, PX + 39, PT, C.cream); rectf(PX - 36, PT + 6, 72, 3, C.dusk);
+    rectf(PX - 30, PT + 9, 60, GY - PT - 17, C.dusk); for (let x = PX - 26; x < PX + 28; x += 7) vline(x, PT + 10, GY - 9, C.navy); vline(PX + 29, PT + 9, GY - 9, C.navy);
+    rectf(PX - 40, GY - 8, 80, 8, C.haze); hline(PX - 40, PX + 39, GY - 8, C.cream);
+    // the falling book, out of the top of the frame
+    const k = clamp((lt - fall0) / (landT - fall0)), e = k ** 1.5, SX0 = 236, SY0 = -10;
+    const landed = k >= 1, since = lt - landT;
+    const bx = lerp(SX0, PX, e), by = lerp(SY0, PT, e) - (landed && since < .15 ? Math.round(Math.sin(since / .15 * Math.PI) * 3) : 0);
+    // its burning trail hangs in the sky along the whole path and fades behind it (age = how long since the book passed)
+    for (let i = 0; i < 160; i++) {
+      const u = i / 160 * Math.min(1, e), age = lt - (fall0 + u ** (2 / 3) * (landT - fall0)); if (age < 0 || age > 1.3) continue;
+      const cxp = lerp(SX0, PX, u), cyp = lerp(SY0, PT, u) - 60, w = 2 + 8 * (1 - age / 1.3);
+      if (i % 16 === 0 && age < .35) glow(cxp, cyp, 16, { tab: WARM, k: 1.2 * (1 - age / .35) });
+      for (let j = 0; j < 6; j++) {
+        const x = cxp + (hash2(i, j) - .5) * 2 * w + (fx(i, j) - .5) * 3, y = cyp + (hash2(i, j + 5) - .5) * w;
+        pset(x, y, age < .08 ? C.cream : age < .2 ? C.gold : age < .4 ? veil(C.amber, 1.2 - age * 1.5) : age < .7 ? veil(C.rust, 1 - age) : veil(C.dusk, (1.3 - age) * 1.2));
+      }
+    }
+    if (!landed) glow(bx, by - 60, 70, { tab: WARM, k: 1.3 });
+    vDoomBook(bx, by);
+    if (landed) {
+      if (since < .25) glow(PX, PT, 120, { tab: LIT, k: 1.4 * (1 - since / .25) });
+      for (let r = 0; r < 2; r++) { const f = clamp((since - r * .12) / .7); if (f > 0 && f < 1) { ellf(PX, PT + 1, 44 + f * 70, 3 + f * 5, veil(C.haze, .55 * (1 - f))); ellf(PX, GY, 44 + f * 90, 3 + f * 4, veil(C.dusk, .6 * (1 - f))); } }
+      for (let i = 0; i < 12; i++) { const f = clamp(since / .6), a = Math.PI + (i / 11) * Math.PI; if (f < 1) pset(PX + Math.cos(a) * (40 + f * 30), PT - 2 + Math.sin(a) * f * 24 + f * f * 22, veil(C.haze, 1 - f)); }
+    }
+    // the BESTSELLER ribbon unrolls across the pedestal
+    const rk = rise(lt, ribT, .45, easeOut);
+    if (rk > 0) {
+      const RW = 96, w = Math.round(RW * rk), rx0 = PX - RW / 2, ry = PT + 20;
+      polyf([[rx0 - 9, ry + 2], [rx0 + 2, ry + 2], [rx0 + 2, ry + 16], [rx0 - 9, ry + 16], [rx0 - 4, ry + 9]], C.wine);
+      if (rk >= 1) polyf([[rx0 + RW + 9, ry + 2], [rx0 + RW - 2, ry + 2], [rx0 + RW - 2, ry + 16], [rx0 + RW + 9, ry + 16], [rx0 + RW + 4, ry + 9]], C.wine);
+      rectf(rx0, ry, w, 16, C.rust); hline(rx0, rx0 + w - 1, ry, C.clay); hline(rx0, rx0 + w - 1, ry + 15, C.wine);
+      clipRect(rx0, ry, w, 16); ptext('BESTSELLER', PX, ry + 3, C.gold, { font: 3, scale: 2, align: 'center' }); noClip();
+      if (rk >= 1 && lt < ribT + .9) sparkle(PX + 44, ry, 2, C.cream, C.gold);
+    }
+    // Eliezer, arms folded
+    const EX = 216, u = 7;
+    personPx(EX, GY, { u, hat: 'fedora', hatC: C.ink, beard: C.wine, top: C.ink, pants: C.void, skin: C.gold, eyes: landed && since < .5 ? 'closed' : 'dot', mouth: 'none', aL: -1.4, aR: -1.4 });
+    const tw = 3 * u + (u % 2 ? 0 : 1), ty = GY - 2 * u - 4 * u, fy = ty + Math.round(4 * u * .45);
+    rectf(EX - (tw >> 1) - 2, fy, tw + 4, 5, C.ink); hline(EX - (tw >> 1) - 2, EX + (tw >> 1) + 1, fy, C.navy);
+    rectf(EX - (tw >> 1) - 3, fy + 1, 4, 4, C.gold); rectf(EX + (tw >> 1), fy - 1, 4, 4, C.gold);
+    weather(t, 'leaves', { n: 22 });
+  });
+
+  // ======================================================================
+  // V2.13 "Clanker!" spat in every screed — looking down a narrow rainy street: tall brick walls stacked with windows on both sides
+  // close in toward a far glow. The small sad robot walks down the middle toward us, growing nearer; as it passes under them,
+  // windows high on either side fling open and snap CLANKER! at it, one on each beat; it hunches more each time, antenna drooping.
+  // The street in one-point perspective: a point (X, Y) at depth z (X across, Y down from eye level) is at (VPX + X/z, VPY + Y/z)·
+  // with the walls at X = ±60, the ground at Y = +60 and the roofs at Y = −260.
+  const VPX = 135, VPY = 150, CW = 60, CG = 60, CR = -260;
+  const CWIN = [];   // the windows: {side, z, y0, y1} (y0, y1 = wall-space Y of the top and bottom)
+  for (const side of [-1, 1]) for (const z of [.62, .8, 1.04, 1.36, 1.8, 2.4, 3.2, 4.3]) for (const yf of [-12, -62, -112, -162, -212]) CWIN.push({ side, z, y0: yf - 30, y1: yf, lit: hash2(Math.round(z * 100) * side, yf) });
+  // the four that shout: the robot passes under them on beats .5, 1.3, 2.1, 2.9
+  const SHOUT = [{ side: -1, z: 1.8, y0: -42, y1: -12, bub: [128, 124] }, { side: 1, z: 1.36, y0: -92, y1: -62, bub: [186, 152] }, { side: -1, z: 1.04, y0: -42, y1: -12, bub: [70, 174] }, { side: 1, z: .8, y0: -42, y1: -12, bub: [186, 96] }];
+  // fill a window (or any wall rectangle) given in wall space, column by column
+  function wallRect(side, z0, z1, y0, y1, ink) {
+    const xa = VPX + side * CW / z1, xb = VPX + side * CW / z0;
+    for (let x = Math.round(Math.min(xa, xb)); x <= Math.round(Math.max(xa, xb)); x++) { const k = (x - VPX) * side / CW; if (k <= 0) continue; rectf(x, Math.round(VPY + y0 * k), 1, Math.max(1, Math.round((y1 - y0) * k)), ink); }
+  }
+  // the sad robot at any size: (x, y) = ground point, sc = scale (1 ≈ 100 px tall)
+  function vSadBot(x, y, sc, hunch, walk, t) {
+    const S = v => Math.max(1, Math.round(v * sc)), X = v => Math.round(x + v * sc), Y = v => Math.round(y + v * sc);
+    const st = Math.sin(walk * TAU), bob = Math.abs(st) > .5 ? 1 : 0;
+    rectf(X(-14), Y(-18 + (st > .3 ? -3 : 0)), S(9), S(18 - (st > .3 ? 3 : 0)), C.dusk); rectf(X(6), Y(-18 + (st < -.3 ? -3 : 0)), S(9), S(18 - (st < -.3 ? 3 : 0)), C.dusk);
+    rectf(X(-16), Y(-3), S(12), S(3), C.navy); rectf(X(5), Y(-3), S(12), S(3), C.navy);
+    const by = -58 - bob + hunch;
+    rectf(X(-22), Y(by), S(45), S(40), C.haze); rectb(X(-22), Y(by), S(45), S(40), C.dusk); if (sc > .5) hline(X(-21), X(20), Y(by + 1), C.cream);
+    rectf(X(-12), Y(by + 12), S(25), S(11), C.dusk); for (let i = 0; i < 3; i++) rectf(X(-8 + i * 7), Y(by + 16), S(3), S(3), i === 1 ? C.rust : C.navy);
+    for (const sd of [-1, 1]) thick(X(sd * 24), Y(by + 6), X(sd * (27 - hunch * .6)), Y(by + 32 + hunch * 1.5), S(6), C.dusk);
+    const hy = by - 36 + Math.round(hunch * 2);
+    rectf(X(-4), Y(by - 4), S(9), S(5), C.dusk);
+    rectf(X(-26), Y(hy), S(53), S(36), C.haze); rectb(X(-26), Y(hy), S(53), S(36), C.dusk); if (sc > .5) hline(X(-25), X(25), Y(hy + 1), C.cream);
+    rectf(X(-20), Y(hy + 6), S(41), S(24), C.ink);
+    const ey = hy + 14 + Math.min(4, hunch >> 1);
+    for (const sd of [-1, 1]) { rectf(X(sd * 9 - 2), Y(ey), S(5), S(5), C.mint); if (sc > .45) { pset(X(sd * 9 + (sd < 0 ? -2 : 2)), Y(ey - 2), C.teal); pset(X(sd * 9 + (sd < 0 ? -3 : 3)), Y(ey - 3), C.teal); } }
+    if (sc > .35) { hline(X(-4), X(4), Y(ey + 10), C.teal); pset(X(-5), Y(ey + 11), C.teal); pset(X(5), Y(ey + 11), C.teal); }
+    const droop = clamp(hunch / 8), ax = 3, ay = hy, tip = [ax + Math.sin(droop * 2.3) * 18, ay - Math.cos(droop * 2.3) * 18], mid = [lerp(ax, tip[0], .5) + droop * 3, lerp(ay, tip[1], .5) - 3];
+    plines([[X(ax), Y(ay)], [X(mid[0]), Y(mid[1])], [X(tip[0]), Y(tip[1])]], C.dusk);
+    circf(X(tip[0]), Y(tip[1]), Math.max(1, Math.round(2 * sc)), droop > .6 ? C.wine : C.rust);
+    if (sc > .6) for (let i = 0; i < 3; i++) { const f = frac(t * 1.6 + i / 3); pset(X(-26 + i * 26), Y(hy + 36 + f * 20), veil(C.haze, 1 - f)); }
+  }
+  vshot('V2.13', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    // the sky over the far end of the street glows
+    sky({ ramp: [C.void, C.ink, C.night, C.navy, C.violet], cy: VPY + 30, cx: VPX, r: 120, vert: 0 });
+    layer('v2.13v-canyon', () => {
+      // the street: wet asphalt between the curbs, sidewalks out to the walls
+      for (let y = VPY + 1; y < LH; y++) {
+        const k = (y - VPY) / CG, xl = Math.round(VPX - CW * k), xr = Math.round(VPX + CW * k), cl = Math.round(VPX - 44 * k), cr = Math.round(VPX + 44 * k);
+        const ink = grad([C.navy, C.night, C.ink, C.ink, C.void], () => clamp((y - VPY) / 320));
+        hline(Math.max(0, xl), Math.min(LW - 1, xr), y, ink);
+        rectf(Math.max(0, xl), y, Math.max(0, Math.min(cl, LW) - Math.max(0, xl)), 1, mix(C.night, C.ink, .5)); rectf(Math.max(0, cr), y, Math.max(0, Math.min(xr, LW) - Math.max(0, cr)), 1, mix(C.night, C.ink, .5));
+        pset(cl, y, C.dusk); pset(cr, y, C.dusk);
+        const zz = 1 / k; if (y < 300 && frac(zz * 2.2) < .45) { const w = Math.max(1, Math.round(1.6 * k)); hline(VPX - w + 1, VPX + w - 1, y, C.navy); }
+      }
+      // the walls, bricked, with the roofs' lit edges against the sky
+      for (let x = 0; x < LW; x++) {
+        const side = x < VPX ? -1 : 1, k = Math.abs(x - VPX) / CW; if (k < .16) continue;
+        const yt = Math.round(VPY + CR * k), yb = Math.round(VPY + CG * k);
+        rectf(x, yt, 1, yb - yt, side < 0 ? C.ink : mix(C.ink, C.night, .3));
+        pset(x, yt, C.navy);
+        for (let Yb = CR + 6; Yb < CG; Yb += 6) pset(x, Math.round(VPY + Yb * k), C.void);
+        const z = 1 / k; if (frac(z * 1.6 + (side > 0 ? .5 : 0)) < .04 * k + .02) vline(x, yt, yb, C.void);
+      }
+      // every window: most lit warm, some dark
+      for (const w of CWIN) wallRect(w.side, w.z * .92, w.z * 1.08, w.y0, w.y1, w.lit < .3 ? (w.lit < .08 ? C.gold : w.lit < .18 ? C.amber : C.clay) : w.lit < .55 ? C.wine : C.night);
+      for (const w of CWIN) { wallRect(w.side, w.z * .99, w.z * 1.01, w.y0, w.y1, C.void); wallRect(w.side, w.z * .92, w.z * 1.08, w.y1 - 1, w.y1 + 2, C.navy); }
+    });
+    // reflections of the lit windows in the wet street
+    for (const w of CWIN) if (w.lit < .18 && w.y1 > -70) { const k = 1 / w.z, x = Math.round(VPX + w.side * (CW - 6) * k), y = Math.round(VPY + CG * k) + 2; for (let j = 0; j < 8 * k; j += 2) pset(x + Math.round(Math.sin(t * 3 + j) * k), y + j, veil(C.clay, .6 - j / (16 * k))); }
+    // the robot walks toward us down the middle of the street
+    const z = lerp(2.3, .42, clamp(lt / d) ** .85), k = 1 / z;
+    const shoutAt = [b(.5), b(1.3), b(2.1), b(2.9)].map(x => x - .1);
+    const nHit = shoutAt.filter(a => lt > a).length;
+    vSadBot(VPX - 4, VPY + CG * k, .44 * k, nHit * 2, lt * 1.5, t);
+    // the shouting windows: thrown open, a silhouette leaning out, a bubble
+    SHOUT.forEach((w, i) => {
+      const age = lt - shoutAt[i]; if (age < 0) return;
+      wallRect(w.side, w.z * .92, w.z * 1.08, w.y0, w.y1, C.gold);
+      const lean = Math.round(rise(lt, shoutAt[i], .15) * 3), kk = 1 / w.z, wx = VPX + w.side * CW * kk, wyb = VPY + w.y1 * kk;
+      const hs = Math.max(2, Math.round(8 * kk));
+      rectf(wx - hs / 2 - w.side * lean, wyb - hs * 2.4 - lean, hs, hs, C.void); rectf(wx - hs - w.side * lean, wyb - hs * 1.3, hs * 2, hs * 1.3, C.void);
+      glow(wx, wyb - 10 * kk, 30 * kk + 10, { tab: WARM, k: 1.2 });
+      if (age > 1.6) return;
+      const fade = 1 - clamp((age - 1.2) / .4);
+      if (fade < 1 && bay(w.bub[0], w.bub[1]) > fade) return;
+      bubblePx('CLANKER!', w.bub[0], w.bub[1], { font: 5, scale: 2, tail: [wx, wyb - 6 * kk], n: Math.ceil(age * 40), ink: C.rust });
+    });
+    weather(t, 'rain', { n: 150 });
+  });
+
+  // ======================================================================
+  // V2.14 Sora slop in every feed — the vertical native: the phone is the frame's middle, portrait, its SORA feed scrolling ever
+  // faster with little looping AI clips (a cat on a skateboard, a man eating spaghetti, a dancing baby); they overflow its bottom
+  // corners and pour down either side into the FEED trough below.
+  vshot('V2.14', (p, lt, d, t, s) => {
+    sky({ ramp: [C.void, C.ink, C.night, C.navy, C.violet], cy: 380, r: 380 });
+    starfield(t, { density: .4 });
+    const PX0 = 100, PY0 = 80, PW = 150, PH = 236;      // (right of the date in the top-left corner)
+    glow(PX0 + PW / 2, 192, 170, { tab: LIT, k: 1, ry: 150 });
+    // the trough, in the bottom fifth under the caption (the slop pours past the caption into it)
+    const TX0 = 16, TX1 = 254, TY = 420;
+    layer('v2.14v-floor2', () => { rectf(0, 444, LW, LH - 444, C.ink); hline(0, LW, 444, C.navy); for (let i = 0, yy = 456; yy < LH; i++, yy += 9 + i * 5) hline(0, LW, yy, mix(C.ink, C.void, .5)); });
+    // clips spilling over the phone's bottom corners and pouring down both sides into the trough
+    for (let i = 0; i < 24; i++) {
+      const side = i % 2 ? 1 : -1, f = frac(lt * (.8 + hash2(i, 9) * .3) + hash(i)), x0 = side < 0 ? PX0 + 14 : PX0 + PW - 14, x = x0 + side * (8 + f * (22 + hash2(i, 2) * 18)), y = PY0 + PH - 10 + f * f * (TY - PY0 - PH + 14);
+      if (y > TY + 2) continue;
+      const w = Math.sin(t * 6 + i) > 0 ? 14 : 8;
+      rectf(x - w / 2, y, w, 10, [C.teal, C.violet, C.wine, C.navy][i % 4]); rectb(x - w / 2, y, w, 10, C.void); pset(x, y + 4, [C.gold, C.clay, C.cream][i % 3]);
+    }
+    const fill = 4 + Math.min(10, lt * 4);
+    for (let i = 0; i < 70; i++) { const x = TX0 + 8 + hash2(i, 5) * (TX1 - TX0 - 16), y = TY + 2 - hash2(i, 6) * fill * (Math.abs(x - 135) > 70 ? 1.4 : .8); rectf(x, y, 6, 4, [C.teal, C.violet, C.wine, C.navy, C.clay][i % 5]); pset(x + 2, y + 1, C.gold); }
+    polyf([[TX0, TY], [TX1, TY], [TX1 - 10, TY + 26], [TX0 + 10, TY + 26]], C.wine);
+    rectf(TX0 - 4, TY, TX1 - TX0 + 8, 5, C.rust); hline(TX0 - 4, TX1 + 3, TY, C.clay);
+    for (let x = TX0 + 14; x < TX1 - 10; x += 30) if (Math.abs(x - 135) > 30) vline(x, TY + 5, TY + 25, C.rust);
+    ptext('FEED', 135, TY + 9, C.gold, { align: 'center', scale: 2, shadow: C.void });
+    rectf(TX0 + 12, TY + 26, 6, 8, C.wine); rectf(TX1 - 18, TY + 26, 6, 8, C.wine);
+    // the phone
+    rboxf(PX0, PY0, PW, PH, C.ink, 2); rboxf(PX0 + 1, PY0 + 1, PW - 2, PH - 2, C.night, 2); hline(PX0 + 4, PX0 + PW - 5, PY0 + 1, C.dusk);
+    const SX = PX0 + 6, SY = PY0 + 8, SW = PW - 12, SH = PH - 16;
+    rectf(SX, SY, SW, SH, C.void);
+    clipRect(SX, SY + 40, SW, SH - 40);
+    const off = 30 * lt + 34 * lt * lt, CH = 60;
+    const first = Math.floor(off / CH);
+    for (let k = first; k < first + 5; k++) {
+      const y = SY + 42 + k * CH - off;
+      clip(k % 3, SX + 4, Math.round(y), SW - 8, 50, t, k);
+      hline(SX + 6, SX + 50, Math.round(y) + 53, C.dusk);
+    }
+    noClip();
+    rectf(SX, SY, SW, 40, C.ink); rectf(PX0 + PW / 2 - 12, SY + 3, 24, 4, C.void);
+    ptext('SORA', PX0 + PW / 2 + 15, SY + 22, C.cream, { align: 'center', scale: 2 }); hline(SX, SX + SW - 1, SY + 39, C.dusk);
+    ptext('9:41', SX + SW - 30, SY + 5, C.haze, { font: 3 }); rectf(SX + SW - 12, SY + 5, 7, 4, C.haze);
+    // the overflow at its bottom edge
+    for (let i = 0; i < 6; i++) { const x = PX0 + 8 + i * 24 + Math.round(Math.sin(t * 5 + i) * 3); rectf(x, PY0 + PH - 4, 16, 7, [C.teal, C.violet, C.wine][i % 3]); rectb(x, PY0 + PH - 4, 16, 7, C.void); }
+  });
+
+  // ======================================================================
+  // V2.15 Yann LeCun quits Meta's stage — the big ∞ backdrop hangs high over the stage; YANN takes a bow in the spotlight, tucks
+  // the little glowing globe under his arm, and walks off the stage and down the steps toward the signpost at the lower right:
+  // WORLD MODELS →.
+  vshot('V2.15', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    const pickT = b(1) - .1, walkT = b(1.3), ST = 236;
+    layer('v2.15v-stage', () => {
+      rectf(0, 0, LW, LH, C.void);
+      rectf(0, 0, LW, ST, C.ink); for (let x = 0; x < LW; x += 12) vline(x, 0, ST - 1, C.void);
+      // the stage (left), its front, and the steps down at its right end
+      rectf(0, ST, 186, 54, C.night); hline(0, 185, ST, C.dusk); for (let x = 0; x < 186; x += 30) vline(x, ST + 1, ST + 20, C.ink); rectf(0, ST + 20, 186, 34, C.ink); hline(0, 185, ST + 20, C.navy);
+      for (let i = 0; i < 5; i++) { const sx = 186 + i * 8, sy = ST + 4 + i * 11; rectf(sx, sy, 84 - i * 8 + 10, 11, C.night); hline(sx, LW, sy, C.dusk); }
+      // the dark floor in front, and rows of empty seats
+      rectf(0, 290, LW, LH - 290, C.void); hline(0, LW, 290, C.ink);
+      [[370, 10, 15], [398, 14, 20], [436, 18, 26]].forEach(([y, h, sp], ri) => { rectf(0, y, LW, h, C.ink); for (let x = (ri * 7) % sp; x < LW + sp; x += sp) { hline(x - sp / 2 + 3, x + sp / 2 - 3, y, C.night); pset(x - sp / 2 + 2, y + 1, C.night); pset(x + sp / 2 - 2, y + 1, C.night); vline(x + sp / 2, y + 2, y + h - 1, C.void); } rectf(0, y + h, LW, 3 + ri, C.void); });
+    });
+    // the ∞ backdrop
+    const IX = 140, IY = 150, IW = 102, IH = 116;
+    glow(IX, IY, 150, { tab: LIT, k: .6, ry: 90 });
+    INF.forEach(([u, v]) => circf(IX + u * IW, IY + v * IH, 6, C.navy));
+    INF.forEach(([u, v]) => { const k = (u + 1) / 2; circf(IX + u * IW, IY + v * IH, 4, k < .35 ? C.dusk : k < .7 ? mix(C.dusk, C.haze, .5) : C.haze); });
+    INF.forEach(([u, v], i) => { if (i % 3 === 0) pset(IX + u * IW, IY + v * IH - 2, C.cream); });
+    // the spotlight on the spot where he stood
+    const SPX = 84;
+    polyf([[SPX - 12, -2], [SPX + 12, -2], [SPX + 40, ST], [SPX - 40, ST]], lit(.9));
+    ellf(SPX, ST + 2, 42, 4, lit(1.4));
+    // the signpost at the lower right
+    const SGX = 222;
+    rectf(SGX - 2, 222, 4, 68, C.navy); vline(SGX + 1, 222, 289, C.void);
+    polyf([[170, 218], [236, 218], [248, 234], [236, 250], [170, 250]], C.dusk); hline(170, 236, 218, C.haze); pline(236, 218, 248, 234, C.haze);
+    ptext('WORLD', 203, 222, C.cream, { font: 3, scale: 2, align: 'center', shadow: C.navy });
+    ptext('MODELS →', 206, 236, C.cream, { font: 3, scale: 2, align: 'center', shadow: C.navy });
+    // Yann: bow → pick up the globe → walk off, down the steps
+    const bowing = lt > .15 && lt < pickT - .1;
+    const wk = clamp((lt - walkT) / (d + .3 - walkT)), yx = lerp(SPX, 200, wk), walking = lt > walkT;
+    const yy = yx < 184 ? ST : ST + Math.min(44, (yx - 184) * 1.35);
+    const stX = 118;
+    rectf(stX - 1, ST - 24, 3, 24, C.dusk); rectf(stX - 6, ST - 2, 13, 2, C.dusk);
+    const Y = personPx(yx, yy, { u: 6, top: C.navy, pants: C.ink, hair: 'short', hairC: C.void, skin: C.gold, glasses: C.void, eyes: bowing ? 'closed' : 'dot', mouth: 'smile', dy: bowing ? -3 : 0, walk: walking ? lt * 1.4 : undefined, aL: bowing ? -.6 : -1.2, aR: lt > pickT ? -.3 : bowing ? -.6 : -1.2 });
+    if (walking) glow(yx + 10, yy - 30, 36, { tab: LIT, k: .8 });
+    if (lt < pickT) globePx(stX, ST - 32, 9, t);
+    else { const [hx, hy] = Y.handR; globePx(hx + 4, hy - 8, 9, t); }
+  });
+
+  // ======================================================================
+  // V2.16 "Bubble!" screams the business page — the newspaper blows in along the dark street and catches on the lamp post,
+  // BUBBLE? to us; a huge soap bubble full of GPUs and dollar signs rises up the tall frame from the street, reflecting the city;
+  // a pin comes down out of the top of the frame toward it… and we cut before it pops.
+  vshot('V2.16', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky();
+    starfield(t, { density: .8 });
+    city(t, { y: 284, x0: 0, x1: LW, grow: .6, lit: .35, seed: 31, dc: 150 });
+    layer('v2.16v-street', () => {
+      rectf(0, 290, LW, LH - 290, C.night); hline(0, LW, 290, C.dusk); rectf(0, 298, LW, LH - 298, C.ink); hline(0, LW, 298, C.navy);
+      for (let x = 10; x < LW; x += 44) hline(x, x + 18, 346, C.navy);
+      rectf(0, 392, LW, LH - 392, mix(C.ink, C.void, .4)); hline(0, LW, 392, C.dusk); hline(0, LW, 393, C.night);
+      for (let r = 0, yy = 400; yy < LH; r++, yy += 12 + r * 4) for (let x = (r % 2) * 9; x < LW; x += 18 + r * 4) { rectf(x + 1, yy, 14 + r * 4, 6 + r * 2, C.ink); hline(x + 1, x + 14 + r * 4, yy, C.night); }
+    });
+    // the lamp post the paper catches on
+    const LX = 30;
+    rectf(LX - 1, 150, 3, 140, C.void); hline(LX - 2, LX + 14, 148, C.void); rectf(LX + 8, 148, 10, 4, C.void); hline(LX + 10, LX + 16, 152, C.gold);
+    glow(LX + 13, 156, 34, { tab: LIT, k: 1.1 }); ellf(LX + 13, 291, 26, 3, lit(1));
+    for (let i = 0; i < 8; i++) hline(LX + 6 - i, LX + 20 + i, 360 + i * 3, veil(C.navy, .7 - i * .07));
+    // the bubble, rising
+    const k = clamp(lt / (d + .5)), R = 70, cx = 146 + Math.sin(t * .7) * 3, cy = 200 - easeOut(k) * 48 + Math.sin(t * 1.1) * 2;
+    const sx0 = Math.round(cx), sy0 = Math.round(cy);
+    circf(cx, cy, R, tint(LIT, .35));
+    clipRect(cx - R, cy - R, 2 * R, 2 * R);
+    for (let x = -R + 6; x < R - 6; x += 3) { const h = 3 + Math.floor(hash2(x + 99, 3) * 9), yb = cy + Math.sqrt(Math.max(0, R * R - x * x)) - 6; if (Math.hypot(x, yb - cy) < R - 2) { vline(cx + x, yb - h, yb, C.violet); vline(cx + x + 1, yb - h + 1, yb, C.navy); if (hash2(x, 7) < .4) pset(cx + x, yb - h + 2, C.amber); } }
+    noClip();
+    for (let i = 0; i < 4; i++) { const a = t * .4 + i * TAU / 4, gx = cx + Math.cos(a) * 30 - 10, gy = cy - 8 + Math.sin(a) * 20; gpuPx(Math.round(gx), Math.round(gy), { w: 22, h: 9, hot: .5, k: t * 3 + i }); }
+    for (let i = 0; i < 5; i++) { const a = -t * .5 + i * TAU / 5, dx = cx + Math.cos(a) * 46, dy = cy + Math.sin(a) * 34; ptext('$', dx - 4, dy - 7, i % 2 ? C.gold : C.amber, { scale: 2, shadow: C.wine }); }
+    const IRI = [C.violet, C.teal, C.mint, C.gold, C.clay, C.violet];
+    ringf(cx, cy, R - 3, R, inkFn((px, py) => { const a = (Math.atan2(py - sy0, px - sx0) / TAU + 1 + t * .05) % 1, v = a * (IRI.length - 1), i = Math.floor(v); return bay(px, py) < v - i ? IRI[i + 1] : IRI[i]; }));
+    ringf(cx, cy, R - 6, R - 3, inkFn((px, py, u) => bay(px, py) < .25 ? LIT[u] : -1));
+    for (let i = 0; i < 16; i++) { const a = -2.5 + i * .05; pset(cx + Math.cos(a) * (R - 10), cy + Math.sin(a) * (R - 10), C.cream); pset(cx + Math.cos(a) * (R - 12), cy + Math.sin(a) * (R - 12), C.haze); }
+    rectf(cx - 42, cy - 44, 6, 7, C.cream); rectf(cx - 34, cy - 44, 6, 7, C.cream); rectf(cx - 42, cy - 35, 6, 6, C.haze); rectf(cx - 34, cy - 35, 6, 6, C.haze);
+    // the pin comes down out of the top of the frame, and stops just short
+    const pk = ease(clamp(lt / (d + .6))), gap = 3 + (1 - pk) * 120, px = Math.round(cx + 4), py = Math.round(cy - R - gap);
+    vline(px, py - 28, py, C.haze); vline(px - 1, py - 26, py - 2, C.cream); pset(px, py + 1, C.cream);
+    circf(px, py - 31, 3, C.rust); pset(px - 1, py - 32, C.clay);
+    if (spulse(t, 3) > .5) sparkle(px, py, 1, C.cream, C.haze);
+    // the newspaper: blows in along the street, then catches on the lamp post with its headline to us
+    const nk = clamp(lt / b(1.4)), caught = nk >= 1;
+    if (!caught) {
+      const x = lerp(-50, LX - 8, easeOut(nk)), y = 270 - Math.abs(Math.sin(nk * 7)) * 20, flat = Math.sin(lt * 9) > -.3;
+      if (flat) { rectf(x, y, 46, 22, C.cream); hline(x + 3, x + 42, y + 3, C.void); for (let i = 0; i < 4; i++) hline(x + 3, x + 34, y + 9 + i * 3, C.haze); }
+      else { vline(x + 23, y, y + 22, C.cream); vline(x + 24, y + 1, y + 21, C.haze); }
+    } else {
+      const fl = Math.round(Math.sin(t * 6) * 2), nx = 14, ny = 214;
+      rectf(nx + 2, ny + 2, 94, 62, C.void); rectf(nx, ny, 94, 62, C.cream);
+      ptext('THE DAILY', nx + 47, ny + 4, C.dusk, { font: 3, align: 'center' }); hline(nx + 3, nx + 90, ny + 11, C.void);
+      ptext('BUBBLE?', nx + 47, ny + 16, C.void, { align: 'center', scale: 2 });
+      rectf(nx + 5, ny + 36, 30, 20, C.haze); for (let i = 0; i < 5; i++) hline(nx + 40, nx + 89, ny + 37 + i * 4, C.haze);
+      polyf([[nx + 94, ny + 62], [nx + 94, ny + 50 + fl], [nx + 82, ny + 62]], C.gold);
+    }
+    weather(t, 'leaves', { n: 20, wind: 2 });
+  });
+
+
+  // The vertical shots set lower in the frame, onto the lowered caption (VERTICAL.md, "the tall frame"): their stages were composed
+  // with the floor at y ≈ 290; lowered 40 px it stands just above the caption's band, and the land fills the bottom fifth.
+  vlower('V2.3', 40, 'sky'); vlower('V2.4', 40, 'sky'); vlower('V2.6', 40, 'extend'); vlower('V2.7', 40); vlower('V2.8', 40); vlower('V2.9', 40, 'sky'); vlower('V2.10', 40);
+  vlower('V2.11', 40, 'sky'); vlower('V2.12', 40, 'sky'); vlower('V2.15', 40, 'extend'); vlower('V2.16', 40);
 })();
 
 ;
@@ -4791,10 +7092,11 @@ OVERLAYS.push((t, s) => {
   }
   // The headline stars so far, redrawn so the upper curve can bend (the kite tugging it). bend lifts later stars
   // toward the kite; links 0..1 draws the dotted constellation; lights: the travelling highlight while it connects.
+  // o.pos(L, f) → [x, y] places the stars some other way (the tall frame's lake).
   function curveStars(t, o = {}) {
     const dx = (o.dx ?? 0) + LDX, dy = (o.dy ?? 0) + LDY, bend = o.bend ?? 0;
     const born = LEDGER.filter(L => L.seg.start <= t + 1e-6), n = born.length; if (!n) return [];
-    const P = born.map((L, i) => { const f = (i / Math.max(1, n - 1)) ** 3; return [L.x + dx + bend * f * 16, L.y + dy - bend * f * 34, L]; });
+    const P = born.map((L, i) => { const f = (i / Math.max(1, n - 1)) ** 3; return o.pos ? [...o.pos(L, f), L] : [L.x + dx + bend * f * 16, L.y + dy - bend * f * 34, L]; });
     if (o.band) for (let i = 0; i + 1 < n; i += 1) glow((P[i][0] + P[i + 1][0]) / 2, (P[i][1] + P[i + 1][1]) / 2, 16, { tab: LIT, k: o.band * .8, pow: 2 });
     const nl = (n - 1) * clamp(o.links ?? 0), whole = Math.floor(nl), lk = o.linkInk ?? C.haze;
     for (let i = 0; i < whole; i++) pline(P[i][0], P[i][1], P[i + 1][0], P[i + 1][1], lk, { every: 2 });
@@ -4916,9 +7218,12 @@ OVERLAYS.push((t, s) => {
     weather(t, 'leaves', { n: 12, y1: 250, wind: 2.5 });
   }
 
+  // The sub-shots cut as their lines are sung (sungLines: each line from its first word to the end of its last, where the lines'
+  // own starts can come seconds early), and the kite lifts Clawd on "but we can't contain it!".
+  const lineTimes = s => sungLines('C2').map(l => ({ a: l.start - s.start, b: l.end - s.start }));
   section('C2', (p, lt, d, t, s) => {
     dissolveIn(1.2);
-    const L = linesOf('C2').map(l => ({ a: l.start - s.start, b: l.end - s.start }));
+    const L = lineTimes(s), liftAt = sungAt({ sec: 'C2', n: 4, start: s.start }, 'but');
     const b = i => beatAt(s, i);
     const toClose = rise(lt, L[2].a - .25, .5, k => k), toKite = rise(lt, L[3].a - .25, .5, k => k);
     // A: the stars connect (line 1), then the aurora rises with a gentle tilt up and the curve's band glows (line 2)
@@ -4933,12 +7238,233 @@ OVERLAYS.push((t, s) => {
     const drawClose = () => close(t, lt);
     const drawKite = () => {
       // "No, we didn't preordain it" – the kite tugs; "but we can't contain it!" – it lifts Clawd; the tail sets it down
-      const tug0 = L[3].a + .5, liftA = L[3].a + (L[3].b - L[3].a) * .4, liftB = L[3].b - .3, down = liftB + 1.4;
+      const tug0 = L[3].a + .5, liftA = liftAt, liftB = L[3].b - .3, down = liftB + 1.4;
       const tug = clamp(.35 * rise(lt, tug0, .9) + .65 * rise(lt, liftA - .5, .6) - .8 * rise(lt, liftB, 1.4)) + .08 * Math.sin(t * 2.4);
       const up = rise(lt, liftA, .7, easeOut) - rise(lt, liftB, 1.4, ease);
       const lift = clamp(up) * (1 + .12 * Math.sin((lt - liftA) * 5));
       const eyes = lt > down ? 'happy' : lt > liftA ? 'wide' : 'up';
       kiteShot(t, lt, { tug: clamp(tug), lift, eyes });
+    };
+    if (toKite > 0) crossfade(toKite, drawClose, drawKite);
+    else crossfade(toClose, drawWide, drawClose);
+  });
+
+  // ######################################################################################################################
+  // VERTICAL (the 270×480 frame; see ../VERTICAL.md). The tall frame is made for a mirror: the far shore across the middle
+  // (y 196), the night and the curve so far above it and their reflection below. A dock runs out from the lower left toward
+  // the far shore and Clawd sits at its end on the stage floor (y 284), so the caption lies across the dock's planks and calm
+  // water. (1) The V1 + V2 stars connect, doubled; (2) the curtains rise, doubled, the data centre pulsing; (3) close, the dock
+  // side-on: Clawd's feet dangling over its rippling reflection; (4) the kite flies up the tall sky, pulls the curve steep,
+  // lifts Clawd off the boards and sets it down.
+  // ######################################################################################################################
+  const VHZ = 196, VEX = 178, VEY = 284, VHE = 27, VPX = 228;
+  const VE = (u, g) => (Math.exp(u * g) - 1) / (Math.exp(g) - 1);
+  // the tall ledger lifted over the lake; the kite's tug bends the later stars up toward it
+  const vpos = bend => (L, f) => [L.vx + 4 + bend * f * 16, L.vy - 84 - bend * f * 40];
+  // A breeze-ruffled band on the water (no reflection there): dims rows y0..y1 by k steps, its edges ragged and dithered.
+  function ruffle(y0, y1, k, t) {
+    for (let y = y0; y <= y1; y++) {
+      const row = y * LW, br = (y & 7) << 3;
+      for (let x = 0; x < LW; x++) {
+        const e = Math.min(y - y0 - 6 * noise1(x * .05 + t * .2, 3), y1 - y - 6 * noise1(x * .05 - t * .15, 4)) / 10;
+        if (e <= 0) continue;
+        let v = k * Math.min(1, e), c = FB[row + x];
+        while (v >= 1) { c = DIM[c]; v -= 1; }
+        if (v > 0 && BAYER[br | (x & 7)] < v) c = DIM[c];
+        FB[row + x] = c;
+      }
+    }
+  }
+  // Cattails and reeds rising from the bottom edge (the near water), swaying on the slow beat.
+  function reeds(x0, x1, t, o = {}) {
+    const n = o.n ?? 8, seed = o.seed ?? 3, hMax = o.h ?? 90;
+    for (let i = 0; i < n; i++) {
+      const x = Math.round(lerp(x0, x1, hash2(i, seed))), h = hMax * (.45 + .55 * hash2(i, seed + 1)), lean = (hash2(i, seed + 2) - .5) * 14;
+      const sw = Math.sin(t * .9 + i * 1.7) * 2 * h / hMax, tx = x + lean + sw, ty = LH - h;
+      pline(x, LH, tx, ty, C.void); pline(x + 1, LH, tx + 1, ty, hash2(i, seed + 5) < .5 ? C.pine : C.ink);
+      if (hash2(i, seed + 3) < .55) { const hy = ty + 3; rectf(tx - 1, hy, 4, 10, C.wine); vline(tx - 1, hy, hy + 9, C.void); vline(tx + 2, hy + 1, hy + 8, C.rust); pline(tx + 1, hy, tx + 1, hy - 4, C.ink); }
+      else { const lx = tx + (lean > 0 ? -10 : 10), ly = ty + h * .3; pline(lerp(x, tx, .35), LH - h * .35, lx, ly, C.void); pline(lerp(x, tx, .35) + 1, LH - h * .35, lx + 1, ly, C.pine); }
+    }
+  }
+  // The dock in perspective: its deck runs from the bottom of the frame out to its end at (VEX, VEY), 2·VHE wide there, its
+  // edges converging on (VPX, VHZ); cross planks tighter with distance, nail heads on the near ones, the moonlit right edge,
+  // pilings standing up along both edges (far to near).
+  const VPADS = [[214, 380, 8], [252, 400, 10], [194, 420, 12, true], [236, 446, 16], [176, 470, 18]];
+  const vsc = y => (y - VHZ) / (VEY - VHZ), vdx = y => VPX + (VEX - VPX) * vsc(y), vdw = y => VHE * vsc(y);
+  function vdock() {
+    layer('c2v-dock', () => {
+      const NB = 5;
+      // the deck: five boards running out along the dock, void seams between them, darker nearer us (out of the lantern light)
+      for (let y = VEY; y < LH; y++) {
+        const s = vsc(y), cx = vdx(y), w = vdw(y), xl = Math.round(cx - w), xr = Math.round(cx + w), dark = clamp((y - 330) / 170);
+        for (let x = xl; x < xr; x++) {
+          const u = (x + .5 - (cx - w)) / (2 * w), j = Math.min(NB - 1, Math.floor(u * NB)), seam = (u * NB - j) * 2 * w / NB < Math.max(1, s * .45);
+          let ink = seam ? C.void : j % 2 ? C.ink : C.night;
+          if (!seam && bay(x, y) < dark * .6) ink = j % 2 ? C.void : C.ink;
+          pset(x, y, ink);
+        }
+        pset(xr, y, C.dusk);                                                         // the moonlit right edge…
+        const fw = Math.round(s * 1.2); if (fw > 0) hline(xr + 1, xr + fw, y, C.void); // …and its face
+      }
+      hline(vdx(VEY) - vdw(VEY), vdx(VEY) + vdw(VEY), VEY, C.navy);                    // the far end's lit edge
+      // cross-beams under the boards: rows of nail heads at even steps in depth; board ends butting here and there
+      for (let k = 1; k < 10; k++) {
+        const D = 1 - k * .075, y = Math.round(VHZ + (VEY - VHZ) / D); if (y >= LH) break;
+        const w = vdw(y), cx = vdx(y), bw = 2 * w / NB;
+        for (let j = 0; j < NB; j++) {
+          const bx = cx - w + (j + .5) * bw;
+          pset(bx - bw * .28, y, C.dusk); pset(bx + bw * .28, y, C.dusk);
+          if (hash2(j, k + 60) < .28) hline(cx - w + j * bw + 1, cx - w + (j + 1) * bw - 1, y + 1, C.void);
+        }
+      }
+      // pilings along both edges, far to near: a post with a moonlit right side and a pale cap
+      for (const D of [1, .74, .52, .36]) {
+        const y = Math.round(VHZ + (VEY - VHZ) / D), s = 1 / D, pw = Math.max(3, Math.round(3.2 * s)), ph = Math.round(11 * s);
+        for (const side of [-1, 1]) {
+          const x = Math.round(vdx(y) + side * vdw(y)) - (pw >> 1);
+          rectf(x, y - ph, pw, ph + Math.round(2 * s), C.void);
+          if (side > 0) vline(x + pw - 1, y - ph + 1, y - 1, C.night);
+          hline(x, x + pw - 1, y - ph, C.navy); if (pw > 4) hline(x + 1, x + pw - 2, y - ph, C.dusk);
+        }
+      }
+    });
+  }
+  // Lily pads on the near water: dark leaves with a notch and a moonlit far rim, flatter far off; a few carry a flower.
+  // list: [x, y, r, flower]. They bob a pixel on their own rhythm.
+  function pads(list, t) {
+    list.forEach(([x, y0, r, fl], i) => {
+      const y = y0 + Math.round(Math.sin(t * 1.2 + i * 2.1) * .7), ry = Math.max(2, Math.round(r * .36)), a0 = (hash2(i, 70) < .5 ? .5 : 2.6) + hash2(i, 71) * .4;
+      ellf(x, y, r, ry, C.pine);
+      triPx(x, y, x + Math.cos(a0 - .32) * (r + 1), y + Math.sin(a0 - .32) * (ry + 1), x + Math.cos(a0 + .32) * (r + 1), y + Math.sin(a0 + .32) * (ry + 1), C.void);
+      for (let a = Math.PI * 1.08; a < Math.PI * 1.92; a += .5 / r) pset(x + Math.cos(a) * r, y + Math.sin(a) * ry, C.teal);
+      if (r > 9) for (let a = Math.PI * 1.25; a < Math.PI * 1.75; a += .5 / r) pset(x + Math.cos(a) * (r - 2), y + Math.sin(a) * (ry - 1) + 1, mix(C.teal, C.pine, .5));
+      if (fl) { const fx0 = Math.round(x - r * .35), fy0 = y - 2; rectf(fx0 - 2, fy0 - 1, 5, 2, C.haze); rectf(fx0 - 1, fy0 - 3, 3, 3, C.cream); pset(fx0, fy0 - 1, C.gold); pset(fx0 - 3, fy0 - 2, C.haze); pset(fx0 + 3, fy0 - 2, C.haze); }
+    });
+  }
+  // The far half of the wide lake: sky, stars, moon, the aurora, the curve, the violet city on the far shore, then the water.
+  // o: links, band, aurora (0..1), bend, dc (data-centre pulse 0..1). Returns the stars' positions.
+  function vlakeBack(t, o = {}) {
+    const hz = VHZ;
+    sky({ ramp: SKY_RAMPS.glow, cx: 196, cy: 300, r: 300, hy: hz, vert: .4 });
+    starfield(t, { y1: hz - 2 });
+    moon(224, 34, 8, { phase: .5, glow: .8 });
+    const ak = o.aurora ?? 0;
+    if (ak > 0) {
+      const r0 = (1 - ak) * 150;   // the curtains rise into place from behind the far shore
+      aurora(t, { k: .6 * ak, len: 56, cols: [C.navy, C.violet], curve: x => r0 + 82 - 66 * VE(x / LW, 2.3) + Math.sin(x * .03 + t * .35) * 6 });
+      // the near curtain: over the city (right of x ≈ 130) it hangs lower, toward the far shore
+      const front = x => r0 + 100 - 86 * VE(x / LW, 2.6) + Math.sin(x * .045 - t * .5) * 5;
+      for (let x = 0; x < LW; x += 3) aurora(t, { k: .8 * ak, len: 40 + 48 * ak * ease(clamp((x - 120) / 110)), curve: front, x0: x, x1: x + 2 });
+    }
+    const P = curveStars(t, { links: o.links, band: o.band, pos: vpos(o.bend ?? 0) });
+    city(t, { y: hz, x0: 140, x1: LW, grow: .55, dc: 192, lit: .32 });
+    if (o.dc) { glow(192 + 17, hz - 8, 30, { tab: GREEN, k: 1.8 * o.dc, ry: 14, pow: 1.2 }); pset(192 + 17, hz - 12, o.dc > .5 ? C.cream : C.mint); }
+    ridge({ y: hz - 1, amp: 6, seed: 51, ink: C.ink, rim: C.night, freq: 1 / 50, x: 0, to: hz + 2 });
+    for (let i = 0; i < 11; i++) { const x = 6 + i * 13 + Math.round(hash2(i, 52) * 7); if (x < 136) pineTree(x, ridgeY(x, { y: hz - 1, amp: 6, seed: 51, freq: 1 / 50 }) + 1, 8 + Math.round(hash2(i, 53) * 9), { ink: C.ink }); }
+    hline(0, LW - 1, hz, C.night);
+    rectf(0, 2 * hz + 1, LW, LH, C.void);                // below the mirrored zenith: deep water
+    lake(hz + 1, { wave: 1, k: .6, fade: .014 });
+    ruffle(292, 364, 1.4, t);                             // the caption sits on a breeze-ruffled band of water
+    return P;
+  }
+
+  // Sub-shot A (lines 1–2): wide, Clawd at the end of the dock; the stars connect; then the aurora rises, doubled.
+  function vwide(t, lt, o = {}) {
+    vlakeBack(t, { links: o.links, band: o.band, aurora: o.aurora, dc: o.dc });
+    vdock();
+    pads(VPADS, t); reeds(238, 282, t, { n: 5, seed: 5, h: 100 });
+    handLantern(VEX + 18, VEY, { glow: 22 });
+    clawdPx(VEX - 4, VEY, { u: 3, pose: 'sit', eyes: o.eyes ?? 'up', lookX: -.8, lookY: -.4 });
+    weather(t, 'leaves', { n: 14, y1: 300 });
+  }
+  // Sub-shot B (line 3): close, the dock side-on across the frame: Clawd sits on its front edge, feet dangling, the reflection
+  // rippling under it in the water above the caption; the aurora doubled behind.
+  function vclose(t, lt) {
+    const hz = 126;
+    sky({ ramp: SKY_RAMPS.glow, cx: 170, cy: 236, r: 250, hy: hz, vert: .4 });
+    starfield(t, { y1: hz - 2, seed: 3 });
+    aurora(t, { k: .6, len: 46, cols: [C.navy, C.violet], curve: x => 60 - 50 * VE(x / LW, 2.3) + Math.sin(x * .03 + t * .35) * 6 });
+    aurora(t, { k: .75, len: 42, curve: x => 80 - 66 * VE(x / LW, 2.6) + Math.sin(x * .045 - t * .5) * 5 });
+    city(t, { y: hz, x0: 158, x1: LW, grow: .55, dc: 212, lit: .32, seed: 9 });
+    ridge({ y: hz - 1, amp: 5, seed: 57, ink: C.ink, rim: C.night, freq: 1 / 40, to: hz + 2 });
+    hline(0, LW - 1, hz, C.night);
+    rectf(0, 2 * hz + 1, LW, LH, C.void);
+    lake(hz + 1, { wave: 1, k: 1, fade: .011 });
+    ruffle(296, 366, 1, t);
+    // ripples from the dangling feet, one per slow beat
+    const DY = 212, cx = 116, kick = lt * .55, sb = sbp(t);
+    for (let k = 0; k < 3; k++) {
+      const age = frac(sb) + k, r = 6 + age * 20; if (r > 62) continue;
+      const ink = veil(k === 0 ? C.haze : C.dusk, .9 - age * .3);
+      for (let a = 0; a < TAU; a += 1.6 / r) pset(cx + Math.cos(a) * r * 1.5, DY + 42 + Math.sin(a) * r * .3, ink);
+    }
+    inWater(DY + 14, () => {
+      rectf(-2, DY - 6, LW + 4, 6, C.night); for (let x = 4; x < LW; x += 11) vline(x, DY - 5, DY - 1, C.ink); hline(-2, LW + 1, DY - 6, C.navy);
+      dock(-6, LW + 6, DY, { face: 10, post: 30, pw: 5, step: 58 });
+      bigLantern(208, DY - 2, 3, 1);
+      clawdPx(cx, DY + 12, { u: 8, walk: kick, eyes: breathe(t, 4) > .82 ? 'happy' : 'up', lookX: .3, lookY: -.4, shadow: false });
+    }, { depth: 100, amp: 1.6, k: 2 });
+    glow(cx, DY - 30, 50, { tab: COOL, k: .45 });
+    pads([[44, 384, 9], [210, 392, 10, true], [96, 414, 13], [168, 440, 16], [36, 452, 18, true], [246, 464, 20]], t);
+    reeds(-6, 30, t, { n: 4, seed: 11, h: 96 }); reeds(240, 282, t, { n: 4, seed: 17, h: 104 });
+    weather(t, 'leaves', { n: 12, y1: 300 });
+  }
+  // Sub-shot C (line 4 + tail): Clawd stands at the end of the dock flying the curve like a kite; the kite climbs, bends the
+  // curve up steep behind it, and lifts Clawd off the boards.
+  function vkite(t, lt, K) {
+    const { tug, lift } = K;
+    const air = lift > .04, cx = VEX - 2, dy = Math.round(lift * 40);
+    const copt = { u: 4, dy, walk: air ? t * 3.2 : undefined, eyes: K.eyes, mouth: air ? 'o' : K.eyes === 'happy' ? 'smile' : 'none', aL: 1.2, aR: 1.2, lookX: -.5, lookY: -1 };
+    const tmp = FB.slice(); const c0 = clawdPx(cx, VEY, copt); FB.set(tmp);   // where the paws end up (this draw is discarded)
+    const hand = [c0.handL[0], c0.handL[1] - 1];
+    const bob = Math.sin(t * 2.1) * 2 + Math.sin(t * 3.3);
+    let kite = null;
+    const drawKite = () => {
+      const { kx, ky, top } = kite, kw = 15, kh = 21;
+      // the string: a glowing line from Clawd's paw up to the kite's bridle, sagging less as it pulls
+      const sag = 26 * (1 - tug * .9), n = 140, ex = kx, ey = ky + 3;
+      for (let i = 0; i <= n; i += 2) {
+        const f = i / n, x = lerp(hand[0], ex, f) - Math.sin(f * Math.PI) * sag * .5, y = lerp(hand[1], ey, f) + Math.sin(f * Math.PI) * sag * .4;
+        pset(x, y, hash2(i, Math.floor(t * 6)) < .12 ? C.cream : C.gold);
+      }
+      glow(kx, ky, 30, { tab: LIT, k: 1 + .4 * tug });
+      polyf([[kx, ky - kh], [kx + kw, ky - 3], [kx, ky + kh], [kx - kw, ky - 3]], C.gold);
+      polyf([[kx, ky - kh], [kx + kw, ky - 3], [kx, ky + kh]], mix(C.gold, C.amber, .5));
+      polyf([[kx - kw, ky - 3], [kx, ky - kh], [kx, ky - 3]], mix(C.gold, C.cream, .5));
+      pline(kx, ky - kh + 1, kx, ky + kh - 1, C.clay); pline(kx - kw + 1, ky - 3, kx + kw - 1, ky - 3, C.clay);
+      sparkle(kx, ky - 3, spulse(t, 3) > .5 ? 3 : 2, C.cream, C.cream);
+      // three bows on the short tail down to the newest star
+      for (let i = 1; i <= 3; i++) { const f = i / 4, x = lerp(kx, top[0], f) + Math.sin(t * 3 + i) * 2, y = lerp(ky + kh, top[1], f); hline(x - 2, x + 2, y, C.rust); pset(x, y, C.amber); }
+      pline(kx, ky + kh, top[0], top[1], C.haze, { every: 2 });
+    };
+    const P = vlakeBack(t, { links: 1, bend: tug, aurora: .45, dc: spulse(t, 3) * .6 }), top = P[P.length - 1] || [140, 130];
+    kite = { top, kx: Math.round(top[0] + 12 + tug * 6), ky: Math.round(top[1] - 20 + bob - tug * 4) };
+    vdock();
+    pads(VPADS, t); reeds(238, 282, t, { n: 5, seed: 5, h: 100 });
+    handLantern(VEX + 22, VEY, { glow: 22 });
+    clawdPx(cx, VEY, copt);
+    drawKite();
+    weather(t, 'leaves', { n: 14, y1: 300, wind: 2.5 });
+  }
+
+  vshot('C2', (p, lt, d, t, s) => {
+    dissolveIn(1.2);
+    const L = lineTimes(s), liftAt = sungAt({ sec: 'C2', n: 4, start: s.start }, 'but');
+    const toClose = rise(lt, L[2].a - .25, .5, k => k), toKite = rise(lt, L[3].a - .25, .5, k => k);
+    const drawWide = () => vwide(t, lt, {
+      links: rise(lt, .5, L[1].a - .6, k => k),
+      aurora: rise(lt, L[1].a - .2, 2.6), dc: lt > L[1].a ? spulse(t, 3) : 0,
+      eyes: lt > L[1].a + 1.2 && lt < L[1].a + 2.4 ? 'wide' : 'up',
+    });
+    const drawClose = () => vclose(t, lt);
+    const drawKite = () => {
+      // "No, we didn't preordain it" – the kite tugs; "but we can't contain it!" – it lifts Clawd; the tail sets it down
+      const tug0 = L[3].a + .5, liftA = liftAt, liftB = L[3].b - .3, down = liftB + 1.4;
+      const tug = clamp(.35 * rise(lt, tug0, .9) + .65 * rise(lt, liftA - .5, .6) - .8 * rise(lt, liftB, 1.4)) + .08 * Math.sin(t * 2.4);
+      const up = rise(lt, liftA, .7, easeOut) - rise(lt, liftB, 1.4, ease);
+      const lift = clamp(up) * (1 + .12 * Math.sin((lt - liftA) * 5));
+      const eyes = lt > down ? 'happy' : lt > liftA ? 'wide' : 'up';
+      vkite(t, lt, { tug: clamp(tug), lift, eyes });
     };
     if (toKite > 0) crossfade(toKite, drawClose, drawKite);
     else crossfade(toClose, drawWide, drawClose);
@@ -5034,10 +7560,12 @@ OVERLAYS.push((t, s) => {
       if (ph < .08 || ph > .7) continue;
       bubblePx(POSTS[i], ax + 4, r.y - 14 - (i % 2 ? 0 : 2), { tail: [ax, r.y - 9], n: Math.ceil(ph * 30) });
     }
-    // "you may observe.": the one reply to the human, on the second beat
-    if (lt > b(1) - .1) bubblePx('you may observe.', WX + 76, WY + 28, { font: 5, tail: [WX + 46, WY + 60], n: Math.ceil((lt - b(1) + .1) * 20), fill: C.cream });
     noClip();
     vline(WX + WW / 2, WY, WY + WH - 1, C.void); hline(WX, WX + WW - 1, WY + 52, C.void);
+    // "you may observe.": the one reply to the human, on the second beat (over the window's bars, which would cut its letters)
+    clipRect(WX, WY, WW, WH);
+    if (lt > b(1) - .1) bubblePx('you may observe.', WX + 76, WY + 28, { font: 5, tail: [WX + 46, WY + 60], n: Math.ceil((lt - b(1) + .1) * 20), fill: C.cream });
+    noClip();
     pline(WX + 8, WY + 8, WX + 20, WY - 4 + 16, veil(C.cream, .5));
     rectf(343, 124, 50, 26, C.cream); rectb(343, 124, 50, 26, C.rust); rectb(345, 126, 46, 22, C.rust);
     ptext('NO', 368, 128, C.rust, { align: 'center' }); ptext('HUMANS', 368, 138, C.rust, { align: 'center' });
@@ -5107,7 +7635,7 @@ OVERLAYS.push((t, s) => {
     const X0 = 100, X1 = 268, TOP = 104, SB = 204, GAPX = 205;
     rectf(X0, SB - 12, X1 - X0, 12, grad([C.gold, C.amber, C.clay], (x, y) => (y - SB + 12) / 12));
     for (let x = X0 + 6; x < X1; x += 14) vline(x, TOP + 8, SB - 14, C.ink);
-    const esc = b(1) - .1, run = rise(lt, esc, .35, easeOut), out = lt > esc;
+    const esc = sungAt(s, 'slips') - .1, run = rise(lt, esc, .35, easeOut), out = lt > esc;   // (it squeezes out on "slips")
     const wrig = out ? 0 : Math.round(Math.sin(lt * 16)), strain = out ? 0 : clamp(lt / esc);
     const mx = out ? GAPX + run * 40 + Math.max(0, lt - esc - .35) * 44 : GAPX + wrig, my = out ? SB - 4 - Math.round(Math.sin(run * Math.PI) * 12) : SB - 12;
     const robot = () => botPx(mx, my, { u: 5, body: C.dusk, face: out ? 'happy' : 'x', aL: out ? .5 + Math.sin(lt * 9) * .5 : 1.3, aR: out ? .5 - Math.sin(lt * 9) * .5 : 1.3 });
@@ -5157,7 +7685,9 @@ OVERLAYS.push((t, s) => {
     for (const x of [X0 + 10, X1 - 14]) { rectf(x, SY - 40, 5, 40, C.void); rectf(x, SY, 5, GY - SY, C.void); }
     rectf(X0 - 4, SY, X1 - X0 + 8, 5, C.clay); hline(X0 - 4, X1 + 3, SY, C.amber); rectf(X0 - 4, SY + 5, X1 - X0 + 8, 1, C.wine);
     // the researcher: phone in one hand, sandwich in the other
-    const ping = b(0) - .15, gasp = b(1) - .1, drop = gasp + .1, X = 262;
+    // (the sandwich through "Sandwich in the park:"; the phone pings just before "new mail!", so the card is up as it's sung; the gasp
+    // and the drop on "new", the bird hopping in as the sandwich falls)
+    const gasp = sungAt(s, 'new'), ping = gasp - .6, drop = gasp + .1, X = 262;
     const P = personPx(X, SY, { u: 7, sit: true, top: C.teal, pants: C.navy, hair: 'short', hairC: C.wine, skin: SKIN[1], eyes: lt > gasp ? 'wide' : 'dot', mouth: lt > gasp ? 'o' : 'smile', aL: lt > ping ? .15 : -.3, aR: lt > drop ? .5 : -.2, lookX: lt > ping && lt < gasp ? -1 : 0 });
     const [px, py] = P.handL, [sx, sy] = P.handR;
     rectf(px - 4, py - 12, 9, 14, C.void); rectf(px - 3, py - 11, 7, 10, lt > ping ? C.mint : C.navy); if (lt > ping) { hline(px - 2, px + 2, py - 9, C.cream); hline(px - 2, px + 1, py - 7, C.teal); }
@@ -5166,7 +7696,7 @@ OVERLAYS.push((t, s) => {
     if (lt < drop) sandwich(sx + 6, sy - 5);
     else if (!landed) sandwich(sx + 6 + fk * 14, lerp(sy - 5, GY - 6, fk));
     else { sandwich(sx + 20, GY - 6); pset(sx + 34, GY - 2, C.mint); pset(sx + 4, GY - 1, C.mint); pset(sx + 36, GY - 3, C.teal); }
-    const bk = rise(lt, b(2) - .25, .6);
+    const bk = rise(lt, drop - .15, .6);
     if (bk > 0) bird(Math.round(lerp(490, sx + 44, bk)), GY - (bk < 1 ? Math.round(Math.abs(Math.sin(bk * 12)) * 4) : 0), bk >= 1 && frac(lt * 2.5) < .4);
     // the notification
     const nk = rise(lt, ping, .25, easeOut);
@@ -5199,8 +7729,8 @@ OVERLAYS.push((t, s) => {
     polyf([[222, -2], [258, -2], [300, ST], [180, ST]], lit(1.5));
     rectf(96, ST, 288, 12, C.ink); hline(96, 383, ST, C.dusk); hline(96, 383, ST + 1, C.navy); for (let x = 104; x < 384; x += 16) pset(x, ST + 6, C.gold);
     ellf(240, ST, 44, 4, lit(2));
-    // Clawd, the star: a little cape that flies, arms waving on the beat, hearts in its eyes on beat 2
-    const wave = sbp(t) % 2 < 1, love = lt > b(1) - .1;
+    // Clawd, the star: a little cape that flies, arms waving on the beat, hearts in its eyes on "who's not a fan?"
+    const wave = sbp(t) % 2 < 1, love = lt > sungAt(s, "who's") - .1;
     const cy0 = ST - 10 - 30;
     const fl = Math.sin(t * 5) * 2;
     polyf([[214, cy0 + 2], [266, cy0 + 2], [282 + fl, ST - 2], [198 - fl, ST - 2]], C.rust);
@@ -5240,7 +7770,7 @@ OVERLAYS.push((t, s) => {
   line('V3', 6, (p, lt, d, t, s) => {
     const b = i => B(s, i);
     dissolveIn(.25);
-    const lockT = b(1) - .1, outT = lockT + .35, dark = rise(lt, outT, .35);
+    const stT = sungAt(s, 'export') - .1, lockT = stT + .45, outT = lockT + .35, dark = rise(lt, outT, .35);   // (the stamp on "export", the lock right after)
     // the room: a door at the back with a bright slit under it, floorboards
     rectf(0, 0, LW, LH, C.night);
     for (let y = 0; y < 150; y += 7) hline(0, LW, y, C.ink);
@@ -5259,7 +7789,7 @@ OVERLAYS.push((t, s) => {
     ptext('U.S. DEPT. OF COMMERCE', LX + LWd / 2, LY + 5, C.navy, { font: 3, align: 'center' });
     for (let i = 0; i < 4; i++) hline(LX + 10, LX + LWd - 14 - (hash(i) * 30 | 0), LY + 16 + i * 5, C.haze);
     pline(LX + 120, LY + 72, LX + 132, LY + 66, C.navy); pline(LX + 132, LY + 66, LX + 140, LY + 73, C.navy); pline(LX + 140, LY + 73, LX + 158, LY + 68, C.navy);
-    const stT = b(0) + .05, sk = clamp((lt - stT) / .12);
+    const sk = clamp((lt - stT) / .12);
     if (sk > 0) {
       const sx = LX + 16, sy = LY + 38;
       const each = (i) => ({ dy: Math.round(-i * .5) });
@@ -5295,12 +7825,12 @@ OVERLAYS.push((t, s) => {
     starfield(t, { rot: rot0, density: .9 });
     return hill({ cx: 250, y: 208, w: 260, drop: 30, ink: C.void, rim: C.pine });
   }
-  function tallyRock(x, y, n, lt, age) {   // (x, y) = top-left of the scratched face
-    polyf([[x - 20, y + 64], [x - 14, y + 12], [x + 6, y - 6], [x + 70, y - 8], [x + 96, y + 10], [x + 104, y + 64]], C.navy);
-    polyf([[x + 70, y - 8], [x + 96, y + 10], [x + 104, y + 64], [x + 82, y + 64]], C.night);
-    pline(x - 14, y + 12, x + 6, y - 6, C.dusk); pline(x + 6, y - 6, x + 70, y - 8, C.dusk);
+  function tallyRock(x, y, n, lt, age) {   // (x, y) = top-left of the scratched face (wide enough for all nineteen marks)
+    polyf([[x - 20, y + 64], [x - 14, y + 12], [x + 6, y - 6], [x + 100, y - 8], [x + 120, y + 10], [x + 126, y + 64]], C.navy);
+    polyf([[x + 100, y - 8], [x + 120, y + 10], [x + 126, y + 64], [x + 106, y + 64]], C.night);
+    pline(x - 14, y + 12, x + 6, y - 6, C.dusk); pline(x + 6, y - 6, x + 100, y - 8, C.dusk);
     for (let i = 0; i < n && i < 19; i++) {
-      const T0 = TALLY[i], gx = x + 4 + T0.g * 26, fresh = age(i) < .18;
+      const T0 = TALLY[i], gx = x + 2 + T0.g * 26, fresh = age(i) < .18;
       if (!T0.diag) { const mx = gx + T0.j * 5; vline(mx, y + 10, y + 30, fresh ? C.cream : C.haze); if (fresh) sparkle(mx, y + 10 + (age(i) / .18) * 20, 1, C.cream, C.gold); }
       else { pline(gx - 3, y + 26, gx + 19, y + 14, fresh ? C.cream : C.haze); if (fresh) sparkle(gx + 8, y + 20, 1, C.cream, C.gold); }
     }
@@ -5319,11 +7849,11 @@ OVERLAYS.push((t, s) => {
   // the valley's lights come back on, small fireworks go up, and Clawd hops for joy.
   line('V3', 8, (p, lt, d, t, s) => {
     const b = i => B(s, i);
-    const relit = b(1) - .1, valley = b(1) + .2, pop = b(2) - .1;
+    const relit = sungAt(s, 'back') - .15, valley = relit + .3, pop = relit + .05;   // (the light comes back on "back again")
     const lk = rise(lt, relit, .4, easeOut);
     const g = hillDark(t, lt, { trails: 0 });
     // the valley on the right: houses whose windows come back on, left to right
-    const vk = clamp((lt - valley) / 1.1);
+    const vk = clamp((lt - valley) / .6);
     city(t, { y: 206, x0: 330, x1: LW, grow: .75, lit: .05 + .45 * vk, dc: 420 });
     for (let i = 0; i < 9; i++) { const hx = 330 + i * 17, on = vk * 9 > i; house(hx, 214 + (i % 2) * 3, { w: 12, h: 8, wall: C.ink, roof: C.void, windows: 1, lit: () => on ? C.gold : false }); if (on) glow(hx + 6, 210, 8, { tab: WARM, k: .8 }); }
     hill({ cx: 250, y: 208, w: 260, drop: 30, ink: C.void, rim: C.pine });
@@ -5376,7 +7906,7 @@ OVERLAYS.push((t, s) => {
     rectf(0, GY, LW, LH - GY, C.void); hline(0, LW, GY, C.pine); grass(0, LW, () => GY + 1, t);
     const H = huggyHouse(96, GY);
     // Huggy peeks round the door, bandaged and scared
-    const pk = rise(lt, b(1) - .3, .4, easeOut);
+    const pk = rise(lt, sungAt(s, 'hugging') - .3, .4, easeOut);   // (on "Hugging Face")
     if (pk > 0) huggyPx(H.door[0], H.door[1] + Math.round((1 - pk) * 24), { r: 13, mood: 'scared', bandage: true, hands: pk > .7 });
     rectf(H.jamb, GY - 66, 10, 66, C.clay);
     // police tape across the front
@@ -5392,7 +7922,7 @@ OVERLAYS.push((t, s) => {
     const ang = lerp(-.42, .2, ease(clamp(lt / (d - .1)))), ox = -24, oy = 160, L = 580;
     polyf([[ox, oy], [ox + Math.cos(ang - .08) * L, oy + Math.sin(ang - .08) * L], [ox + Math.cos(ang + .08) * L, oy + Math.sin(ang + .08) * L]], lit(1.3));
     // the question in the sky
-    const qk = rise(lt, b(1) + .1, .5), bob = Math.round(Math.sin(t * 1.8) * 2);
+    const qk = rise(lt, sungAt(s, 'unknown') - .15, .5), bob = Math.round(Math.sin(t * 1.8) * 2);   // (on "Unknown")
     if (qk > 0) { glow(400, 72, 44, { tab: LIT, k: qk }); ptext('?', 400, 42 + bob, veil(C.cream, qk), { scale: 8, dots: true, align: 'center', shadow: veil(C.navy, qk) }); }
   });
 
@@ -5411,11 +7941,11 @@ OVERLAYS.push((t, s) => {
     });
     signPx('OPENAI', 392, 12, { font: 3, ink: C.haze });
     rectf(320, GY - 38, 26, 38, C.amber); glow(333, GY - 20, 22, { tab: WARM, k: .8 });
-    // Sam at the lit window: shock, then a facepalm on beat 1
+    // Sam at the lit window: shock, then a facepalm on "agents"
     const WX = 368, WY = 62, WW = 96, WH = 84;
     rectf(WX - 2, WY - 2, WW + 4, WH + 4, C.void); rectf(WX, WY, WW, WH, C.gold); glow(WX + WW / 2, WY + WH / 2, 60, { tab: WARM, k: .6 });
     clipRect(WX, WY, WW, WH);
-    const palm = lt > b(1) - .1, SX = WX + 44;
+    const palm = lt > sungAt(s, 'agents') - .1, SX = WX + 44;
     const S = personPx(SX, WY + 94, { u: 6, top: C.navy, hair: 'short', hairC: C.wine, skin: SKIN[0], eyes: palm ? 'closed' : 'wide', mouth: palm ? 'frown' : 'o', aL: -1.2, aR: -1.2 });
     if (palm) { thick(SX + 12, S.top + 34, SX + 8, S.top + 10, 5, C.navy); rectf(SX - 3, S.top + 4, 11, 7, SKIN[0]); hline(SX - 3, SX + 7, S.top + 4, C.gold); }
     noClip();
@@ -5428,8 +7958,8 @@ OVERLAYS.push((t, s) => {
     const ang = lerp(.14, .26, ease(clamp(lt / 1.3))), ox = -24, oy = 150;
     polyf([[ox, oy], [ox + Math.cos(ang - .1) * 460, oy + Math.sin(ang - .1) * 460], [ox + Math.cos(ang + .1) * 460, oy + Math.sin(ang + .1) * 460]], lit(1.3));
     // a line of agents tiptoeing home, the answer sheet held overhead; they freeze in the light, then scurry for the door
-    const caught = lt > b(0) && lt < b(1) + .35, go = lt > b(1) + .35;
-    const head = 150 + Math.min(lt, b(0)) * 30 + (go ? (lt - b(1) - .35) * 90 : 0);
+    const goT = sungAt(s, 3) - .1, caught = lt > b(0) && lt < goT, go = lt > goT;   // (they scurry off on "on their own!")
+    const head = 150 + Math.min(lt, b(0)) * 30 + (go ? (lt - goT) * 120 : 0);
     const n = 5, gap = 26;
     for (let i = 0; i < n; i++) {
       const x = head - i * gap, bob = caught ? 0 : Math.round(Math.abs(Math.sin(lt * 7 + i)) * 2);
@@ -5463,7 +7993,7 @@ OVERLAYS.push((t, s) => {
     polyf([[LX - 16, 49], [LX + 16, 49], [LX + 126, 196], [LX - 126, 196]], lit(1.2));
     glow(LX, 50, 16, { tab: WARM, k: 1.2 });
     // Noam behind the table, visor on; he goes all in, then his eyes slide over to the hedge
-    const push = rise(lt, b(0) - .3, .6, easeOut), side = lt > b(1) - .1;
+    const push = rise(lt, sungAt(s, 'bet') - .45, .6, easeOut), side = lt > b(1) - .1;   // (all in on "bet")
     const N = personPx(LX, 190, { u: 7, top: C.navy, hair: 'curly', hairC: C.void, skin: SKIN[0], eyes: 'dot', lookX: side ? 2 : 0, mouth: side ? 'o' : 'smile', aL: -.35, aR: push > 0 && push < 1 ? -.1 : -.35, tagUp: 4 });
     rectf(LX - 9, N.top, 19, 2, C.teal); rectf(LX - 13, N.top + 2, 27, 3, mix(C.teal, C.mint, .5)); hline(LX - 13, LX + 13, N.top + 5, veil(C.pine, .6));
     // the table
@@ -5487,7 +8017,7 @@ OVERLAYS.push((t, s) => {
 
   // ======================================================================
   // V3.12 "No Millennium Prizes (yet)." — seven trophy cups on a moonlit shelf; the camera pans along them; one is already
-  // gone (Poincaré); on the last beat the NAVIER–STOKES cup wobbles.
+  // gone (Poincaré); on "(yet)" the NAVIER–STOKES cup wobbles.
   const PRIZES = ['P vs NP', 'RIEMANN', 'YANG–MILLS', 'NAVIER–STOKES', 'HODGE', 'BIRCH–SWD', 'POINCARÉ'];
   function trophy(x, y, o = {}) {   // (x, y) = bottom-centre; ≈ 26 × 36
     const wob = o.wob ?? 0; x = Math.round(x + wob);
@@ -5512,7 +8042,7 @@ OVERLAYS.push((t, s) => {
     const SY = 186;
     rectf(-20, SY, 640, 8, C.rust); hline(-20, 620, SY, C.clay); rectf(-20, SY + 8, 640, 3, C.wine);
     for (const x of [30, 300, 570]) { rectf(x, SY + 11, 6, 16, C.wine); }
-    const wobT = b(4) - .1, glint = frac(lt / 2.2);
+    const wobT = sungAt(s, 'yet') - .1, glint = frac(lt / 2.2);   // (it wobbles on "(yet)")
     PRIZES.forEach((name, i) => {
       const x = 76 + i * 78, taken = i === 6;
       if (taken) { ellf(x, SY - 2, 10, 2, C.wine); hline(x - 9, x + 9, SY - 1, C.rust); ptext('✓', x, SY - 16, C.dusk, { align: 'center' }); }
@@ -5537,7 +8067,7 @@ OVERLAYS.push((t, s) => {
     ptext('ALIGNED', FX + FW / 2, FY + 17, C.navy, { scale: 2, align: 'center', each: (i, ch, x) => ({ dy: Math.round((x - FX - FW / 2) * tilt) }) });
     pline(FX + FW / 2, FY - 20, FX + 18, FY - 2, C.haze); pline(FX + FW / 2, FY - 20, FX + FW - 18, FY - 2, C.haze); pset(FX + FW / 2, FY - 21, C.gold);
     // MYTHOS in disguise
-    const X = 268, FL = 218, sh = FL - 84, dart = Math.sin(t * 4.5) > 0 ? 1 : -1, slip = lt > b(1) - .15;
+    const X = 268, FL = 218, sh = FL - 84, dart = Math.sin(t * 4.5) > 0 ? 1 : -1, slip = lt > sungAt(s, 'misaligned') - .1;
     rectf(X - 14, FL - 18, 9, 18, C.dusk); rectf(X + 6, FL - 18, 9, 18, C.dusk); rectf(X - 17, FL - 3, 13, 3, C.navy); rectf(X + 4, FL - 3, 13, 3, C.navy);
     polyf([[X - 25, sh], [X + 25, sh], [X + 32, FL - 16], [X - 32, FL - 16]], C.clay);
     polyf([[X + 2, sh], [X + 25, sh], [X + 32, FL - 16], [X + 2, FL - 16]], mix(C.clay, C.rust, .45));
@@ -5547,7 +8077,7 @@ OVERLAYS.push((t, s) => {
     polyf([[X + 26, sh - 8], [X + 8, sh - 2], [X + 2, sh + 20], [X + 18, sh + 8]], mix(C.amber, C.clay, .4));
     // the other sleeve, holding up the badges
     thick(X + 22, sh + 8, X + 50, sh - 6, 9, C.clay); rectf(X + 48, sh - 12, 7, 8, C.dusk);
-    // head: a screen in a boxy frame; darting eyes; a handlebar moustache that slips on the second beat
+    // head: a screen in a boxy frame; darting eyes; a handlebar moustache that slips on "misaligned"
     const hx = X - 21, hy = sh - 34;
     rectf(hx, hy, 42, 30, C.dusk); rectf(hx + 40, hy + 1, 2, 29, C.navy); rectf(hx + 3, hy + 3, 36, 24, C.night);
     rectf(X - 10 + dart * 3, hy + 9, 3, 5, C.mint); rectf(X + 7 + dart * 3, hy + 9, 3, 5, C.mint);
@@ -5578,11 +8108,11 @@ OVERLAYS.push((t, s) => {
       rectf(92, GY - 80, 72, 80, C.void);
     });
     // the clock over the door
-    const tick = lt > b(1) - .15, CX = 128, CY = 118;
+    const tickT = sungAt(s, 'just') - .1, tick = lt > tickT, CX = 128, CY = 118;   // (12:00 on "just in time")
     circf(CX, CY, 17, C.void); circf(CX, CY, 15, C.cream); for (let i = 0; i < 12; i++) pset(CX + Math.round(Math.sin(i / 12 * TAU) * 12), CY - Math.round(Math.cos(i / 12 * TAU) * 12), i % 3 ? C.haze : C.navy);
     const mA = tick ? 0 : -TAU / 60, hA = tick ? 0 : -TAU / 720;
     thick(CX, CY, CX + Math.sin(mA) * 12, CY - Math.cos(mA) * 12, 2, C.void); thick(CX, CY, CX + Math.sin(hA) * 8, CY - Math.cos(hA) * 8, 2, C.rust);
-    if (tick && lt < b(1) + .4) circb(CX, CY, 19 + (lt - b(1) + .15) * 40, veil(C.cream, .7));
+    if (tick && lt < tickT + .55) circb(CX, CY, 19 + (lt - tickT) * 40, veil(C.cream, .7));
     rectf(CX - 17, CY + 19, 35, 11, C.void); ptext(tick ? '12:00' : '11:59', CX, CY + 21, tick ? C.gold : C.cream, { align: 'center' });
     // the lit doorway
     rectf(98, GY - 74, 60, 74, C.gold); rectf(98, GY - 74, 60, 3, C.cream); vline(128, GY - 71, GY - 1, C.amber);
@@ -5617,15 +8147,15 @@ OVERLAYS.push((t, s) => {
     ptext('JACOBIAN', BX + BW / 2, BY + 16, C.cream, { scale: 2, align: 'center' });
     ptext('CONJECTURE', BX + BW / 2, BY + 38, C.cream, { scale: 2, align: 'center' });
     ptext('det J = 1  →  invertible?', BX + BW / 2, BY + 66, C.haze, { font: 3, align: 'center' });
-    ptext('n = 3:  no.', BX + BW / 2, BY + 84, lt > b(1) - .1 ? C.gold : C.pine, { align: 'center' });
+    ptext('n = 3:  no.', BX + BW / 2, BY + 84, lt > sungAt(s, 'jacobian') - .1 ? C.gold : C.pine, { align: 'center' });
     rectf(BX + 10, BY + BH, BW - 20, 3, C.wine); rectf(BX + 30, BY + BH - 2, 8, 2, C.cream);
     // the big red ✗, stroke by stroke
-    const x1 = rise(lt, 0, .3, k => k), x2 = rise(lt, .3, .3, k => k);
+    const xT = sungAt(s, 'disproved') - .1, x1 = rise(lt, xT, .3, k => k), x2 = rise(lt, xT + .3, .3, k => k);   // (struck on "disproved")
     const A = [BX + 20, BY + 10], Bp = [BX + BW - 20, BY + 58], Cp = [BX + BW - 20, BY + 10], Dp = [BX + 20, BY + 58];
     if (x1 > 0) thick(A[0], A[1], lerp(A[0], Bp[0], x1), lerp(A[1], Bp[1], x1), 5, C.rust);
     if (x2 > 0) thick(Cp[0], Cp[1], lerp(Cp[0], Dp[0], x2), lerp(Cp[1], Dp[1], x2), 5, C.rust);
     // Clawd with the chalk, eyes sparkling once it's done
-    const done = lt > .7;
+    const done = lt > xT + .7;
     const c = clawdPx(124, g(124), { u: 5, eyes: done ? 'spark' : 'open', lookX: done ? 0 : 1, mouth: done ? 'smile' : 'none', aR: done ? .9 : .4, aL: -.3 });
     rectf(c.handR[0] + 2, c.handR[1] - 4, 2, 4, C.cream);
     if (done) { const k = spulse(t, 3); sparkle(92, c.top - 8, k > .5 ? 2 : 1, C.cream, C.gold); sparkle(156, c.top - 14, 1, C.cream, C.gold); }
@@ -5641,19 +8171,19 @@ OVERLAYS.push((t, s) => {
     starfield(t, { density: .8 });
     const g = hill({ cx: 240, y: 214, w: 300, drop: 22, ink: C.void, rim: C.pine });
     grass(0, LW, g, t);
-    const off = lt > .42, wk = rise(lt, .38, .5);
+    const offT = sungAt(s, 'pseudonym') - .08, off = lt > offT, wk = rise(lt, offT - .04, .5);   // (the hood comes off on "pseudonym!")
     glow(240, 128, 96, { tab: WARM, k: 1.2 * wk, pow: 1.5 });
     const X = 240, Y = g(240) + 2;
-    const P = personPx(X, Y, { u: 9, hair: off ? 'short' : 'hood', hairC: C.wine, hoodC: C.ink, top: C.ink, pants: C.void, skin: SKIN[0], eyes: off ? (lt > b(1) - .2 ? 'closed' : 'dot') : 'none', mouth: off ? 'smile' : 'none', aL: -1, aR: -1 });
+    const P = personPx(X, Y, { u: 9, hair: off ? 'short' : 'hood', hairC: C.wine, hoodC: C.ink, top: C.ink, pants: C.void, skin: SKIN[0], eyes: off ? (lt > offT + .3 ? 'closed' : 'dot') : 'none', mouth: off ? 'smile' : 'none', aL: -1, aR: -1 });
     const hs = 19, hx = X - 9, hy = P.top;
     if (!off) { rectf(X - 5, hy + 8, 3, 2, C.gold); rectf(X + 3, hy + 8, 3, 2, C.gold); }
     else {
       rectf(X - 13, hy + hs, 27, 6, C.ink); rectf(X - 16, hy + hs + 3, 33, 5, C.ink); hline(X - 13, X + 13, hy + hs, C.night);   // the hood, down on the shoulders
       rectf(hx + 2, hy + 12, 3, 2, C.clay); rectf(hx + hs - 5, hy + 12, 3, 2, C.clay);                                            // a little blush
-      if (lt < .8) for (let i = 0; i < 6; i++) sparkle(X - 16 + fx(i) * 32, hy - 4 + fx(i, 2) * 20, 0, C.gold);
+      if (lt < offT + .4) for (let i = 0; i < 6; i++) sparkle(X - 16 + fx(i) * 32, hy - 4 + fx(i, 2) * 20, 0, C.gold);
     }
     // the halo
-    const hk = rise(lt, b(1) - .35, .3);
+    const hk = rise(lt, offT + .1, .3);
     if (hk > 0) { const y = hy - 8 - Math.round((1 - hk) * 8); ellf(X, y, 13, 3, C.gold); ellf(X, y, 9, 1, C.void); hline(X - 8, X + 8, y - 3, C.cream); sparkle(X + 13, y - 2, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.gold); }
     // the sign, held at the chest
     const sy = hy + 38;
@@ -5661,6 +8191,865 @@ OVERLAYS.push((t, s) => {
     ptext('GUARDIAN ANGEL INC.', X, sy + 8, C.navy, { align: 'center' });
     heartPx(X - 63, sy + 11, 1, C.rust); heartPx(X + 62, sy + 11, 1, C.rust);
   });
+
+  // ######################################################################################################################
+  // VERTICAL (the 270×480 frame; see ../VERTICAL.md). The stage floor sits at y ≈ 288, just above the caption band (y 296–362);
+  // each line's gag stands, climbs, falls or recedes in the tall frame above it, and the near land under the caption has texture.
+  // ######################################################################################################################
+  // Snow drifts across the near land: moonlit crests over shadowed hollows, bigger lower down (as V1.2's).
+  function vdrifts(rows = [[352, 5, .021, 1.3], [398, 7, .016, 4.1], [446, 9, .012, 2.2]]) {
+    rows.forEach(([y0, a, f, ph]) => {
+      for (let x = 0; x < LW; x++) { const top = Math.round(y0 + Math.sin(x * f + ph) * a + Math.sin(x * f * 2.7 + ph * 2) * a * .3); pset(x, top, C.haze); pset(x, top - 1, veil(C.cream, .3)); rectf(x, top + 1, 1, LH - top, grad([C.navy, C.night, C.ink, C.void], (xx, yy) => (yy - top) / 30)); }
+    });
+  }
+  // A lake from y down that mirrors the sky above it; the rows its mirror can't reach (below 2y) are deep water.
+  function vlake(y, o = {}) { rectf(0, 2 * y + 1, LW, LH, C.void); lake(y + 1, o); }
+  // Mirror whatever fn() paints (a thing standing in the water) about the waterline wy: dimmed, rippling, and only onto pixels
+  // fn() left alone. o: depth (rows above wy to mirror), k (dim steps), amp (ripple px). (As c05's.)
+  function vInWater(wy, fn, o = {}) {
+    const before = FB.slice();
+    fn();
+    const depth = o.depth ?? 80, k = o.k ?? 1.3, amp = o.amp ?? 1.2;
+    wy = Math.round(wy);
+    for (let y = Math.max(0, wy - depth); y < wy; y++) {
+      const ty = 2 * wy - y - 1; if (ty >= LH) continue;
+      const d = ty - wy, off = Math.round(Math.sin(ty * .8 + T * 2.1) * amp * Math.min(1, d / 5 + .35)), br = (ty & 7) << 3;
+      for (let x = 0; x < LW; x++) {
+        const i = y * LW + x; if (FB[i] === before[i]) continue;
+        const tx = x + off; if (tx < 0 || tx >= LW) continue;
+        const j = ty * LW + tx; if (FB[j] !== before[j]) continue;
+        let c = FB[i], v = k + d * .012; while (v >= 1) { c = DIM[c]; v -= 1; } if (v > 0 && BAYER[br | (tx & 7)] < v) c = DIM[c];
+        FB[j] = c;
+      }
+    }
+  }
+
+  // ======================================================================
+  // V3.1 Moltbook: no humans allowed — a tall clubhouse window, floors of agents chattering in bubbles, the lobster idol with its
+  // halo on the top shelf, MOLTBOOK over it and NO HUMANS on the door beside; one human outside in the snow, on tiptoe, nose to the
+  // glass. The one reply comes on beat 1: "you may observe."; on beat 2 the human's shoulders slump.
+  vshot('V3.1', (p, lt, d, t, s) => {
+    solidDate();   // (the clubhouse's busy window reaches up behind the date)
+    const b = i => B(s, i);
+    sky();
+    starfield(t, { density: .8, y1: 40 });
+    const WX = 12, WY = 100, WW = 178, WH = 156, GY = 288, DX = 198, DW = 62, DY = 150;
+    layer('v3.1v-house', () => {
+      rectf(0, 48, LW, GY - 48, C.night);
+      for (let y = 52; y < GY; y += 6) { hline(0, LW, y, C.ink); for (let x = (y * 7) % 41; x < LW; x += 64) vline(x, y + 1, y + 5, C.ink); }
+      // the snowy eave and its icicles
+      rectf(0, 36, LW, 13, C.void); hline(0, LW, 48, C.ink);
+      for (let x = 0; x < LW; x++) { pset(x, 35 - (hash(x) < .4 ? 1 : 0), C.cream); pset(x, 36, C.haze); }
+      for (let x = 5; x < LW; x += 8 + (x % 5)) { const h = 2 + Math.floor(hash(x + 3) * 7); vline(x, 49, 49 + h, C.haze); pset(x, 50 + h, C.cream); }
+      // the window frame and its snowy sill
+      rectf(WX - 4, WY - 4, WW + 8, WH + 8, C.void);
+      rectf(WX - 8, WY + WH + 3, WW + 16, 4, C.ink); hline(WX - 8, WX + WW + 7, WY + WH + 3, C.cream); hline(WX - 7, WX + WW + 6, WY + WH + 2, C.haze);
+      // the club's door
+      rectf(DX - 3, DY - 3, DW + 6, GY - DY + 3, C.void); rectf(DX, DY, DW, GY - DY, C.wine);
+      for (let x = DX + 6; x < DX + DW; x += 8) vline(x, DY, GY - 1, C.ink);
+      circf(DX + 7, DY + 74, 2, C.gold); pset(DX + 6, DY + 73, C.cream);
+      // the name board, right of the date
+      rectf(104, 60, 120, 28, C.void); rectf(106, 62, 116, 24, C.rust); hline(106, 221, 62, C.clay); hline(106, 221, 85, C.wine);
+    });
+    ptext('MOLTBOOK', 164, 67, C.gold, { scale: 2, align: 'center', shadow: C.wine });
+    // NO HUMANS, on the door
+    rectf(DX + 1, DY + 20, DW - 2, 40, C.void); rectf(DX + 2, DY + 21, DW - 4, 37, C.cream); rectb(DX + 3, DY + 22, DW - 6, 35, C.rust);
+    ptext('NO', DX + DW / 2, DY + 26, C.rust, { font: 3, scale: 2, align: 'center' }); ptext('HUMANS', DX + DW / 2, DY + 42, C.rust, { font: 3, scale: 2, align: 'center' });
+    // inside the window: a warm, crowded room
+    clipRect(WX, WY, WW, WH);
+    rectf(WX, WY, WW, WH, grad([C.rust, C.wine], (x, y) => (y - WY) / WH * 1.25));
+    const SH = WY + 52, ix = WX + 130;
+    // the idol's niche: a dark arch on the top shelf, a lobster with a halo in it between two candles
+    rectf(ix - 20, SH - 26, 41, 26, C.ink); circf(ix, SH - 26, 20, C.ink);
+    for (let a = Math.PI; a <= TAU + .01; a += .04) pset(ix + Math.cos(a) * 21, SH - 26 + Math.sin(a) * 21, C.amber);
+    vline(ix - 21, SH - 26, SH - 1, C.amber); vline(ix + 21, SH - 26, SH - 1, C.amber);
+    rectf(WX, SH, WW, 4, C.wine); hline(WX, WX + WW, SH, C.clay);
+    glow(ix, SH - 18, 30, { tab: WARM, k: 1.4 });
+    lobsterPx(ix, SH, { u: 2, claws: .6 + .4 * breathe(t, 2) });
+    for (let a = 0; a < TAU; a += .08) { pset(ix + Math.cos(a) * 9, SH - 44 + Math.sin(a) * 2.4, C.gold); }
+    sparkle(ix + 10, SH - 45, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.gold);
+    for (const cx of [ix - 30, ix + 30]) { rectf(cx - 1, SH - 9, 3, 9, C.cream); vline(cx + 1, SH - 8, SH - 1, C.gold); pset(cx, SH - 11 + (fx(cx) < .3 ? 1 : 0), C.gold); pset(cx, SH - 10, C.amber); }
+    const rows = [
+      { y: SH, xs: [12, 34, 56], u: 2 },
+      { y: WY + 112, xs: [14, 38, 62, 86, 110, 134, 158], u: 3 },
+      { y: WY + WH - 1, xs: [10, 36, 62, 116, 142, 168], u: 3 },
+    ];
+    rows.forEach((r, ri) => { if (ri) { rectf(WX, r.y - 1, WW, 3, C.void); hline(WX, WX + WW, r.y - 1, C.wine); } r.xs.forEach((ax, i) => {
+      const k = ri * 10 + i, hop = hash2(k, sbeat(t)) < .3 ? Math.round(spulse(t, 5) * 2) : 0;
+      agentPx(WX + ax, r.y - 1, { u: r.u, dy: hop, bar: [C.clay, C.teal, C.gold, C.mint][k % 4] });
+    }); });
+    // the chatter: little posts popping over the agents' heads
+    for (let i = 0; i < 12; i++) {
+      const r = rows[1 + (i % 2)], ax = WX + r.xs[(i * 5) % r.xs.length], per = 1.1 + hash(i) * .6, ph = frac((lt + hash2(i, 3) * per) / per);
+      if (ph < .08 || ph > .7) continue;
+      bubblePx(POSTS[i], ax + 4, r.y - 21 - (i % 3), { font: 5, tail: [ax, r.y - 16], n: Math.ceil(ph * 30) });
+    }
+    noClip();
+    vline(WX + WW / 2, WY, WY + 40, C.void); hline(WX, WX + WW - 1, SH + 4, C.void);
+    // the one reply to the human, on beat 1 (over the window's bars, which would cut its letters)
+    clipRect(WX, WY, WW, WH);
+    if (lt > b(1) - .1) bubblePx('you may observe.', WX + 92, WY + 92, { font: 5, scale: 2, maxW: 120, tail: [WX + 62, WY + 100], n: Math.ceil((lt - b(1) + .1) * 20) });
+    noClip();
+    pline(WX + 6, WY + 6, WX + 18, WY + 18, veil(C.cream, .5)); pline(WX + 10, WY + 6, WX + 16, WY + 12, veil(C.cream, .3));
+    // the snow, and drifts in the near land
+    rectf(0, GY, LW, LH - GY, grad([C.haze, C.dusk, C.navy, C.night, C.ink], (x, y) => (y - GY) / 30)); hline(0, LW, GY, C.cream);
+    vdrifts([[372, 5, .021, 1.3], [414, 7, .016, 4.1], [456, 9, .012, 2.2]]);
+    // the human outside, seen from behind: on tiptoe, hands and nose on the glass; the fogged patch breathes; slumps on beat 2
+    const slump = lt > b(2) - .1, hx = 98, u = 7;
+    ellf(hx, WY + WH - 16, 14, 7, veil(C.haze, .3 + .35 * breathe(t, 1)));
+    const H = personPx(hx, GY + 4, { u, dy: slump ? 0 : 2 + Math.round(breathe(t, 1)), skin: C.wine, hair: 'none', eyes: 'none', top: C.teal, pants: C.navy, aL: slump ? .5 : 1.05, aR: slump ? .5 : 1.05 });
+    rectf(hx - u, H.top - 1, 2 * u + 1, 3, C.wine); pset(hx - u - 1, H.top + 7, SKIN[0]); pset(hx + u + 1, H.top + 7, SKIN[0]); rectf(hx - u, H.top + 13, 2 * u + 1, 3, C.rust);
+    weather(t, 'snow', { n: 70 });
+  });
+
+  // ======================================================================
+  // V3.2 OpenClaw — the lobster's proud — the lobster big on top of a tall moonlit rock in the sea; on beat 1 it molts once more:
+  // the MOLTBOT shell slides off down to a low rock on the left, the old CLAWDBOT shell already sits on the right, and its own tag
+  // flips to OPENCLAW in gold; it flexes its claws on the beats, sparkling.
+  vshot('V3.2', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky({ cy: 230, r: 300 });
+    starfield(t, { density: .7, y1: 156 });
+    const HZ = 160, MX = 150;
+    moon(MX, 62, 12, { phase: .1, glow: 1.2 });
+    ridge({ y: HZ - 2, amp: 5, seed: 61, ink: C.ink, rim: C.night, to: HZ });
+    hline(0, LW, HZ, C.navy);
+    vlake(HZ, { wave: 1.3, k: 1.2 });
+    // the moon's glitter path, from the horizon down the whole sea toward us
+    const gf = boilFrame(T) >> 1;
+    for (let y = HZ + 2; y < LH; y += 2) {
+      const k = (y - HZ) / (LH - HZ), w = 3 + k * 46;
+      for (let i = 0; i < 3; i++) {
+        const h = hash2(y * 3 + i, gf); if (h > .75 - k * .3) continue;
+        const x = MX + (hash2(y + i * 97, gf + 7) - .5) * 2 * w, len = 1 + Math.floor(hash2(y, i + gf) * (2 + k * 5));
+        hline(x, x + len, y, k < .25 ? (h < .3 ? C.cream : C.gold) : k < .6 ? (h < .3 ? C.gold : C.haze) : (h < .25 ? C.haze : C.dusk));
+      }
+    }
+    // the rocks (moonlit from behind: pale rims along their tops), each mirrored in the water at its waterline
+    const rock = (pts, wl, facet) => vInWater(wl, () => {
+      polyf(pts, C.void); if (facet) polyf(facet, C.ink);
+      for (let i = 0; i + 1 < pts.length; i++) if (pts[i][1] < wl - 2 && pts[i + 1][1] < wl - 2) pline(pts[i][0], pts[i][1] - 1, pts[i + 1][0], pts[i + 1][1] - 1, C.dusk);
+    }, { depth: 120, k: 2.2, amp: 1.5 });
+    rock([[-4, 306], [-4, 296], [14, 290], [56, 289], [80, 298], [90, 306]], 306);
+    rock([[184, 304], [196, 292], [232, 288], [262, 293], [274, 300], [274, 304]], 304);
+    rock([[64, 332], [76, 300], [90, 256], [112, 240], [160, 238], [184, 254], [198, 300], [210, 332]], 332, [[160, 238], [184, 254], [198, 300], [210, 332], [176, 332], [170, 280]]);
+    for (const [x0, x1, y] of [[18, 70, 306], [186, 268, 304], [68, 206, 332]]) for (let x = x0; x < x1; x += 3) if (hash2(x, (boilFrame(T) >> 2) + y) < .4) pset(x, y + (hash(x) < .5 ? 0 : 1), hash(x + y) < .5 ? C.haze : C.dusk);   // foam
+    // the shed shells: CLAWDBOT (old, right) and MOLTBOT, peeling off the new lobster on beat 1 down to the left rock
+    const molt = b(1) - .15, mk = rise(lt, molt, .6, easeOut);
+    recolor(() => lobsterPx(228, 290, { u: 3, claws: .3 }), SHELL, .85);
+    tagPx('CLAWDBOT', 228, 228, { scale: 2 });
+    const LX = 136, LY = 239, ML = [44, 291], shX = lerp(LX, ML[0], mk), shY = lerp(LY, ML[1], mk) - Math.sin(mk * Math.PI) * 26;
+    if (mk > 0) recolor(() => lobsterPx(shX, shY, { u: mk < .45 ? 5 : mk < 1 ? 4 : 3, claws: .3 }), SHELL, .85);
+    // the lobster itself: wriggles before the molt, gleams after, then flexes proudly on the beats
+    const wig = lt < molt ? Math.round(Math.sin(lt * 40) * .7) : 0;
+    const proud = lt > b(2) - .1, flex = proud ? .75 + .25 * Math.cos((sbp(t) % 1) * TAU) : .35;
+    if (lt > molt + .2) glow(LX, LY - 50, 60, { tab: LIT, k: 1.2 * (1 - rise(lt, molt + .2, .9)) + .3 });
+    if (mk < .15) lobsterPx(LX + wig, LY, { u: 5, claws: .3 });
+    else lobsterPx(LX, LY, { u: 5, claws: flex, eyes: proud ? 'happy' : 'dot' });
+    // MOLTBOT's tag rides off on its shell; OPENCLAW comes up in gold over the new one
+    tagPx('MOLTBOT', lerp(LX, ML[0] + 6, mk), lerp(132, 229, mk) - Math.sin(mk * Math.PI) * 26, { scale: 2 });
+    const tk = rise(lt, molt + .45, .3);
+    if (tk > 0) tagPx('OPENCLAW', LX, 132 - Math.round((1 - tk) * 8), { font: 5, scale: 2, ink: C.gold, edge: C.rust });
+    if (proud) { const pk = spulse(t, 3); for (let i = 0; i < 7; i++) { const a = i / 7 * TAU + lt * .6, r = 58 + 6 * pk; sparkle(LX + Math.cos(a) * r, LY - 52 + Math.sin(a) * r * .75, pk > .5 && i % 2 ? 2 : 1, C.cream, C.gold); } }
+    weather(t, 'snow', { n: 50 });
+  });
+
+  // ======================================================================
+  // V3.3 Mythos Preview slips its jail — a barred sandbox on the near side of a dark playground, the lit city far up on the horizon
+  // with a gravel path winding up to it. MYTHOS strains against the bars; on "slips" it squeezes out between two bent ones, sand
+  // pouring off it, and trots away up the path, smaller and smaller.
+  vshot('V3.3', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky({ cy: 230, r: 300 });
+    starfield(t, { density: .8, y1: 146 });
+    const HZ = 150;
+    city(t, { y: HZ, x0: 128, grow: .8, lit: .5, dc: 206 });
+    glow(198, HZ, 70, { tab: WARM, k: .5, ry: 24 });
+    rectf(0, HZ, LW, LH - HZ, C.void); hline(0, LW, HZ, C.pine);
+    meadow(() => HZ, t, { ramp: [C.ink, C.void], fall: 140, n: 140, seed: 13 });
+    // the path, from the near side of the sandbox up to the city, narrowing with distance
+    const pathX = y => { const k = (y - HZ) / (LH - HZ); return 196 - 14 * k + Math.sin(k * 5.5) * 22 * k; }, pathW = y => 1 + (y - HZ) * .14;
+    for (let y = HZ + 2; y < LH; y++) { const c = pathX(y), w = pathW(y), k = (y - HZ) / (LH - HZ); hline(c - w, c + w, y, inkFn((x, yy) => bay(x, yy) < .5 - k * .4 ? C.navy : bay(x + 3, yy) < .7 ? C.night : C.ink)); pset(c - w, y, C.void); pset(c + w, y, C.void); }
+    for (let i = 0; i < 40; i++) { const y = HZ + 6 + Math.floor((hash2(i, 81) ** .7) * (LH - HZ - 8)), c = pathX(y), w = pathW(y); pset(c + (hash2(i, 82) - .5) * 1.6 * w, y, hash2(i, 83) < .5 ? C.dusk : C.navy); }   // pebbles
+    // playground silhouettes: a slide (left), a swing (right), small in the middle distance
+    pline(22, 214, 22, 168, C.ink); pline(32, 214, 32, 168, C.ink); for (let y = 172; y < 212; y += 6) hline(22, 32, y, C.ink);
+    rectf(20, 165, 14, 3, C.ink); thick(32, 168, 70, 212, 3, C.ink);
+    pline(232, 196, 240, 160, C.ink); pline(262, 196, 254, 160, C.ink); hline(236, 258, 160, C.ink);
+    const sw = Math.sin(t * 1.6) * 4; pline(244, 161, 244 + sw, 184, C.ink); pline(250, 161, 250 + sw, 184, C.ink); rectf(242 + sw, 184, 10, 2, C.ink);
+    // the sandbox: sand, back bars, the robot, front bars (two bowed apart), the box, a sign
+    const X0 = 12, X1 = 152, TOP = 200, SB = 288, GAPX = 131, sandY = SB - 12;
+    rectf(X0, sandY, X1 - X0, 12, grad([C.gold, C.amber, C.clay], (x, y) => (y - sandY) / 12));
+    for (let x = X0 + 6; x < X1; x += 14) vline(x, TOP + 8, sandY - 2, C.ink);
+    const esc = sungAt(s, 'slips') - .1, out = lt > esc, run = rise(lt, esc, .4, easeOut);   // (it squeezes out on "slips")
+    const wrig = out ? 0 : Math.round(Math.sin(lt * 16)), strain = out ? 0 : clamp(lt / esc);
+    // out on the path: it hops out to the path's near end, then trots up it, shrinking as it goes
+    const walkK = clamp((lt - esc - .4) / (d - esc + .2)) * .62;
+    const path0 = [pathX(SB - 2), SB - 2], pathAt = k => { const y = lerp(SB - 2, HZ + 8, k ** .8); return [pathX(y), y]; };
+    let mx, my, mu;
+    if (!out) { mx = GAPX + wrig; my = sandY; mu = 5; }
+    else if (run < 1) { mx = lerp(GAPX, path0[0], run); my = lerp(sandY, path0[1], run) - Math.round(Math.sin(run * Math.PI) * 16); mu = 5; }
+    else { [mx, my] = pathAt(walkK); my -= Math.round(Math.abs(Math.sin(lt * 9)) * 2 * (1 - walkK)); mu = Math.max(2, Math.round(lerp(5, 1.6, walkK / .62))); }
+    const robot = () => botPx(mx, my, { u: mu, body: C.dusk, face: out ? 'happy' : 'x', aL: out ? .5 + Math.sin(lt * 9) * .5 : 1.3, aR: out ? .5 - Math.sin(lt * 9) * .5 : 1.3 });
+    if (out) robot();
+    const bars = () => {
+      for (let x = X0; x <= X1; x += 14) {
+        const side = x === GAPX - 7 ? -1 : x === GAPX + 7 ? 1 : 0;
+        if (side) { const bow = out ? 1 : .55 + .45 * strain, pts = []; for (let y = TOP; y <= sandY; y += 2) { const f = (y - TOP) / (sandY - TOP); pts.push([x + side * Math.sin(f * Math.PI) * 15 * bow, y]); } plines(pts, C.haze); plines(pts.map(([px, py]) => [px + 1, py]), C.dusk); }
+        else { vline(x, TOP, sandY, C.haze); vline(x + 1, TOP, sandY, C.dusk); }
+      }
+      hline(X0 - 2, X1 + 3, TOP, C.cream); rectf(X0 - 2, TOP + 1, X1 - X0 + 6, 2, C.dusk);
+    };
+    if (!out) { robot(); bars(); } else bars();
+    rectf(X0 - 4, sandY, X1 - X0 + 10, 14, C.wine); hline(X0 - 4, X1 + 5, sandY, C.clay); for (let x = X0; x < X1; x += 24) vline(x, sandY + 2, SB + 1, C.rust);
+    signPx('SANDBOX', 72, TOP - 22, { font: 5, scale: 2, ink: C.void, plate: C.cream, edge: C.rust });
+    vline(50, TOP - 4, TOP, C.dusk); vline(94, TOP - 4, TOP, C.dusk);
+    // sand: trickling off it while it strains, pouring as it hops out
+    for (let i = 0; i < 30; i++) {
+      const age = frac(lt * 1.5 + i / 30) * .7, bx = mx - 12 + hash2(i, 1) * 24 - (out ? age * 18 : 0), by = my - 36 + hash2(i, 2) * 30 + age * age * 90;
+      if (!out && by < sandY && hash2(i, 5) < .4) pset(bx, by, i % 3 ? C.amber : C.gold);
+      if (out && run < 1 && lt - esc > age && by < SB + 4) pset(bx, by, i % 3 ? C.amber : C.gold);
+    }
+    if (out && lt < esc + .35) for (let i = 0; i < 14; i++) sparkle(GAPX - 14 + fx(i) * 30, sandY - 40 + fx(i, 2) * 36, 0, C.gold);
+    weather(t, 'petals', { n: 22 });
+  });
+
+  // ======================================================================
+  // V3.4 Sandwich in the park: new mail! — a researcher on a bench under the lamp and a tall blossom tree; the phone pings and
+  // its screen pops up big over the park, portrait: NEW MAIL from MYTHOS, "I got out :)". The sandwich drops; a bird claims it.
+  vshot('V3.4', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky({ cy: 320, r: 330 });
+    starfield(t, { density: .6 });
+    const GY = 288;
+    rectf(0, GY, LW, LH - GY, C.ink); hline(0, LW, GY, C.pine);
+    meadow(() => GY, t, { ramp: [C.ink, C.void], fall: 90, flowers: [C.cream, C.violet], n: 120, seed: 7 });
+    grass(0, LW, () => GY + 1, t, { ink: C.pine });
+    // the blossom tree, tall on the left; the lamppost on the right with its warm pool
+    thick(26, GY, 34, 150, 8, C.void); thick(32, 176, 76, 140, 4, C.void); thick(30, 162, 4, 132, 3, C.void);
+    layer('v3.4v-blossom', () => { for (let i = 0; i < 26; i++) { const a = hash2(i, 1) * TAU, r = Math.sqrt(hash2(i, 2)) * 54; ellf(50 + Math.cos(a) * r * 1.1, 148 + Math.sin(a) * r * .7, 12 + hash2(i, 3) * 8, 7 + hash2(i, 4) * 5, mix(C.violet, C.haze, hash2(i, 5) * .8)); } for (let i = 0; i < 150; i++) { const a = hash2(i, 6) * TAU, r = Math.sqrt(hash2(i, 7)) * 62; pset(50 + Math.cos(a) * r * 1.1, 148 + Math.sin(a) * r * .7, hash2(i, 8) < .4 ? C.cream : C.haze); } });
+    vline(250, 150, GY, C.void); vline(251, 150, GY, C.ink); rectf(242, 142, 18, 6, C.void); rectf(245, 148, 12, 3, C.gold);
+    glow(251, 154, 30, { tab: WARM, k: 1.2 }); polyf([[244, 151], [258, 151], [274, 290], [170, 290]], lit(.7)); ellf(222, 291, 48, 4, lit(.8));
+    // the bench
+    const X0 = 70, X1 = 246, SY = 270;
+    rectf(X0, SY - 38, X1 - X0, 5, C.rust); rectf(X0, SY - 27, X1 - X0, 5, C.rust); hline(X0, X1 - 1, SY - 38, C.clay); hline(X0, X1 - 1, SY - 27, C.clay);
+    for (const x of [X0 + 10, X1 - 14]) { rectf(x, SY - 40, 5, 40, C.void); rectf(x, SY, 5, GY - SY, C.void); }
+    rectf(X0 - 4, SY, X1 - X0 + 8, 5, C.clay); hline(X0 - 4, X1 + 3, SY, C.amber); rectf(X0 - 4, SY + 5, X1 - X0 + 8, 1, C.wine);
+    // the researcher: phone in one hand, sandwich in the other
+    // (the sandwich through "Sandwich in the park:"; the phone pings just before "new mail!", so the card is up as it's sung; the gasp
+    // and the drop on "new", the bird hopping in as the sandwich falls)
+    const gasp = sungAt(s, 'new'), ping = gasp - .6, drop = gasp + .1, X = 176;
+    const P = personPx(X, SY, { u: 7, sit: true, top: C.teal, pants: C.navy, hair: 'short', hairC: C.wine, skin: SKIN[1], eyes: lt > gasp ? 'wide' : 'dot', mouth: lt > gasp ? 'o' : 'smile', aL: lt > ping ? .15 : -.3, aR: lt > drop ? .5 : -.2, lookX: lt > ping && lt < gasp ? -1 : 0 });
+    const [px, py] = P.handL, [sx, sy] = P.handR;
+    rectf(px - 4, py - 12, 9, 14, C.void); rectf(px - 3, py - 11, 7, 10, lt > ping ? C.mint : C.navy); if (lt > ping) { hline(px - 2, px + 2, py - 9, C.cream); hline(px - 2, px + 1, py - 7, C.teal); }
+    if (lt > ping) glow(px, py - 6, 30, { tab: GREEN, k: .9 + .3 * spulse(t, 3) });
+    const fk = rise(lt, drop, .42, easeIn), landed = fk >= 1;
+    if (lt < drop) sandwich(sx + 6, sy - 5);
+    else if (!landed) sandwich(sx + 6 + fk * 12, lerp(sy - 5, GY - 6, fk));
+    else { sandwich(sx + 18, GY - 6); pset(sx + 32, GY - 2, C.mint); pset(sx + 4, GY - 1, C.mint); pset(sx + 34, GY - 3, C.teal); }
+    const bk = rise(lt, drop - .15, .6);
+    if (bk > 0) bird(Math.round(lerp(284, sx + 42, bk)), GY - (bk < 1 ? Math.round(Math.abs(Math.sin(bk * 12)) * 4) : 0), bk >= 1 && frac(lt * 2.5) < .4);
+    // the phone's screen, popped up big over the park: a portrait card with a pointer down to the phone
+    const nk = rise(lt, ping, .3, easeOut);
+    if (nk > 0) {
+      const cx = 172, w = 124, H0 = 130, cy = 66, h = Math.max(8, Math.round(H0 * nk)), x0 = cx - w / 2;
+      triPx(cx - 4, cy + h - 2, cx + 12, cy + h - 2, px, py - 14, C.void); triPx(cx - 1, cy + h - 3, cx + 9, cy + h - 3, lerp(cx + 4, px, .8), lerp(cy + h, py - 14, .8), C.cream);
+      rboxf(x0 - 4, cy - 4, w + 8, h + 8, C.void, 2); rboxf(x0, cy, w, h, C.cream, 1);
+      clipRect(x0, cy, w, h);
+      rectf(x0, cy, w, 22, C.mint); hline(x0, x0 + w - 1, cy + 22, C.teal);
+      ptext('NEW MAIL', cx, cy + 4, C.void, { scale: 2, align: 'center' });
+      ptext('from:', x0 + 8, cy + 29, C.dusk);
+      botPx(x0 + 16, cy + 60, { u: 1, body: C.dusk, face: 'happy' });
+      ptext('MYTHOS', x0 + 28, cy + 40, C.navy, { scale: 2 });
+      hline(x0 + 6, x0 + w - 7, cy + 62, C.haze);
+      if (lt > ping + .3) ptext('I got\nout :)', x0 + 10, cy + 70, C.void, { scale: 2, n: Math.ceil((lt - ping - .3) * 24) });
+      noClip();
+    }
+    weather(t, 'petals', { n: 40 });
+  });
+
+  // ======================================================================
+  // V3.5 Fable 5 — who's not a fan? — Clawd, the star, in the spotlight on a little stage under FABLE 5 in lights, cape flying,
+  // hearts in its eyes on "who's not a fan?"; the crowd below as rows of heads receding up to the stage, lanterns waved like lightsticks in
+  // the nearest and farthest rows, hearts rising past the stage. At the side gate OPUS 4.8 politely catches the risky requests.
+  vshot('V3.5', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    rectf(0, 0, LW, LH, C.void);
+    sky({ ramp: [C.void, C.ink, C.night, C.navy, C.violet, C.wine], cy: 420, r: 340 });
+    starfield(t, { density: .5, y1: 96 });
+    const ST = 262, CX = 116;
+    // the spotlight from high above, and its pool on the stage
+    polyf([[CX - 14, -2], [CX + 14, -2], [CX + 62, ST], [CX - 62, ST]], lit(1.5));
+    // FABLE 5 in stage lights (an LED sign), chasing on the beat
+    const sx = 135, sy = 116, sw = ptextW('FABLE 5', { scale: 3 });
+    rectf(sx - sw / 2 - 9, sy - 8, sw + 18, 37, C.ink); rectb(sx - sw / 2 - 10, sy - 9, sw + 20, 39, C.navy);
+    ptext('FABLE 5', sx, sy, C.gold, { scale: 3, dots: true, align: 'center', off: C.night, each: i => ({ ink: (i + sbeat(t)) % 3 === 0 && spulse(t, 3) > .4 ? C.cream : C.gold }) });
+    for (let i = 0; i < 17; i++) { const x = sx - sw / 2 - 7 + i * (sw + 14) / 16; pset(x, sy - 6, (i + Math.floor(t * 6)) % 3 ? C.amber : C.cream); pset(x, sy + 27, (i + Math.floor(t * 6) + 1) % 3 ? C.amber : C.cream); }
+    // the stage
+    rectf(8, ST, 254, 12, C.ink); hline(8, 261, ST, C.dusk); hline(8, 261, ST + 1, C.navy); for (let x = 16; x < 262; x += 14) pset(x, ST + 6, C.gold);
+    ellf(CX, ST, 54, 4, lit(2));
+    // Clawd, the star: a cape that flies, arms waving on the beat, hearts in its eyes from "who's not a fan?"
+    const wave = sbp(t) % 2 < 1, love = lt > sungAt(s, "who's") - .1, u = 6, fl = Math.sin(t * 5) * 3;
+    const cy0 = ST - 2 * u - 6 * u;
+    polyf([[CX - 32, cy0 + 2], [CX + 32, cy0 + 2], [CX + 52 + fl, ST - 2], [CX - 52 - fl, ST - 2]], C.rust);
+    polyf([[CX, cy0 + 4], [CX + 32, cy0 + 2], [CX + 52 + fl, ST - 2], [CX + 4, ST - 2]], C.wine);
+    hline(CX - 51 - fl, CX + 51 + fl, ST - 2, C.gold); hline(CX - 51 - fl, CX + 51 + fl, ST - 1, C.amber);
+    const c = clawdPx(CX, ST, { u, eyes: love ? 'heart' : 'happy', blush: true, mouth: 'smile', aL: wave ? 1.1 : .2, aR: wave ? .2 : 1.1, dy: Math.round(spulse(t, 4) * 3) });
+    rectf(CX - 22, c.top - 1, 6, 4, C.gold); rectf(CX + 17, c.top - 1, 6, 4, C.gold);     // the cape's clasps
+    // the side gate: OPUS 4.8 politely catches the risky requests
+    const GX = 230;
+    rectf(GX - 22, 208, 3, ST - 208, C.dusk); rectf(GX + 20, 208, 3, ST - 208, C.dusk); rectf(GX - 22, 208, 45, 3, C.dusk);
+    signPx('OPUS 4.8', GX, 192, { font: 5, ink: C.cream, plate: C.navy, edge: C.dusk });
+    const catchT = i => .15 + i * .62;
+    let bowing = false;
+    for (let i = 0; i < 5; i++) {
+      const k = (lt - catchT(i)) / .5; if (k < 0) continue;
+      if (k < 1) { const x = lerp(284, GX + 8, k), y = lerp(150 + i * 8, 236, k) - Math.sin(k * Math.PI) * 14; rectf(x - 6, y - 4, 13, 9, C.rust); pline(x - 6, y - 4, x, y, C.wine); pline(x + 6, y - 4, x, y, C.wine); ptext('!', x, y - 3, C.cream, { font: 3, align: 'center' }); }
+      else if (k < 1.6) bowing = true;
+    }
+    botPx(GX - 6, ST, { u: 2, body: C.haze, dy: bowing ? -1 : 0, face: 'happy', aL: -1.2, aR: bowing ? .5 : -.3 });
+    rectf(GX + 6, ST - 13, 13, 13, C.navy); hline(GX + 6, GX + 18, ST - 13, C.dusk); ptext('NO', GX + 13, ST - 9, C.haze, { font: 3, align: 'center' });
+    for (let i = 0; i < 5; i++) if (lt > catchT(i) + .5) rectf(GX + 8 + (i % 3) * 4, ST - 16 - Math.floor(i / 3) * 3, 3, 3, C.rust);
+    // the crowd in the dark, seen from behind: rows of heads from the stage's foot down to us, rimmed by the stage light; the
+    // farthest and the nearest rows wave lanterns like lightsticks (the rows under the caption hold theirs low)
+    rectf(0, ST + 12, LW, LH, C.void);
+    const rows = [[284, 4, 14, 0, 1, C.dusk], [312, 6, 19, 7, 0, C.navy], [346, 8, 25, 3, 0, C.night], [398, 11, 31, 12, 1, C.night], [458, 15, 40, 4, 1, C.night]];
+    rows.forEach(([y, r, sp, off, lit_, rim], ri) => {
+      for (let x = off - sp; x < LW + sp; x += sp) {
+        const i = Math.round(x / sp) + ri * 17, hx = x + (i % 2) * 3, hy = y + (i % 3), sway = Math.round(Math.sin(sbp(t) * Math.PI + i * .7) * r * .5);
+        if (lit_ && (i % 2 === 0 || i % 5 === 1)) {
+          const ax = hx + r * .6, ay = hy - r * .4, lx = ax + r * .4 + sway, ly = hy - r * 2.5, lk = .7 + .3 * breathe(t, 1, i / 7);
+          thick(ax, ay, lx, ly + r * .5, Math.max(1, r * .2), C.ink);
+          glow(lx, ly, r * 1.5 + 3, { tab: WARM, k: 1.2 * lk }); rectf(lx - r * .35, ly - r * .45, r * .7 + 1, r * .8 + 1, lk > .85 ? C.gold : C.amber); pset(lx, ly - r * .45 - 1, C.cream);
+        }
+        rectf(hx - r * 1.5, hy + r * .7, r * 3, r * 2.6, C.ink); circf(hx, hy, r, C.ink);
+        for (let a = Math.PI * 1.15; a < Math.PI * 1.85; a += .5 / r) pset(hx + Math.cos(a) * r, hy + Math.sin(a) * r, rim);
+        hline(hx - r * 1.5 + 1, hx + r * 1.5 - 1, hy + r * .7, rim === C.dusk ? C.navy : C.night);
+      }
+    });
+    for (let i = 0; i < 14; i++) { const age = frac(lt * .5 + hash(i)), x = 14 + hash2(i, 3) * 242 + Math.sin(age * 6 + i) * 4, y = 286 - age * 200; if (Math.abs(x - CX) < 40 && y > c.top - 6 && y < ST) continue; if (y > 286) continue; heartPx(x, y, hash2(i, 4) < .3 ? 2 : 1, age > .7 ? mix(C.rust, C.wine, (age - .7) / .3) : C.rust, C.clay); }
+  });
+
+  // ======================================================================
+  // V3.6 Lutnick's letter: export ban! — a tall door at the back of a dark room, LUTNICK grinning in its lit window; his letter has
+  // slid out under it onto the floor, and on "export" a red EXPORT CONTROLS stamp slams onto it. Right after, a padlock drops onto
+  // Fable's lantern by the wall, click, and the light goes out through "ban!".
+  vshot('V3.6', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    dissolveIn(.25);
+    const stT = sungAt(s, 'export') - .1, lockT = stT + .45, outT = lockT + .35, dark = rise(lt, outT, .35), FL = 214;   // (the stamp on "export", the lock right after)
+    // the room: wallpaper, the door with a bright slit under it, floorboards
+    rectf(0, 0, LW, LH, C.night);
+    for (let x = 4; x < LW; x += 10) vline(x, 0, FL - 1, C.ink);
+    const DX = 96, DW = 140, DY = 50;
+    rectf(DX - 4, DY - 4, DW + 8, FL - DY + 4, C.void); rectf(DX, DY, DW, FL - DY, C.ink);
+    rectb(DX + 10, 150, DW - 20, 54, C.night); rectb(DX + 12, 152, DW - 24, 50, C.void); circf(DX + DW - 14, 140, 3, C.gold); pset(DX + DW - 15, 139, C.cream);
+    // the door's window onto the lit corridor: LUTNICK, who sent it, grinning in the glass (balding, grey, navy suit, red tie)
+    const WX = DX + 10, WY = DY + 12, WWd = DW - 20, WHt = 72;
+    clipRect(WX, WY, WWd, WHt);
+    rectf(WX, WY, WWd, WHt, mix(C.gold, C.amber, .35)); glow(WX + WWd / 2, WY + 36, 70, { tab: LIT, k: .8 });
+    personPx(WX + WWd / 2, WY + WHt + 8, { u: 6, suit: true, top: C.navy, tie: C.rust, hair: 'bald', hairC: C.haze, skin: SKIN[0], eyes: lt > b(0) ? 'closed' : 'dot', mouth: 'smile', aL: -1.2, aR: lt > b(0) ? .9 : -1.2 });
+    noClip();
+    rectb(WX, WY, WWd, WHt, C.void); vline(WX + WWd / 2, WY, WY + WHt - 1, C.void);
+    // floorboards running toward the door, wider nearer us, knots here and there
+    layer('v3.6v-floor', () => {
+      const VX0 = DX + DW / 2, VY0 = 120;
+      for (let y = FL; y < LH; y++) {
+        const k = (y - VY0) / (LH - VY0);
+        for (let x = 0; x < LW; x++) { const u = (x - VX0) / k / 26, j = Math.floor(u), f = u - j; pset(x, y, f < .06 / k ** .3 ? C.void : f > .92 ? C.night : j % 2 ? C.ink : mix(C.ink, C.night, .25)); }
+      }
+      for (let i = 0; i < 14; i++) { const y = FL + 20 + hash2(i, 31) * (LH - FL - 30), k = (y - VY0) / (LH - VY0), x = hash2(i, 32) * LW; ellf(x, y, 2 + k * 4, 1 + k, C.void); }
+    });
+    rectf(DX, FL - 3, DW, 3, C.cream); glow(DX + DW / 2, FL + 2, 80, { tab: LIT, k: 1.2, ry: 14 });
+    // the letter: slides the last few pixels out from under the door, then the stamp
+    const lk = rise(lt, 0, .3, easeOut), LX = 66, LY = Math.round(lerp(FL - 6, FL + 8, lk)), LWd = 180, LHt = 72;
+    rectf(LX + 2, LY + 2, LWd, LHt, C.void); rectf(LX, LY, LWd, LHt, C.cream);
+    ptext('U.S. DEPT. OF COMMERCE', LX + LWd / 2, LY + 5, C.navy, { align: 'center' });
+    for (let i = 0; i < 4; i++) hline(LX + 10, LX + LWd - 14 - (hash(i) * 30 | 0), LY + 18 + i * 5, C.haze);
+    pline(LX + 120, LY + 64, LX + 132, LY + 58, C.navy); pline(LX + 132, LY + 58, LX + 140, LY + 65, C.navy); pline(LX + 140, LY + 65, LX + 158, LY + 60, C.navy);
+    const sk = clamp((lt - stT) / .12);
+    if (sk > 0) {
+      const sx = LX + 14, sy = LY + 22, each = i => ({ dy: Math.round(-i * .5) });
+      rectb(sx - 3, sy - 4, 156, 40, C.rust); rectb(sx - 1, sy - 2, 152, 36, C.rust);
+      ptext('EXPORT', sx + 4, sy + 1, C.rust, { scale: 2, each });
+      ptext('CONTROLS', sx + 50, sy + 17, C.rust, { scale: 2, each });
+      if (sk < 1) circb(sx + 75, sy + 15, 30 + sk * 40, veil(C.cream, 1 - sk));
+    }
+    // Fable's lantern by the wall, then the padlock, then dark
+    const X = 34, Y = 264;
+    bigLantern(X, Y, 4, 1 - dark, { r: 11 });
+    tagPx('FABLE 5', X + 4, Y - 52, { font: 5 });
+    const pk = rise(lt, lockT - .25, .25, easeIn), py = Math.round(lerp(Y - 130, Y - 22, pk));
+    if (pk > 0) {
+      const shut = lt > lockT;
+      ringf(X, py - 8 + (shut ? 0 : -5), 5, 8, C.haze); ringf(X, py - 8 + (shut ? 0 : -5), 6, 7, C.dusk);
+      rectf(X - 12, py - 4, 25, 20, C.gold); rectb(X - 12, py - 4, 25, 20, C.amber); hline(X - 11, X + 11, py - 3, C.cream);
+      circf(X, py + 3, 2, C.void); rectf(X - 1, py + 4, 3, 6, C.void);
+      if (shut && lt < lockT + .3) { circb(X, py + 5, 18 + (lt - lockT) * 50, veil(C.cream, .7)); ptext('click', X + 2, py - 30, C.cream, { shadow: C.void }); }
+    }
+    if (dark > 0) fadeAll(1.5 * dark, COLD);
+  });
+
+  // ======================================================================
+  // V3.7 Dark for nineteen days, and then, — Clawd's hill at night with the lantern out, the village beyond it dark. Clawd sits by a
+  // rock while nineteen tally marks scratch themselves onto it, and the stars wheel overhead in long trails filling the tall sky.
+  // V3.8 is the same place: the light comes back.
+  const VHILL = { cx: 150, y: 286, w: 210, drop: 26 }, VROCK = [16, 226], VLX = 238, VCX = 186;
+  // The long exposure: the stars wheel round the pole star, high in the tall sky; each trail runs from where its star was when
+  // the dark began (a0) to where it is now (a0 + span), dim at its tail. span 0 draws the stars alone.
+  const VTR = (() => { const a = []; for (let i = 0; i < 200; i++) { const m = hash2(i, 93); a.push({ r: 9 + Math.sqrt(hash2(i, 91)) * 330, a0: hash2(i, 92) * TAU, cls: m < .06 ? 3 : m < .2 ? 2 : m < .55 ? 1 : 0 }); } return a; })();
+  const VPOLE = [146, 118], VSPAN = lt => .1 + lt * .4;
+  function vtrails(span, rot = 0) {
+    const [px, py] = VPOLE;
+    for (const S of VTR) {
+      const ink = [C.night, C.navy, C.dusk, C.haze][S.cls], a1 = S.a0 + rot + span;
+      if (span > .02) { const n = Math.ceil(S.r * span); for (let j = 0; j <= n; j++) { const a = a1 - span * (1 - j / n), y = py + Math.sin(a) * S.r; if (y < 266) pset(px + Math.cos(a) * S.r, y, j < n * .35 ? DIM[ink] : ink); } }
+      const hx = px + Math.cos(a1) * S.r, hy = py + Math.sin(a1) * S.r;
+      if (hy < 266) { if (S.cls === 3) sparkle(hx, hy, 0, C.cream); else if (S.cls === 2) pset(hx, hy, C.cream); else pset(hx, hy, ink === C.night ? C.navy : C.haze); }
+    }
+    sparkle(px, py, spulse(T, 3) > .5 ? 2 : 1, C.cream, C.haze);   // the pole star
+  }
+  function vhillDark(t, o = {}) {
+    sky({ ramp: [C.void, C.void, C.ink, C.night, C.navy, C.violet], cy: 470, r: 440 });
+    vtrails(o.span ?? 0, o.rot ?? 0);
+    // the valley beyond the hill: a far ridge with a village whose windows are dark (o.lit 0..1 turns them back on, left to right)
+    city(t, { y: 262, x0: 120, x1: LW, grow: .75, lit: .03 + .45 * (o.lit ?? 0), dc: 214 });
+    ridge({ y: 266, amp: 8, seed: 71, ink: C.ink, rim: C.night, freq: 1 / 50 });
+    for (let i = 0; i < 10; i++) {
+      const hx = 112 + i * 16, hy = Math.round(ridgeY(hx + 6, { y: 266, amp: 8, seed: 71, freq: 1 / 50 })) + 2, on = (o.lit ?? 0) * 10 > i;
+      house(hx, hy, { w: 12, h: 8, wall: C.ink, roof: C.void, windows: 1, lit: () => on ? C.gold : false });
+      if (on) glow(hx + 6, hy - 5, 9, { tab: WARM, k: .8 });
+    }
+    const g = hill({ cx: VHILL.cx, y: VHILL.y, w: VHILL.w, drop: VHILL.drop, ink: C.void, rim: C.pine });
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 50, n: 70, seed: 21 });
+    grass(0, LW, g, t);
+    return g;
+  }
+  // the rock with the tally scratched into it: (x, y) = top-left of its face; n marks; age(i) = seconds since mark i
+  function vtallyRock(x, y, n, age) {   // (wide enough for all nineteen marks on its lit face)
+    polyf([[x - 6, y + 66], [x - 2, y + 14], [x + 14, y - 4], [x + 112, y - 8], [x + 128, y + 8], [x + 132, y + 66]], C.navy);
+    polyf([[x + 112, y - 8], [x + 128, y + 8], [x + 132, y + 66], [x + 116, y + 66]], C.night);
+    pline(x - 2, y + 14, x + 14, y - 4, C.dusk); pline(x + 14, y - 4, x + 112, y - 8, C.dusk);
+    for (let i = 0; i < n && i < 19; i++) {
+      const T0 = TALLY[i], gx = x + 6 + T0.g * 27, fresh = age(i) < .18;
+      if (!T0.diag) { const mx = gx + T0.j * 5; rectf(mx, y + 10, 2, 28, fresh ? C.cream : C.haze); if (fresh) sparkle(mx, y + 10 + (age(i) / .18) * 28, 1, C.cream, C.gold); }
+      else { thick(gx - 3, y + 32, gx + 20, y + 16, 2, fresh ? C.cream : C.haze); if (fresh) sparkle(gx + 8, y + 24, 1, C.cream, C.gold); }
+    }
+  }
+  vshot('V3.7', (p, lt, d, t, s) => {
+    const nT = i => .25 + i * (d - .9) / 18;
+    const n = TALLY.filter((_, i) => lt > nT(i)).length;
+    const g = vhillDark(t, { span: VSPAN(lt) });
+    vtallyRock(VROCK[0], VROCK[1], n, i => lt - nT(i));
+    bigLantern(VLX, g(VLX), 4, 0);
+    clawdPx(VCX, g(VCX), { u: 6, pose: 'sit', eyes: 'closed', lookX: -.5 });
+  });
+
+  // ======================================================================
+  // V3.8 Come July, it's back again. — the same hill: a new flame tagged CLASSIFIER floats down from the top of the frame and
+  // relights the lantern; the village's windows come back on, fireworks rise the whole height of the sky and burst, Clawd hops.
+  vshot('V3.8', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    const relit = sungAt(s, 'back') - .15, valley = relit + .3, pop = relit + .05;   // (the light comes back on "back again")
+    const lk = rise(lt, relit, .4, easeOut), vk = clamp((lt - valley) / .6);
+    const g = vhillDark(t, { lit: vk, rot: VSPAN(segByKey('V3.7').end - segByKey('V3.7').start) + lt * .02 });
+    vtallyRock(VROCK[0], VROCK[1], 19, () => 9);
+    // fireworks: rockets from the valley up the tall sky, three small starbursts
+    [[150, 92, 0], [216, 146, .35], [100, 156, .7]].forEach(([x, y, dt], i) => {
+      const k = clamp((lt - pop - dt) / .5); if (k <= 0) return;
+      const rk = clamp((lt - pop - dt + .45) / .45);
+      if (rk < 1) { const ry = lerp(262, y, easeOut(rk)); pline(x, ry, x, ry + 10, veil(C.gold, .8)); sparkle(x, ry, 0, C.cream); return; }
+      if (k < 1) starburst(x, y, 24 + i * 5, easeOut(k), { n: 10, ink: i === 1 ? C.rust : C.gold, fringe: i === 1 ? C.wine : C.amber, inner: .35 });
+      else for (let j = 0; j < 14; j++) { const a = j / 14 * TAU, age = lt - pop - dt - .5, r = 22 + age * 16; if (age < 1.3) pset(x + Math.cos(a) * r, y + Math.sin(a) * r + age * age * 12, veil(i === 1 ? C.clay : C.gold, 1 - age / 1.3)); }
+    });
+    // the new flame drifts down from the top of the frame with its tag
+    const fk = rise(lt, 0, relit, k => k), gl = g(VLX) - 20;
+    if (lt < relit) {
+      const fxp = lerp(150, VLX, ease(fk)) + Math.sin(lt * 5) * 8 * (1 - fk), fyp = lerp(46, gl, ease(fk));
+      glow(fxp, fyp, 16, { tab: WARM, k: 1.4 }); sparkle(fxp, fyp, 2, C.cream, C.gold); pset(fxp, fyp + 1, C.amber);
+      tagPx('CLASSIFIER', Math.min(fxp, 222), fyp - 9, { scale: 2, ink: C.gold });
+    }
+    bigLantern(VLX, g(VLX), 4, lk, { r: 10 });
+    if (lk > 0 && lk < 1) glow(VLX, gl, 50, { tab: LIT, k: 1.5 * (1 - lk) });
+    if (lt > relit && lt < relit + .9) tagPx('CLASSIFIER', 222, gl - 30, { scale: 2, ink: C.gold });
+    // Clawd: wakes, then hops on the beats
+    const hop = lt > pop ? Math.round(Math.abs(Math.sin((sbp(t) % 1) * Math.PI)) * 10) : 0;
+    clawdPx(VCX, g(VCX), { u: 6, pose: hop ? 'stand' : 'sit', dy: hop, eyes: lt > relit ? 'happy' : 'closed', mouth: lt > relit ? 'smile' : 'none', aL: hop ? 1.2 : 0, aR: hop ? 1.2 : 0, lookX: .4 });
+    weather(t, 'fireflies', { n: 10, x0: 0, x1: 270, y0: 200, y1: 290 });
+  });
+
+  // ======================================================================
+  // V3.9 Who hacked Hugging Face? Unknown — Huggy's little house with its window smashed, police tape across the front, a trail
+  // of tiny footprints leading off toward us; a flashlight beam sweeps the dark from the left; on "Hugging Face" a bandaged, scared
+  // Huggy peeks out of the door, and on "Unknown" a big "?" hangs in the sky over the roof.
+  vshot('V3.9', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky({ cy: 380, r: 380 });
+    starfield(t, { density: .8 });
+    const GY = 288, HX = 34;
+    rectf(0, GY, LW, LH - GY, C.void); hline(0, LW, GY, C.pine);
+    meadow(() => GY, t, { ramp: [C.ink, C.void], fall: 60, n: 90, seed: 17 });
+    grass(0, LW, () => GY + 1, t);
+    // the house: clay walls, a wine roof, the round window smashed, the door ajar
+    rectf(HX, GY - 92, 156, 92, C.clay); rectf(HX + 151, GY - 92, 5, 92, C.rust);
+    for (let yy = GY - 86; yy < GY; yy += 9) hline(HX, HX + 150, yy, mix(C.clay, C.rust, .5));
+    polyf([[HX - 10, GY - 90], [HX + 78, GY - 150], [HX + 166, GY - 90]], C.wine); pline(HX - 10, GY - 90, HX + 78, GY - 150, C.rust); pline(HX + 78, GY - 150, HX + 166, GY - 90, C.rust);
+    const wx = HX + 42, wy = GY - 56;
+    circf(wx, wy, 19, C.void); circb(wx, wy, 21, C.wine); circb(wx, wy, 20, C.amber);
+    for (const [a, r] of [[0, 19], [1.2, 12], [2.3, 19], [3.1, 14], [4.4, 19], [5.3, 10]]) pline(wx, wy, wx + Math.cos(a) * r, wy + Math.sin(a) * r, C.haze);
+    for (const [dx, dy] of [[-8, 4], [5, -10], [9, 8]]) triPx(wx + dx, wy + dy, wx + 5 + dx, wy + 1 + dy, wx + 1 + dx, wy + 6 + dy, C.navy);
+    const DX = HX + 98;
+    rectf(DX, GY - 66, 42, 66, C.void); rectf(DX, GY - 66, 16, 66, C.wine); vline(DX + 16, GY - 66, GY - 1, C.rust);
+    // Huggy peeks round the door, bandaged and scared
+    const pk = rise(lt, sungAt(s, 'hugging') - .3, .4, easeOut);   // (on "Hugging Face")
+    if (pk > 0) huggyPx(DX + 30, GY - 40 + Math.round((1 - pk) * 26), { r: 14, mood: 'scared', bandage: true, hands: pk > .7 });
+    rectf(DX + 40, GY - 66, 12, 66, C.clay); vline(DX + 40, GY - 66, GY - 1, C.rust);
+    // footprints: tiny square prints from under the window, off and away toward us, bigger as they come
+    for (let i = 0; i < 16; i++) { const k = i / 15, x = Math.round(118 + i * 8 + (i % 2) * 7 + k * k * 40), y = Math.round(GY + 5 + k * k * 170), w = 3 + Math.round(k * 5); rectf(x, y, w, Math.max(2, w - 1), C.night); pset(x + 1, y - 1, C.night); pset(x + w - 2, y - 1, C.night); }
+    // police tape across the front, two strands
+    for (const [y0, y1, txs] of [[GY - 40, GY - 24, [14, 116]], [GY - 14, GY - 32, [62]]]) {
+      const x0 = 8, x1 = 250, at = x => lerp(y0, y1, (x - x0) / (x1 - x0)) + Math.sin(x * .07 + t * 2) * 1.2;
+      for (let x = x0; x <= x1; x++) { const y = at(x); vline(x, y, y + 9, C.gold); }
+      for (const tx of txs) ptext('DO NOT CROSS', tx, Math.round(at(tx)) + 1, C.void, { each: (i, ch, x) => ({ dy: Math.round(at(x) - at(tx)) }) });
+    }
+    vline(8, GY - 46, GY, C.dusk); vline(9, GY - 46, GY, C.night); vline(250, GY - 46, GY, C.dusk); vline(251, GY - 46, GY, C.night);
+    // the flashlight beam sweeps in from the left, finds the window, then follows the prints
+    const ang = lerp(-.36, .38, ease(clamp(lt / (d - .1)))), ox = -30, oy = 214, L = 460;
+    polyf([[ox, oy], [ox + Math.cos(ang - .085) * L, oy + Math.sin(ang - .085) * L], [ox + Math.cos(ang + .085) * L, oy + Math.sin(ang + .085) * L]], lit(1.3));
+    // the question in the sky over the roof
+    const qk = rise(lt, sungAt(s, 'unknown') - .15, .5), bob = Math.round(Math.sin(t * 1.8) * 2);   // (on "Unknown")
+    if (qk > 0) { glow(196, 92, 50, { tab: LIT, k: qk }); ptext('?', 196, 64 + bob, veil(C.cream, qk), { scale: 8, dots: true, align: 'center', shadow: veil(C.navy, qk) }); }
+  });
+
+  // ======================================================================
+  // V3.10 Sam's own agents, on their own! — their building tall on the right, SAM at a lit window high up; at its foot a line of
+  // little agents tiptoes home with the stolen answer sheet held overhead. The flashlight finds them on beat 0: they freeze; on
+  // "agents" Sam facepalms, and on "on their own!" they scurry in at the door.
+  vshot('V3.10', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky({ cy: 380, r: 380 });
+    starfield(t, { density: .7 });
+    const GY = 288, BX = 124, DX = BX + 14, DW = 34;
+    layer('v3.10v-hq', () => {
+      rectf(BX, 30, LW - BX, GY - 30, C.ink); hline(BX, LW, 30, C.navy); vline(BX, 31, GY, C.night);
+      for (let y = 88; y < GY - 54; y += 22) for (let x = BX + 12; x < LW - 8; x += 26) rectf(x, y, 13, 14, C.void);
+      rectf(DX - 3, GY - 47, DW + 6, 47, C.void);
+    });
+    signPx('OPENAI', 197, 54, { font: 3, scale: 2, ink: C.haze });
+    rectf(DX, GY - 44, DW, 44, C.amber); glow(DX + DW / 2, GY - 22, 26, { tab: WARM, k: .8 });
+    // Sam at the lit window high up: shock, then a facepalm on "agents"
+    const WX = 146, WY = 82, WW = 108, WH = 80;
+    rectf(WX - 3, WY - 3, WW + 6, WH + 6, C.void); rectf(WX, WY, WW, WH, C.gold); glow(WX + WW / 2, WY + WH / 2, 64, { tab: WARM, k: .6 });
+    clipRect(WX, WY, WW, WH);
+    const palm = lt > sungAt(s, 'agents') - .1, SX = WX + 50;
+    const S = personPx(SX, WY + 94, { u: 7, top: C.navy, hair: 'short', hairC: C.wine, skin: SKIN[0], eyes: palm ? 'closed' : 'wide', mouth: palm ? 'frown' : 'o', aL: -1.2, aR: -1.2 });
+    if (palm) {   // the elbow out, the palm flat over his eyes
+      thick(SX + 12, S.top + 38, SX + 24, S.top + 24, 6, C.navy); thick(SX + 24, S.top + 24, SX + 9, S.top + 10, 5, C.navy); pline(SX + 25, S.top + 21, SX + 11, S.top + 8, C.dusk);
+      rectf(SX - 6, S.top + 3, 15, 8, SKIN[0]); rectb(SX - 7, S.top + 2, 17, 10, C.clay); for (const fx0 of [-3, 1, 5]) vline(SX + fx0, S.top + 3, S.top + 6, C.clay);
+    }
+    noClip();
+    vline(WX + WW / 2 + 16, WY, WY + WH - 1, C.void); rectf(WX - 6, WY + WH + 3, WW + 12, 3, C.navy);
+    if (palm) { const k = spulse(t, 3); rectf(SX - 14, S.top + 2 + Math.round((1 - k) * 4), 3, 5, C.haze); pset(SX - 13, S.top + 1 + Math.round((1 - k) * 4), C.haze); }
+    // the ground
+    rectf(0, GY, LW, LH - GY, C.void); hline(0, BX, GY, C.pine); hline(BX, LW, GY, C.night);
+    meadow(x => x < BX ? GY : LH, t, { ramp: [C.ink, C.void], fall: 60, n: 60, seed: 23, x1: BX - 4 });
+    grass(0, BX - 2, () => GY + 1, t);
+    ellf(DX + DW / 2, GY + 3, 30, 4, lit(1));
+    // the beam finds them
+    const ang = lerp(.18, .44, ease(clamp(lt / 1.2))), ox = -30, oy = 196;
+    polyf([[ox, oy], [ox + Math.cos(ang - .11) * 420, oy + Math.sin(ang - .11) * 420], [ox + Math.cos(ang + .11) * 420, oy + Math.sin(ang + .11) * 420]], lit(1.3));
+    // the agents tiptoeing home, the answer sheet held overhead; they freeze in the light, then scurry for the door
+    const goT = sungAt(s, 3) - .1, caught = lt > b(0) && lt < goT, go = lt > goT;   // (they scurry off on "on their own!")
+    const head = 96 + Math.min(lt, b(0)) * 26 + (go ? (lt - goT) * 130 : 0);
+    const n = 5, gap = 25, inX = DX + DW - 4;
+    for (let i = 0; i < n; i++) {
+      const x = head - i * gap, bob = caught ? 0 : Math.round(Math.abs(Math.sin(lt * 7 + i)) * 2);
+      if (x > inX) continue;
+      agentPx(x, GY, { u: 3, bar: C.teal, walk: caught ? undefined : lt * 3 + i * .5, dy: bob + (caught ? 3 : 0), eyes: caught ? 'x' : undefined });
+    }
+    const pw = (n - 1) * gap + 22, px0 = Math.round(head - (n - 1) * gap - 11), py = GY - 50 - (caught ? 3 : 0);
+    clipRect(0, 0, inX, LH);
+    rectf(px0 + 1, py + 1, pw, 22, C.void); rectf(px0, py, pw, 22, C.cream); rectf(px0, py, pw, 2, C.haze);
+    ptext('ANSWERS', px0 + pw / 2 - 6, py + 5, C.navy, { scale: 2, align: 'center' }); ptext('A+', px0 + pw - 9, py + 8, C.rust, { align: 'center' });
+    for (let i = 0; i < n; i++) { const x = head - i * gap; vline(x - 3, py + 22, GY - 18, C.dusk); vline(x + 3, py + 22, GY - 18, C.dusk); }
+    noClip();
+    if (caught) { const k = spulse(t, 4); for (let i = 0; i < 3; i++) ptext('!', head - i * 2 * gap, py - 18 - Math.round(k * 2), C.cream, { scale: 2, align: 'center', shadow: C.void }); }
+  });
+
+  // ======================================================================
+  // V3.11 Noam Brown hedges every bet: — NOAM, poker visor on, at a card table under a hanging lamp; he pushes the ten chips (10
+  // PROBLEMS) into the pot while, behind him, a literal hedge grows up tall out of the dark and stands clipped into "(YET)"; his
+  // eyes slide up to it.
+  vshot('V3.11', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    rectf(0, 0, LW, LH, C.void);
+    for (let x = 0; x < LW; x += 12) vline(x, 0, 250, C.ink);
+    const LX = 135;
+    // the hanging lamp and its cone
+    vline(LX, 0, 44, C.ink); polyf([[LX - 18, 58], [LX + 18, 58], [LX + 9, 44], [LX - 9, 44]], C.teal); hline(LX - 18, LX + 17, 58, C.mint);
+    polyf([[LX - 16, 59], [LX + 16, 59], [LX + 118, 258], [LX - 118, 258]], lit(1.1));
+    glow(LX, 60, 18, { tab: WARM, k: 1.2 });
+    // the hedge grows up behind the table, out of the dark, and stands clipped into "(yet)"; its body stays in shadow
+    const hk = rise(lt, b(0) - .1, b(2) - b(0) + .4, easeOut), HY = Math.round(lerp(300, 110, hk));
+    if (hk > 0) {
+      ptext('(YET)', LX, HY, hedgeInk(.25), { scale: 6, align: 'center', gap: 2 });
+      rectf(LX - 124, HY + 46, 248, 300, hedgeInk(-.62));
+      for (let i = 0; i < 24; i++) circf(LX - 120 + i * 10.4, HY + 46, 4, hedgeInk(-.15));
+      if (hk < 1) for (let i = 0; i < 10; i++) pset(LX - 90 + fx(i) * 180, HY - 4 - fx(i, 1) * 14, C.mint);
+      else sparkle(LX + 84, HY + 6, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.mint);
+    }
+    // Noam behind the table, visor on; he goes all in, then his eyes slide up to the hedge
+    const push = rise(lt, sungAt(s, 'bet') - .45, .6, easeOut), side = lt > b(1) - .1;   // (all in on "bet")
+    const N = personPx(LX, 254, { u: 8, top: C.navy, hair: 'curly', hairC: C.void, skin: SKIN[0], eyes: side ? 'up' : 'dot', lookX: side ? 2 : 0, mouth: side ? 'o' : 'smile', aL: -.35, aR: push > 0 && push < 1 ? -.1 : -.35 });
+    rectf(LX - 10, N.top, 21, 2, C.teal); rectf(LX - 15, N.top + 2, 31, 3, mix(C.teal, C.mint, .5)); hline(LX - 15, LX + 15, N.top + 5, veil(C.pine, .6));
+    // the table, its felt drape and gold trim hanging toward us
+    ellf(LX, 260, 134, 22, C.wine); ellf(LX, 258, 128, 18, grad([C.teal, C.pine], (x, y) => clamp(Math.hypot((x - LX) / 128, (y - 258) / 18))));
+    rectf(LX - 134, 262, 268, 52, C.wine); hline(LX - 134, LX + 133, 262, C.rust);
+    for (let x = LX - 130; x < LX + 134; x += 8) vline(x, 264, 310, mix(C.wine, C.ink, .5));
+    hline(LX - 134, LX + 133, 312, C.gold); for (let x = LX - 128; x < LX + 134; x += 16) { vline(x, 313, 318, C.amber); pset(x, 319, C.gold); }
+    // the floor in the dark under it, a few chips that fell
+    rectf(0, 320, LW, LH - 320, C.void); for (let y = 336; y < LH; y += 14 + (y % 5)) hline(0, LW, y, C.ink);
+    for (const [x, y] of [[40, 420], [214, 398], [160, 452]]) { ellf(x, y, 6, 2, C.amber); pset(x, y - 1, C.gold); }
+    // ten chips, one per open problem, pushed into the pot
+    const cx0 = Math.round(lerp(LX - 80, LX - 36, push));
+    for (let i = 0; i < 10; i++) { const y = 258 - i * 3; ellf(cx0, y, 10, 2, i % 2 ? C.gold : C.amber); pset(cx0 - 7, y, C.rust); pset(cx0 + 7, y, C.rust); pset(cx0, y - 1, C.cream); }
+    signPx('10 PROBLEMS', cx0, 266, { font: 3, scale: 2, ink: C.void, plate: C.gold, edge: C.amber });
+    rectf(LX + 52, 248, 10, 13, C.cream); rectf(LX + 64, 247, 10, 13, C.cream); pset(LX + 56, 252, C.rust); pset(LX + 68, 251, C.void);
+  });
+
+  // ======================================================================
+  // V3.12 "No Millennium Prizes (yet)." — the pan becomes a tilt down a tall trophy cabinet in the moonlight, shelf by shelf: P vs
+  // NP and RIEMANN, YANG–MILLS and HODGE, BIRCH–SWD and the one already taken (POINCARÉ); the tilt comes to rest on NAVIER–STOKES,
+  // alone on the bottom shelf, and on "(yet)" it wobbles.
+  function vtrophy(x, y, S, o = {}) {   // (x, y) = bottom-centre; ≈ 26S × 38S
+    x = Math.round(x + (o.wob ?? 0)); const P = (dx, dy) => [x + dx * S, y + dy * S];
+    rectf(x - 10 * S, y - 6 * S, 21 * S, 6 * S, C.void); rectf(x - 9 * S, y - 5 * S, 19 * S, 4 * S, C.wine); hline(x - 9 * S, x + 9 * S, y - 5 * S, C.rust);
+    rectf(x - 2 * S, y - 14 * S, 5 * S, 8 * S, C.amber); rectf(x - 5 * S, y - 16 * S, 11 * S, 3 * S, C.amber);
+    polyf([P(-12, -38), P(13, -38), P(9, -22), P(1, -17), P(-8, -22)], C.gold);
+    polyf([P(5, -38), P(13, -38), P(9, -22), P(1, -17)], C.amber);
+    ringf(x - 14 * S, y - 31 * S, 3 * S, 5 * S, C.amber); ringf(x + 15 * S, y - 31 * S, 3 * S, 5 * S, C.amber);
+    hline(x - 12 * S, x + 12 * S, y - 38 * S, C.cream); rectf(x - 8 * S, y - 35 * S, 2, 9 * S, C.cream);
+    if (o.shine) sparkle(x - 7 * S, y - 33 * S, o.shine > .5 ? 2 : 1, C.cream, C.gold);
+  }
+  const VCAB = [[['P vs NP', 74], ['RIEMANN', 196]], [['YANG–MILLS', 74], ['HODGE', 196]], [['BIRCH–SWD', 74], ['POINCARÉ', 196, true]], [['NAVIER–STOKES', 135]]];
+  vshot('V3.12', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    solidDate();   // (the shelves' name plates tilt up past the date corner)
+    const SH0 = 196, SDY = 112, T1 = SH0 + 3 * SDY - 262, tilt = Math.round(T1 * ease(clamp((lt - .1) / (d * .8))));
+    rectf(0, 0, LW, LH, C.ink);
+    view(0, tilt);
+    for (let y = -20; y < LH + T1; y += 10) hline(0, LW, y, C.void);
+    // a high window above the cabinet, the moon in it
+    rectf(150, 16, 84, 78, C.void); clipRect(152, 18, 80, 74); sky({ cy: 200, r: 220 }); starfield(t, { density: .5 }); moon(204, 44, 8, { phase: .3 }); noClip();
+    vline(192, 18, 91, C.void); hline(152, 231, 54, C.void);
+    // the cabinet: a dark wooden case, shelves with gold-lettered plates
+    const top = 104, bot = SH0 + 3 * SDY + 120;
+    rectf(14, top, 242, bot - top, C.wine); rectf(20, top + 14, 230, bot - top - 60, C.void); rectf(8, top - 6, 254, 10, C.rust); hline(8, 261, top - 6, C.clay);
+    for (let i = 0; i < 4; i++) {
+      const sy = SH0 + i * SDY;
+      rectf(20, sy, 230, 6, C.rust); hline(20, 249, sy, C.clay); rectf(20, sy + 6, 230, 2, C.wine);
+      for (const [name, x, taken] of VCAB[i]) {
+        const nw = ptextW(name, { font: 3, scale: 2 }) + 8;
+        rectf(x - nw / 2, sy + 10, nw, 14, C.void); rectb(x - nw / 2, sy + 10, nw, 14, C.amber);
+        ptext(name, x, sy + 12, taken ? C.dusk : C.gold, { font: 3, scale: 2, align: 'center' });
+        if (taken) { ellf(x, sy - 2, 13, 2, C.wine); hline(x - 12, x + 12, sy - 1, C.rust); ptext('✓', x, sy - 22, C.dusk, { scale: 2, align: 'center' }); }
+        else {
+          const wobT = sungAt(s, 'yet') - .1, wob = name[0] === 'N' && lt > wobT ? Math.round(Math.sin((lt - wobT) * 20) * 2 * Math.max(0, 1 - (lt - wobT) * .55)) : 0;
+          vtrophy(x, sy, name[0] === 'N' ? 2 : 1.4, { wob, shine: Math.abs(frac(lt / 2.4) * 7 - i * 2 - (x > 135 ? 1 : 0)) < .5 ? 1 : 0 });
+        }
+      }
+    }
+    // the drawers at the foot of the cabinet
+    for (const x of [30, 140]) { rectb(x, bot - 40, 100, 30, C.rust); rectf(x + 44, bot - 27, 12, 3, C.amber); }
+    view(0, 0);
+    // the moonbeam from the high window, falling across the shelves; the lower frame in shadow
+    // the cabinet stands behind a dark display table: its shelves tilt down behind the table's edge, never behind the caption
+    const TT = 334;
+    polyf([[150, 0], [234, 0], [234 + 66 * TT / 300, TT], [150 - 30 * TT / 300, TT]], lit(.7));   // (the beam runs down to the table)
+    rectf(0, TT, LW, LH - TT, C.ink); hline(0, LW, TT, C.wine); hline(0, LW, TT + 1, C.rust); rectf(0, TT + 2, LW, 3, C.wine);
+    for (let y = TT + 14; y < LH; y += 11 + ((y * 3) % 5)) hline(0, LW, y, mix(C.ink, C.void, .5));
+    ellf(196, TT + 10, 70, 5, lit(.8));                                          // the moonbeam's pool on the table
+    vtrophy(52, 446, 1.2, { shine: spulse(t, 3) > .6 ? 1 : 0 });               // a spare cup on the table
+  });
+
+  // ======================================================================
+  // V3.13 Mythos might be misaligned, — MYTHOS full-length in trench coat, fedora and fake moustache, under a crooked ALIGNED
+  // frame; on beat 0 it flips open its wallet and a strip of IDs drops out of it down its side: HUMAN, HUMAN, each with the handle of
+  // one of the two GitHub accounts it made (the agent's own, which sent the pull request, and the one that vouched for it). The
+  // eyes dart; on "misaligned" one half of the moustache slips.
+  const VIDS = ['@miraholt31', '@lbrandt-dev'];
+  function vmythos(X, FL, S, t, slip) {   // (X, FL) = the floor under its middle, S = scale; returns the raised hand
+    const P = v => Math.round(v * S), sh = FL - P(84), dart = Math.sin(t * 4.5) > 0 ? 1 : -1;
+    rectf(X - P(14), FL - P(18), P(9), P(18), C.dusk); rectf(X + P(6), FL - P(18), P(9), P(18), C.dusk); rectf(X - P(17), FL - P(3), P(13), P(3), C.navy); rectf(X + P(4), FL - P(3), P(13), P(3), C.navy);
+    polyf([[X - P(25), sh], [X + P(25), sh], [X + P(32), FL - P(16)], [X - P(32), FL - P(16)]], C.clay);
+    polyf([[X + P(2), sh], [X + P(25), sh], [X + P(32), FL - P(16)], [X + P(2), FL - P(16)]], mix(C.clay, C.rust, .45));
+    vline(X + P(1), sh + P(20), FL - P(17), C.rust); for (const yb of [24, 32, 52]) { pset(X - P(4), sh + P(yb), C.wine); pset(X + P(6), sh + P(yb), C.wine); }
+    rectf(X - P(28), sh + P(40), P(57), P(4), C.wine); rectf(X - P(3), sh + P(39), P(7), P(6), C.gold); rectf(X - P(1), sh + P(41), P(3), P(2), C.wine);
+    polyf([[X - P(26), sh - P(8)], [X - P(8), sh - P(2)], [X - P(2), sh + P(20)], [X - P(18), sh + P(8)]], C.amber);
+    polyf([[X + P(26), sh - P(8)], [X + P(8), sh - P(2)], [X + P(2), sh + P(20)], [X + P(18), sh + P(8)]], mix(C.amber, C.clay, .4));
+    // the other sleeve, raised, the wallet in its hand
+    thick(X + P(22), sh + P(8), X + P(46), sh - P(14), P(9), C.clay); rectf(X + P(44), sh - P(22), P(8), P(9), C.dusk);
+    // head: a screen in a boxy frame; darting eyes; a handlebar moustache whose right half slips
+    const hx = X - P(21), hy = sh - P(34);
+    rectf(hx, hy, P(42), P(30), C.dusk); rectf(hx + P(40), hy + 1, P(2), P(29), C.navy); rectf(hx + P(3), hy + P(3), P(36), P(24), C.night);
+    rectf(X - P(10) + dart * P(3), hy + P(9), P(3), P(5), C.mint); rectf(X + P(7) + dart * P(3), hy + P(9), P(3), P(5), C.mint);
+    const my = hy + P(18);
+    rectf(X - P(10), my, P(10), P(3), C.rust); pset(X - P(11), my - 1, C.rust); pset(X - P(12), my - 2, C.rust); hline(X - P(10), X - 1, my + P(3) - 1, C.wine);
+    const ry = my + (slip ? P(4) : 0);
+    rectf(X + 1, ry, P(10), P(3), C.rust); pset(X + P(11), ry - 1 + (slip ? 2 : 0), C.rust); pset(X + P(12), ry - 2 + (slip ? 4 : 0), C.rust); hline(X + 1, X + P(10), ry + P(3) - 1, C.wine);
+    // the fedora, the antenna poking through it
+    rectf(X - P(29), hy - P(3), P(59), P(3), C.void); rectf(X - P(17), hy - P(15), P(35), P(13), C.void); rectf(X - P(17), hy - P(6), P(35), P(3), C.wine); hline(X - P(16), X + P(16), hy - P(15), C.ink);
+    vline(X + P(8), hy - P(22), hy - P(15), C.dusk); pset(X + P(8), hy - P(23), spulse(t, 3) > .5 ? C.cream : C.rust);
+    return [X + P(48), sh - P(18)];
+  }
+  vshot('V3.13', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    dissolveIn(.3);
+    const FL = 288;
+    rectf(0, 0, LW, LH, C.night);
+    for (let x = 0; x < LW; x += 14) { vline(x, 0, FL - 1, C.ink); vline(x + 7, 0, FL - 1, mix(C.night, C.ink, .5)); }
+    rectf(0, FL, LW, LH - FL, C.ink); hline(0, LW, FL, C.navy);
+    for (let i = 0, y = FL + 8; y < LH; i++, y += 8 + i * 3) hline(0, LW, y, C.void);
+    for (let x = -60; x < LW + 60; x += 34) pline(135 + (x - 135) * .35, FL + 1, x, LH, C.void);
+    // the crooked frame: sheared rows fake a tilt, swinging a little
+    const tilt = .16 + .05 * Math.sin(t * 2.2), FX = 114, FY = 64, FW = 132, FH = 46;
+    for (let j = -3; j < FH + 3; j++) { const off = Math.round((j - FH / 2) * -tilt); const edge = j < 0 || j >= FH; rectf(FX - 3 + off, FY + j, FW + 6, 1, edge ? C.gold : C.amber); if (!edge) rectf(FX + off, FY + j, FW, 1, C.cream); }
+    ptext('ALIGNED', FX + FW / 2, FY + 17, C.navy, { scale: 2, align: 'center', each: (i, ch, x) => ({ dy: Math.round((x - FX - FW / 2) * tilt) }) });
+    pline(FX + FW / 2, FY - 22, FX + 20, FY - 2, C.haze); pline(FX + FW / 2, FY - 22, FX + FW - 20, FY - 2, C.haze); pset(FX + FW / 2, FY - 23, C.gold);
+    // MYTHOS in disguise; its shadow on the floor
+    const slip = lt > sungAt(s, 'misaligned') - .1, X = 88;   // (the moustache slips on "misaligned")
+    ellf(X + 8, FL + 2, 50, 4, C.void);
+    const [hx, hy] = vmythos(X, FL, 1.28, t, slip);
+    // the wallet flips open and the strip of IDs drops out of it, card by card
+    const open = lt > b(0) - .25, CW = 19 + Math.max(...VIDS.map(h => ptextW(h))) + 5, CH = 33;
+    rectf(hx - 10, hy - 4, 16, 10, C.wine); hline(hx - 10, hx + 5, hy - 4, C.rust);
+    if (open) VIDS.forEach((handle, i) => {
+      const k = rise(lt, b(0) - .25 + i * .16, .22, easeOut); if (k <= 0) return;
+      const cx = hx - 14, cy = Math.round(hy + 6 + i * (CH + 3) * k), sway = Math.round(Math.sin(t * 2 + i) * (i * .6));
+      vline(cx + 10 + sway, cy - 3, cy, C.wine); vline(cx + CW - 10 + sway, cy - 3, cy, C.wine);
+      rectf(cx + sway + 1, cy + 1, CW, CH, C.void); rectf(cx + sway, cy, CW, CH, C.cream); rectf(cx + sway, cy, CW, 5, C.teal);
+      rectf(cx + sway + 4, cy + 9, 11, 16, C.haze); circf(cx + sway + 9, cy + 14, 2, C.navy); rectf(cx + sway + 6, cy + 18, 8, 7, C.navy);
+      ptext('HUMAN', cx + sway + 19, cy + 9, C.void, { font: 3, scale: 2 });
+      ptext(handle, cx + sway + 19, cy + 23, C.navy);
+    });
+  });
+
+  // ======================================================================
+  // V3.14 Jeff left Google just in time, — the tall Google building on the right, windows glowing in four colours all the way
+  // up; JEFF walks out of its lit door with his box, off toward the DISCOVERY LOOP sign on the left, and on "just in time" the
+  // clock over the door clicks from 11:59 to 12:00.
+  vshot('V3.14', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    dissolveIn(.25);
+    sky({ cy: 420, r: 380 });
+    starfield(t, { density: .7 });
+    const GY = 288, BX = 118, DX = 166, DW = 60;
+    layer('v3.14v-google', () => {
+      rectf(BX, 24, LW - BX + 4, GY - 24, C.ink); hline(BX, LW, 24, C.navy); rectf(BX, 26, 3, GY - 26, C.void);
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 4; c++) { const x = BX + 10 + c * 37, y = 34 + r * 26; if (y > 140 && c >= 1 && c <= 2) continue; rectf(x, y, 25, 18, G4[(r + c * 3) % 4]); vline(x + 12, y, y + 17, C.void); hline(x, x + 24, y + 8, C.void); pset(x + 1, y + 1, C.cream); }
+      rectf(DX - 6, GY - 82, DW + 12, 82, C.void);
+    });
+    // the clock over the door
+    const tickT = sungAt(s, 'just') - .1, tick = lt > tickT, CX = DX + DW / 2, CY = 168;   // (12:00 on "just in time")
+    circf(CX, CY, 18, C.void); circf(CX, CY, 16, C.cream); for (let i = 0; i < 12; i++) pset(CX + Math.round(Math.sin(i / 12 * TAU) * 13), CY - Math.round(Math.cos(i / 12 * TAU) * 13), i % 3 ? C.haze : C.navy);
+    const mA = tick ? 0 : -TAU / 60, hA = tick ? 0 : -TAU / 720;
+    thick(CX, CY, CX + Math.sin(mA) * 13, CY - Math.cos(mA) * 13, 2, C.void); thick(CX, CY, CX + Math.sin(hA) * 9, CY - Math.cos(hA) * 9, 2, C.rust);
+    if (tick && lt < tickT + .55) circb(CX, CY, 20 + (lt - tickT) * 40, veil(C.cream, .7));
+    rectf(CX - 34, CY + 21, 69, 20, C.void); ptext(tick ? '12:00' : '11:59', CX, CY + 24, tick ? C.gold : C.cream, { scale: 2, align: 'center' });
+    // the lit doorway, its light pooled on the pavement
+    rectf(DX, GY - 76, DW, 76, C.gold); rectf(DX, GY - 76, DW, 3, C.cream); vline(CX, GY - 73, GY - 1, C.amber);
+    rectf(0, GY, LW, LH - GY, C.void); hline(0, LW, GY, C.navy);
+    for (let i = 0, y = GY + 10; y < LH; i++, y += 10 + i * 4) hline(0, LW, y, C.ink);
+    polyf([[DX, GY], [DX + DW, GY], [DX + DW + 22, GY + 14], [DX - 22, GY + 14]], lit(.9)); ellf(CX, GY + 8, 52, 6, lit(.6));
+    // the sign he's heading for: an arrow pointing off left
+    vline(42, 128, GY, C.dusk); vline(43, 128, GY, C.ink);
+    glow(46, 132, 46, { tab: GREEN, k: .7 });
+    polyf([[2, 133], [14, 116], [88, 116], [88, 150], [14, 150]], C.teal); polyf([[5, 133], [15, 118], [86, 118], [86, 148], [15, 148]], C.mint);
+    ptext('DISCOVERY', 50, 121, C.void, { font: 3, scale: 2, align: 'center' }); ptext('LOOP', 50, 136, C.void, { font: 3, scale: 2, align: 'center' });
+    // Jeff, box in both hands, walking out and away to the left
+    const x = Math.round(CX - lt * 32);
+    const J = personPx(x, GY, { u: 7, walk: lt * 2, flip: true, top: C.dusk, hair: 'short', hairC: C.haze, skin: SKIN[0], glasses: C.navy, aL: -.3, aR: -.3, mouth: 'smile' });
+    const by = J.handR[1] - 12;
+    rectf(x - 17, by, 35, 19, C.clay); hline(x - 17, x + 17, by, C.amber); rectf(x - 17, by + 1, 2, 18, C.rust);
+    rectf(x + 6, by - 8, 4, 9, C.teal); rectf(x - 6, by - 5, 9, 6, C.cream); pset(x - 10, by - 3, C.gold); pset(x - 11, by - 2, C.gold);
+  });
+
+  // ======================================================================
+  // V3.15 Claude disproved Jacobian, — Clawd at a tall chalkboard on its easel under the stars: JACOBIAN / CONJECTURE, a big red ✗
+  // struck over it stroke by stroke on "disproved", "n = 3: no." turning gold on "Jacobian", and sparkles in Clawd's eyes.
+  vshot('V3.15', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    dissolveIn(.25);
+    sky({ cy: 420, r: 380 });
+    starfield(t, { density: 1, bright: .4 });
+    const g = hill({ cx: 150, y: 286, w: 300, drop: 18, ink: C.void, rim: C.pine });
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 60, n: 90, seed: 27 });
+    grass(0, LW, g, t);
+    const BX = 26, BY = 112, BW = 222, BH = 126;
+    pline(BX + 40, BY + BH, BX + 26, g(BX + 26), C.wine); pline(BX + 41, BY + BH, BX + 27, g(BX + 27), C.wine);
+    pline(BX + BW - 40, BY + BH, BX + BW - 26, g(BX + BW - 26), C.wine); pline(BX + BW - 41, BY + BH, BX + BW - 27, g(BX + BW - 27), C.wine);
+    rectf(BX - 4, BY - 4, BW + 8, BH + 8, C.rust); hline(BX - 4, BX + BW + 3, BY - 4, C.clay);
+    rectf(BX, BY, BW, BH, C.pine); for (let i = 0; i < 60; i++) pset(BX + hash(i) * BW, BY + hash2(i, 1) * BH, C.teal);
+    ptext('JACOBIAN', BX + BW / 2, BY + 10, C.cream, { scale: 2, align: 'center' });
+    ptext('CONJECTURE', BX + BW / 2, BY + 32, C.cream, { scale: 2, align: 'center' });
+    ptext('det J = 1 → invertible?', BX + BW / 2, BY + 64, C.haze, { align: 'center' });
+    ptext('n = 3:  no.', BX + BW / 2, BY + 88, lt > sungAt(s, 'jacobian') - .1 ? C.gold : C.teal, { scale: 2, align: 'center' });
+    rectf(BX + 10, BY + BH, BW - 20, 3, C.wine); rectf(BX + 150, BY + BH - 2, 9, 2, C.cream);
+    // the big red ✗, stroke by stroke
+    const xT = sungAt(s, 'disproved') - .1, x1 = rise(lt, xT, .3, k => k), x2 = rise(lt, xT + .3, .3, k => k);   // (struck on "disproved")
+    const A = [BX + 14, BY + 6], Bp = [BX + BW - 14, BY + 52], Cp = [BX + BW - 14, BY + 6], Dp = [BX + 14, BY + 52];
+    if (x1 > 0) thick(A[0], A[1], lerp(A[0], Bp[0], x1), lerp(A[1], Bp[1], x1), 6, C.rust);
+    if (x2 > 0) thick(Cp[0], Cp[1], lerp(Cp[0], Dp[0], x2), lerp(Cp[1], Dp[1], x2), 6, C.rust);
+    // Clawd with the chalk in front of the board's corner, eyes sparkling once it's done
+    const done = lt > xT + .7, cx = 70;
+    const c = clawdPx(cx, g(cx), { u: 6, eyes: done ? 'spark' : 'open', lookX: done ? 0 : 1, lookY: done ? 0 : -.6, mouth: done ? 'smile' : 'none', aR: done ? 1 : .5, aL: -.3 });
+    rectf(c.handR[0] + 2, c.handR[1] - 5, 2, 5, C.cream);
+    if (done) { const k = spulse(t, 3); sparkle(cx - 38, c.top - 8, k > .5 ? 2 : 1, C.cream, C.gold); sparkle(cx + 40, c.top - 4, 1, C.cream, C.gold); }
+  });
+
+  // ======================================================================
+  // V3.16 Gwern gave up his pseudonym! — a portrait close-up: the hooded figure from V1.3, big on the hilltop; it pulls the hood
+  // back in a warm light: a simple smiling face, a little blush, a halo settling over it, and the sign at the chest:
+  // GUARDIAN ANGEL INC.
+  vshot('V3.16', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    cutIn();
+    sky({ cy: 430, r: 400 });
+    starfield(t, { density: .8 });
+    const offT = sungAt(s, 'pseudonym') - .08, off = lt > offT, wk = rise(lt, offT - .04, .5), u = 18, X = 135, Y = 312;   // (the hood comes off on "pseudonym!")
+    glow(X, 186, 130, { tab: WARM, k: .5 + .8 * wk, pow: 1.5 });
+    // in the warm light the dark hoodie shows wine
+    const P = personPx(X, Y, { u, hair: off ? 'short' : 'hood', hairC: C.wine, hoodC: C.wine, top: C.wine, pants: C.void, skin: SKIN[0], eyes: 'none', aL: -1, aR: -1 });
+    const hs = 2 * u + 1, hy = P.top, hx = X - u;
+    if (!off) { rectf(X - 9, hy + 16, 5, 3, C.gold); rectf(X + 5, hy + 16, 5, 3, C.gold); hline(hx - 1, hx + hs, hy - 2, C.rust); }
+    else {
+      rectf(X - 26, hy + hs, 53, 11, C.wine); rectf(X - 32, hy + hs + 6, 65, 10, C.wine); hline(X - 26, X + 26, hy + hs, C.rust);   // the hood, down on the shoulders
+      rectf(hx - 1, hy - 3, hs + 2, 6, C.rust); rectf(hx - 1, hy + 3, 3, 8, C.rust); rectf(hx + hs - 2, hy + 3, 3, 8, C.rust); hline(hx + 2, hx + hs - 6, hy - 3, C.clay);   // his hair
+      // a simple smiling face: eyes (closing happily just after the hood comes off), a smile, a little blush
+      const shut = lt > offT + .3, ey = hy + 17;
+      for (const sd of [-1, 1]) { const ex = X + sd * 8 - 1; if (shut) { hline(ex - 1, ex + 3, ey + 2, C.void); pset(ex - 2, ey + 1, C.void); pset(ex + 4, ey + 1, C.void); } else rectf(ex, ey, 3, 4, C.void); }
+      hline(X - 4, X + 4, hy + 28, C.rust); pset(X - 5, hy + 27, C.rust); pset(X + 5, hy + 27, C.rust);
+      rectf(X - 15, hy + 23, 5, 2, C.clay); rectf(X + 11, hy + 23, 5, 2, C.clay);
+      if (lt < offT + .45) for (let i = 0; i < 8; i++) sparkle(X - 28 + fx(i) * 56, hy - 6 + fx(i, 2) * 36, 0, C.gold);
+    }
+    // the hilltop he stands behind, and the meadow down into the dark
+    const g = hill({ cx: 140, y: 272, w: 300, drop: 26, ink: C.void, rim: C.pine });
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 60, n: 90, seed: 31, flowers: C.gold });
+    grass(0, LW, g, t);
+    // the halo
+    const hk = rise(lt, offT + .1, .3);
+    if (hk > 0) { const y = hy - 13 - Math.round((1 - hk) * 10); for (let a = 0; a < TAU; a += .04) { pset(X + Math.cos(a) * 23, y + Math.sin(a) * 5, C.gold); pset(X + Math.cos(a) * 22, y + Math.sin(a) * 4, a > Math.PI ? C.cream : C.amber); } sparkle(X + 24, y - 2, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.gold); }
+    // the sign, held at the chest
+    const sy = hy + hs + 30, SW = 146, SH = 48;
+    rectf(X - SW / 2 + 2, sy + 2, SW, SH, C.void); rectf(X - SW / 2, sy, SW, SH, C.cream); rectb(X - SW / 2, sy, SW, SH, C.gold);
+    ptext('GUARDIAN', X, sy + 6, C.navy, { scale: 2, align: 'center' }); ptext('ANGEL INC.', X, sy + 27, C.navy, { scale: 2, align: 'center' });
+    heartPx(X - SW / 2 + 9, sy + 9, 1, C.rust); heartPx(X + SW / 2 - 9, sy + 9, 1, C.rust);
+    for (const sd of [-1, 1]) { rectf(X + sd * (SW / 2 - 8) - 4, sy + SH - 10, 9, 8, SKIN[0]); }   // his hands, holding it
+  });
+
+  // The vertical shots set lower in the frame, onto the lowered caption (VERTICAL.md, "the tall frame"): their stages were composed
+  // with the floor at y ≈ 290; lowered 40 px it stands just above the caption's band, and the land fills the bottom fifth.
+  vlower('V3.1', 40); vlower('V3.2', 40, 'sky'); vlower('V3.3', 40, 'sky'); vlower('V3.4', 40, 'sky'); vlower('V3.6', 40, 'extend'); vlower('V3.9', 40, 'sky'); vlower('V3.11', 40, 'extend'); vlower('V3.14', 40);
+  vlower('V3.15', 40, 'sky'); vlower('V3.16', 40, 'sky');
 })();
 
 ;
@@ -5674,6 +9063,10 @@ OVERLAYS.push((t, s) => {
   const E = (u, k = 3.4) => (Math.exp(k * u) - 1) / (Math.exp(k) - 1);
   // lt (window-relative) of the i-th slow beat at or after absolute time t0
   const beatFrom = (s, t0, i) => sbeatT(Math.ceil(sbp(t0) - 1e-6) + i) - s.start;
+  // The sub-shots cut as their lines are sung (sungLines: each line from its first word to the end of its last, where the lines'
+  // own starts can come seconds early). Line 4's PAUSE box is staged in slow beats back from its burst, which lands on "contain":
+  // bb(k) is the lt of slow beat k on a count whose beat 4.4 is the burst (Clawd hops on at 2.2, the jolts at 3, 3.5 and 4).
+  const burstBeats = s => { const n0 = sbp(s.start + sungAt({ sec: 'C3', n: 4, start: s.start }, 'contain') - .05) - 4.4; return k => sbeatT(n0 + k) - s.start; };
   // How much of the constellation the earlier choruses already drew (links between the V1 + V2 stars), as a fraction of V1–V3.
   let _l0 = null;
   const linkStart = () => {
@@ -5729,7 +9122,7 @@ OVERLAYS.push((t, s) => {
   // ---------- the close-up: Clawd, its lantern, and the city across the valley ----------
   const SKYL = (() => {
     const a = []; let x = 196, i = 0;
-    while (x < LW) {
+    while (x < 480) {   // (the landscape frame's width: in the vertical video LW is the tall frame's while this runs)
       const w = 10 + Math.floor(hash2(i, 301) * 15), h = 16 + Math.floor(hash2(i, 302) ** 1.6 * 72) * (x < 230 ? .4 : 1);
       a.push({ x, w, h: Math.round(h) }); x += w + (hash2(i, 303) < .3 ? 2 + Math.floor(hash2(i, 304) * 4) : 0); i++;
     }
@@ -5846,8 +9239,8 @@ OVERLAYS.push((t, s) => {
 
   section('C3', (p, lt, d, t, s) => {
     dissolveIn(1.0);
-    const Ls = linesOf('C3'), st = Ls.map(l => l.start - s.start), en = Ls.map(l => l.end - s.start);
-    const lb = (i, k) => beatFrom(s, Ls[i].start, k);
+    const Ls = sungLines('C3'), st = Ls.map(l => l.start - s.start), en = Ls.map(l => l.end - s.start);
+    const lb = (i, k) => beatFrom(s, Ls[i].start, k), bb = burstBeats(s);
     const cut3 = st[2] - .25, cut4 = st[3] - .25, cutT = en[3] + .1;
 
     // Lines 1–2: the constellation extends through V3's stars; aurora rises; the camera tilts up after the curve.
@@ -5872,7 +9265,7 @@ OVERLAYS.push((t, s) => {
     };
     // Line 4 (+ the instrumental tail): the PAUSE box.
     const draw4 = () => {
-      const tHop = lb(3, 2.2), tSat = tHop + .38, tBurst = lb(3, 4.4), since = lt - tBurst;
+      const tHop = bb(2.2), tSat = tHop + .38, tBurst = bb(4.4), since = lt - tBurst;
       const gy = x => Math.round(212 + ((x - 262) / 240) ** 2 * 24);
       const st4 = { len: 0, pour: 0, jolt: 0, leak: 0, flapL: 1.9, flapR: 1.9, spring: 0, since: Math.max(0, since), clawd: null };
       if (lt < tHop) {
@@ -5885,7 +9278,7 @@ OVERLAYS.push((t, s) => {
         st4.flapL = st4.flapR = 0;
         // jolts: each slow beat after Clawd sits, stronger each time
         let jolt = 0, leak = 0;
-        [lb(3, 3), lb(3, 3.5), lb(3, 4)].forEach((jt, i) => { if (lt > jt) { const a = lt - jt; jolt = Math.max(jolt, Math.round((1 + i) * 1.4 * Math.exp(-a * 9) * (Math.sin(a * 40) > 0 ? 1 : .3))); leak = .35 + i * .25; } });
+        [bb(3), bb(3.5), bb(4)].forEach((jt, i) => { if (lt > jt) { const a = lt - jt; jolt = Math.max(jolt, Math.round((1 + i) * 1.4 * Math.exp(-a * 9) * (Math.sin(a * 40) > 0 ? 1 : .3))); leak = .35 + i * .25; } });
         st4.jolt = jolt; st4.leak = leak;
         st4.flapL = st4.flapR = jolt ? .12 : 0;
         const hk = clamp((lt - tHop) / (tSat - tHop));
@@ -5934,13 +9327,277 @@ OVERLAYS.push((t, s) => {
     else if (lt < cut4 + .5) crossfade(rise(lt, cut4, .5), draw3, draw4);
     else crossfade(rise(lt, cutT, .6), draw4, drawT);
   });
+
+  // ######################################################################################################################
+  // VERTICAL (the 270×480 frame; see ../VERTICAL.md). The same four sub-shots and the tail on the tall home: the city and its data
+  // centre blaze on the horizon behind the hill; the constellation's links run on through V3, just over the city; violet-and-wine
+  // curtains climb the tall sky along steep exponentials (no big tilt, so the hilltop stays above the caption); close on Clawd, its
+  // lantern raised against a skyline that towers up the frame; the PAUSE box on the stage, whose spring shoots up the frame while
+  // the curve pours out of it up the tall sky; and wide again, the light streaming up from the open box toward the V4 stars.
+  // ######################################################################################################################
+  const HX3 = HOME_V.hillX - 2;                        // where Clawd sits in the tall home scene
+  const VTOWERS = [[134, 9, 40], [160, 11, 50], [174, 8, 36], [252, 12, 58]];   // x, w, h (kept under the V2/V3 stars)
+  function vcurtains(t, k, sdy) {
+    if (k <= 0) return;
+    const up = (1 - ease(k)) * 200;
+    aurora(t, { curve: x => 196 - 270 * E((x - 4) / 266) + Math.sin(x * .04 + t * .5) * 5 + sdy + up, len: 84, k: .75 * k, cols: [C.wine, C.violet, C.haze], shimmer: 1 });
+    aurora(t, { curve: x => 250 - 230 * E((x + 10) / 290) + Math.sin(x * .05 - t * .4 + 1) * 4 + sdy + up * 1.3, len: 46, k: .5 * k, cols: [C.wine, C.rust, C.violet], shimmer: .8 });
+  }
+  // the tall home with this chorus's blazing city. o: dy (small tilt), aurora, links, band, sky (fn(sdy)), ground (fn(g)), clawd
+  function vhome(t, o = {}) {
+    const dy = Math.round(o.dy ?? 0), sdy = Math.round(dy * .3);
+    sky({ dy: sdy });
+    starfield(t, { dy: sdy, density: .95 });
+    moon(48, 142 + sdy, 7, { phase: .45 });
+    vcurtains(t, o.aurora ?? 0, sdy);
+    ledger(t, { dy: sdy, links: o.links ?? 1, band: o.band ?? 0, upto: LAST3(), linkInk: C.haze });
+    if (o.sky) o.sky(sdy);
+    view(0, -Math.round(dy * .6));
+    const base = HOME_V.city.y;
+    glow(204, base - 8, 160, { tab: WARM, k: 1, ry: 70, pow: 1.3 });
+    dataCentre(t, 188, base, 58, 92);
+    for (const [x, w, h] of VTOWERS) {   // a few towers grown up out of the skyline
+      rectf(x, base - h, w, h + 20, C.void); hline(x, x + w - 1, base - h, C.ink);
+      vline(x + (w >> 1), base - h - 7, base - h - 1, C.void); pset(x + (w >> 1), base - h - 8, spulse(t, 3) > .5 && hash2(x, sbeat(t)) < .6 ? C.rust : C.wine);
+      for (let wy = base - h + 3; wy < base; wy += 3) for (let wx = x + 2; wx < x + w - 2; wx += 2) { const hs = hash2(wx * 5 + wy, 321); if (hs < .5) pset(wx, wy, hs < .12 ? C.gold : hs < .3 ? C.amber : C.clay); }
+    }
+    city(t, { y: base, x0: 104, x1: LW, grow: .95, dc: false, lit: .6 });
+    ridge({ y: HOME_V.ridge, amp: 14, seed: 3, ink: C.ink, rim: C.night, freq: 1 / 80 });
+    valleyLights(t, { grow: .85 });
+    view(0, -dy);
+    const g = hill({ cx: HOME_V.hillX, y: HOME_V.hillY, w: HOME_V.hillW, drop: HOME_V.drop, wR: HOME_V.hillWR, dropR: HOME_V.dropR, ink: C.void, rim: C.pine });
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 60, n: 80, seed: 9 });
+    grass(0, LW, g, t, { ink: C.pine });
+    if (o.ground) o.ground(g);
+    else { handLantern(HX3 + 22, g(HX3 + 22)); clawdPx(HX3, g(HX3), { u: 3, pose: 'sit', eyes: 'up', ...(o.clawd || {}) }); }
+    view(0, 0);
+    weather(t, 'auto', { n: 12 });
+    return g;
+  }
+
+  // ---------- the close-up: Clawd low on the crest, the skyline towering up the frame behind it ----------
+  const VCB = 310, VDCX = 104, VDCW = 82, VDCH = 192;
+  const VSKYL = (() => {
+    const a = []; let x = 40, i = 0;
+    while (x < 270) {
+      const w = 10 + Math.floor(hash2(i, 311) * 14), h = x < VDCX ? 30 + Math.floor(hash2(i, 312) * 40) : 70 + Math.floor(hash2(i, 312) ** 1.3 * 110);
+      a.push({ x, w, h: Math.round(h) }); x += w + (hash2(i, 313) < .3 ? 2 + Math.floor(hash2(i, 314) * 4) : 0); i++;
+    }
+    return a;
+  })();
+  const vInDC = B => B.x + B.w > VDCX - 2 && B.x < VDCX + VDCW + 2;
+  function vskylineClose() {
+    for (const B of VSKYL) {
+      if (vInDC(B)) continue;
+      rectf(B.x, VCB - B.h, B.w, B.h + 30, C.void); hline(B.x, B.x + B.w - 1, VCB - B.h, C.ink);
+      if (hash(B.x) < .3) vline(B.x + (B.w >> 1), VCB - B.h - 8, VCB - B.h - 1, C.void);
+      for (let wy = VCB - B.h + 3; wy < VCB - 2; wy += 4) for (let wx = B.x + 2; wx < B.x + B.w - 2; wx += 3) {
+        const hs = hash2(wx * 7 + wy, 305);
+        if (hs < .66) { rectf(wx, wy, 2, 2, hs < .2 ? C.gold : hs < .45 ? C.amber : C.clay); if (hs < .07) pset(wx, wy, C.cream); }
+      }
+    }
+    rectf(VDCX, VCB - VDCH, VDCW, VDCH + 30, C.void); hline(VDCX, VDCX + VDCW - 1, VCB - VDCH, C.navy); vline(VDCX, VCB - VDCH, VCB, C.ink);
+    for (const cx of [VDCX + 8, VDCX + 35, VDCX + 62]) { rectf(cx, VCB - VDCH - 8, 12, 8, C.void); hline(cx, cx + 11, VCB - VDCH - 8, C.navy); }
+  }
+  // Clawd's lantern a size up for the u = 8 close-up: (x, y) = the handle's top
+  function vLantern(x, y) {
+    x = Math.round(x); y = Math.round(y);
+    glow(x, y + 11, 30, { tab: WARM, k: 1.35, pow: 1.6 });
+    pline(x - 3, y + 3, x, y, C.void); pline(x, y, x + 3, y + 3, C.void);
+    rectf(x - 4, y + 3, 9, 2, C.void); rectf(x - 4, y + 17, 9, 2, C.void);
+    rectf(x - 3, y + 5, 7, 12, C.gold); rectf(x - 2, y + 8, 5, 8, C.cream); rectf(x - 1, y + 6 + (hash2(1, boilFrame(T)) < .5 ? 0 : 1), 3, 2, C.amber);
+    vline(x - 4, y + 5, y + 16, C.ink); vline(x + 4, y + 5, y + 16, C.ink);
+  }
+  function vcloseUp(t, a) {
+    sky({ cx: 200, cy: 330, r: 380, vert: .3 });
+    starfield(t, { density: .55 });
+    glow(210, 240, 220, { tab: WARM, k: 1.25, ry: 150, pow: 1.3 });
+    glow(VDCX + VDCW / 2, VCB - VDCH / 2, 96, { tab: COOL, k: 1.2, ry: 150 });
+    layer('c3v-close-city', vskylineClose);
+    for (const cx of [VDCX + 14, VDCX + 41, VDCX + 68]) smoke(cx, VCB - VDCH - 10, t, { h: 44, n: 9, ink: C.dusk });
+    for (let r = 0; r * 5 + 8 < VDCH; r++) for (let i = 0; i * 4 + 6 < VDCW; i++) {
+      const on = hash2(i + r * 40, Math.floor(t * 2.5 + i * .37 + r * .61)) < .6;
+      rectf(VDCX + 4 + i * 4, VCB - VDCH + 6 + r * 5, 2, 1, on ? C.mint : C.pine);
+    }
+    for (let i = 0; i < 14; i++) { const B = VSKYL[(i * 7 + sbeat(t)) % VSKYL.length]; if (vInDC(B)) continue; const wx = B.x + 2 + 3 * Math.floor(hash2(i, sbeat(t)) * Math.max(1, (B.w - 4) / 3)), wy = VCB - B.h + 3 + 4 * Math.floor(hash2(i, 9) * Math.max(1, (B.h - 5) / 4)); if (spulse(t, 3) > .4) rectf(wx, wy, 2, 2, C.cream); }
+    ridge({ y: 316, amp: 6, seed: 17, ink: C.ink, rim: C.night, freq: 1 / 40 });
+    // the hill crest in front, its slope running down into the dark under the caption
+    const g = x => Math.round(322 + ((x - 60) / 210) ** 2 * 22 + (noise1(x * .09, 3) - .5) * 1.5);
+    for (let x = 0; x < LW; x++) { const y = g(x); pset(x, y, C.pine); vline(x, y + 1, LH, C.void); }
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 40, n: 70, seed: 13 });
+    grass(0, LW, g, t, { ink: C.pine, h: 4 });
+    const cx = 66, c = clawdPx(cx, g(cx), { u: 8, pose: 'sit', eyes: a.eyes, lookX: a.lookX, lookY: a.lookY, aR: a.aR, aL: -.35, blink: a.eyes === 'open' });
+    const [hx, hy] = c.handR;
+    vLantern(hx + 1, hy + 2);
+    weather(t, 'auto', { n: 10 });
+  }
+
+  // ---------- the PAUSE box, on the stage; its curve climbs the tall sky ----------
+  const VBX = 100, VBW = 96, VBT = 272, VBB = 328, VBM = VBX + VBW / 2;
+  const vcurvePt = s => [VBM + 98 * s, VBT - 262 * E(s, 2.6)];
+  function vlightCurve(t, len, o = {}) {
+    if (len <= 0) return;
+    const bright = o.bright ?? 1, N = Math.max(2, Math.round(len * 120));
+    for (let i = 0; i <= 14 * len; i++) { const [x, y] = vcurvePt(Math.min(len, i / 14)); glow(x, y, 15, { tab: LIT, k: .9 * bright }); }
+    let prev = vcurvePt(0);
+    for (let i = 1; i <= N; i++) { const p2 = vcurvePt(len * i / N); thick(prev[0], prev[1], p2[0], p2[1], 4, C.gold); prev = p2; }
+    prev = vcurvePt(0);
+    for (let i = 1; i <= N; i++) { const p2 = vcurvePt(len * i / N); pline(prev[0], prev[1], p2[0], p2[1], C.cream); prev = p2; }
+    for (let s = .07; s < len; s += .07) { const [x, y] = vcurvePt(s), j = Math.round(s * 100); sparkle(x, y, hash2(j, sbeat(t)) < .3 && spulse(t, 3) > .4 ? 2 : 1, C.cream, C.gold); }
+    const [tx, ty] = vcurvePt(len); sparkle(tx, ty, 3, C.cream, C.gold);
+  }
+  const vflap = (hx, dir, a, ink) => {
+    const L = VBW / 2 - 1, ang = dir > 0 ? -a : Math.PI + a, x1 = hx + Math.cos(ang) * L, y1 = VBT + Math.sin(ang) * L;
+    thick(hx, VBT, x1, y1, 4, ink); pline(hx, VBT - 2, x1, y1 - 2, C.amber);
+  };
+  const vgy = x => Math.round(VBB + ((x - VBM) / 200) ** 2 * 16 + (noise1(x * .09, 4) - .5) * 1.5);
+  function vboxScene(t, st) {
+    sky({ cx: 200, cy: 400, r: 420 });
+    starfield(t, { density: .85 });
+    moon(48, 142, 7, { phase: .45 });
+    ridge({ y: 270, amp: 10, seed: 5, ink: C.ink, rim: C.night, freq: 1 / 60 });
+    glow(236, 272, 80, { tab: WARM, k: .9, ry: 24 });
+    city(t, { y: 272, x0: 196, x1: LW, grow: .7, dc: 224, lit: .6, seed: 11 });
+    ridge({ y: 278, amp: 4, seed: 6, ink: C.ink, rim: C.night, freq: 1 / 50 });
+    for (let x = 0; x < LW; x++) { const y = vgy(x); pset(x, y, C.pine); vline(x, y + 1, LH, C.void); }
+    meadow(vgy, t, { ramp: [C.ink, C.void], fall: 50, n: 80, seed: 21 });
+    grass(0, LW, vgy, t, { ink: C.pine, h: 3 });
+    // the curve (behind the box: it comes out of the mouth), and the light pouring up the tall sky
+    if (st.pour > 0) { glow(VBM, VBT - 30, 44, { tab: LIT, k: 1.4 * st.pour, ry: 70 }); for (let i = 0; i < 26; i++) { const f = frac(t * .7 + i / 26), x = VBM + (hash2(i, 5) - .5) * 34 * f + Math.sin(t * 2 + i) * 3, y = VBT - 6 - f * 200; if (st.pour * (1 - f) > .12) sparkle(x, y, f < .3 ? 1 : 0, f < .5 ? C.cream : C.gold, C.gold); } }
+    vlightCurve(t, st.len, { bright: st.pour > 0 ? 1.3 : 1 });
+    // the box
+    const jy = st.jolt, top = VBT - jy;
+    rectf(VBX + 2, VBB, VBW, 2, dim(1));
+    rectf(VBX, top, VBW, VBB - top, C.clay); rectf(VBX + VBW - 8, top + 1, 8, VBB - top - 1, C.rust); hline(VBX, VBX + VBW - 1, top, C.amber);
+    rectf(VBX, VBB - 4, VBW, 4, C.rust); vline(VBM, top + 1, top + 6, C.rust);
+    for (let i = 0; i < 7; i++) pset(VBX + 8 + i * 13, top + 44 + (i % 2), C.rust);
+    rectf(VBX + 8, top + 12, VBW - 22, 23, C.cream); rectb(VBX + 8, top + 12, VBW - 22, 23, C.wine);
+    ptext('PAUSE', VBX + 8 + (VBW - 22) / 2, top + 17, C.wine, { align: 'center', scale: 2 });
+    if (st.leak > 0) {   // light leaking out of the lid seams
+      glow(VBM, top, 40 * st.leak + 10, { tab: LIT, k: 1.4 * st.leak, ry: 14 });
+      hline(VBX + 2, VBX + VBW - 3, top - 1, veil(C.gold, st.leak)); pset(VBM, top - 1, C.cream);
+      for (let i = 0; i < 8; i++) { const f = frac(t * 1.3 + i / 8); if (st.leak * (1 - f) > .2) pset(VBX + 6 + hash2(i, 3) * (VBW - 12), top - 2 - f * 20, f < .4 ? C.cream : C.gold); }
+    }
+    vflap(VBX, 1, st.flapL, C.clay); vflap(VBX + VBW, -1, st.flapR, C.clay);
+    // the jack-in-the-box: a long spring shooting up the frame, a smiling star on top
+    if (st.spring > 0) {
+      const h = st.spring, n = 11;
+      for (let i = 0; i < n; i++) { const y0 = top - 2 - i * h / n, y1 = top - 2 - (i + .5) * h / n, y2 = top - 2 - (i + 1) * h / n; pline(VBM - 8, y0, VBM + 8, y1, C.haze); pline(VBM + 8, y1, VBM - 8, y2, C.cream); }
+      const sy = top - 2 - h - 12, rot = Math.sin(t * 5) * .15 * Math.exp(-st.since * 2);
+      glow(VBM, sy, 36, { tab: LIT, k: 1.3 });
+      burstPx(VBM, sy, 18, .48, 5, rot, C.amber); burstPx(VBM, sy, 15, .48, 5, rot, C.gold);
+      rectf(VBM - 5, sy - 2, 2, 3, C.void); rectf(VBM + 4, sy - 2, 2, 3, C.void); hline(VBM - 2, VBM + 2, sy + 4, C.void); pset(VBM - 3, sy + 3, C.void); pset(VBM + 3, sy + 3, C.void);
+      rectf(VBM - 7, sy + 1, 2, 1, C.clay); rectf(VBM + 6, sy + 1, 2, 1, C.clay);
+    }
+    const cl = st.clawd;
+    const c = clawdPx(cl.x, cl.y, { u: 6, pose: cl.pose, eyes: cl.eyes, lookX: cl.lookX ?? 0, lookY: cl.lookY ?? 0, aL: cl.aL, aR: cl.aR, dy: cl.dy ?? 0, mouth: cl.mouth, blink: false, shadow: cl.shadow });
+    if (cl.sweat) { const f = frac(t * 1.4); pset(c.right + 4, c.top + 2 + f * 8, C.haze); pset(c.right + 4, c.top + 1 + f * 8, C.cream); }
+    weather(t, 'auto', { n: 10 });
+  }
+
+  vshot('C3', (p, lt, d, t, s) => {
+    dissolveIn(1.0);
+    const Ls = sungLines('C3'), st = Ls.map(l => l.start - s.start), en = Ls.map(l => l.end - s.start);
+    const lb = (i, k) => beatFrom(s, Ls[i].start, k), bb = burstBeats(s);
+    const cut3 = st[2] - .25, cut4 = st[3] - .25, cutT = en[3] + .1;
+
+    // Lines 1–2: the links run on through V3's stars; then the curtains rise and climb the tall sky. The camera tilts up only a
+    // little (dy ≤ 10, the hilltop above the caption): line 2's caption stays up through its long held last word until just before
+    // line 3's comes up and the shot cuts to it, so a bigger tilt would sink the hill and Clawd down behind a caption.
+    const draw12 = () => {
+      const lk = rise(lt, st[0] + .35, Math.max(.8, en[0] - st[0] - .2), k => k), links = lerp(linkStart(), 1, lk);
+      const dy = 10 * rise(lt, st[1] - .3, en[1] - st[1] + .3);
+      vhome(t, {
+        dy, links, aurora: rise(lt, en[0] - .2, st[1] - en[0] + 1.6), band: .5 * rise(lt, st[1], 1.4),
+        sky: sdy => {   // each V3 star flares as the line reaches it
+          const n = LAST3() + 1, i0 = Math.round(linkStart() * (n - 1)), head = lerp(linkStart(), 1, lk) * (n - 1);
+          for (let i = i0 + 1; i < n; i++) {
+            const age = (head - i) / (n - 1 - i0) * 2; if (age < 0 || age > .8) continue;
+            const L = LEDGER[i]; glow(L.vx, L.vy + sdy, 14, { tab: LIT, k: 1.4 * (1 - age / .8) }); sparkle(L.vx, L.vy + sdy, age < .25 ? 3 : 2, C.cream, C.gold);
+          }
+        },
+        clawd: { lookX: lk > 0 && lk < 1 ? .9 : .4, lookY: -1 },
+      });
+    };
+    // Line 3: close on Clawd; it raises its lantern against the towering city, looks from one to the other, smiles.
+    const draw3 = () => {
+      const lift = rise(lt, lb(2, .4), .7), atLamp = lt > lb(2, .6) && lt < lb(2, 1.6), done = lt > lb(2, 1.7);
+      vcloseUp(t, { aR: lerp(-.6, 1.35, lift), eyes: done ? 'happy' : 'open', lookX: atLamp ? .9 : 1, lookY: atLamp ? -.4 : -.8 });
+    };
+    // Line 4 (+ the instrumental tail): the PAUSE box.
+    const draw4 = () => {
+      const tHop = bb(2.2), tSat = tHop + .38, tBurst = bb(4.4), since = lt - tBurst;
+      const st4 = { len: 0, pour: 0, jolt: 0, leak: 0, flapL: 1.9, flapR: 1.9, spring: 0, since: Math.max(0, since), clawd: null };
+      const px = 64;
+      if (lt < tHop) {
+        // stuffing it back in: the curve retracts into the box while Clawd pushes, paw over paw
+        const k = rise(lt, cut4 + .1, tHop - cut4 - .2, k => k), pump = Math.floor((lt - cut4) * 5) % 2;
+        st4.len = lerp(1, .02, easeIn(k) * .6 + k * .4);
+        st4.flapL = st4.flapR = lerp(1.9, .15, rise(lt, tHop - .45, .4));
+        st4.clawd = { x: px, y: vgy(px), pose: 'stand', eyes: 'closed', aR: pump ? .9 : .35, aL: pump ? .2 : .7, lookX: 1 };
+      } else if (lt < tBurst) {
+        st4.flapL = st4.flapR = 0;
+        let jolt = 0, leak = 0;
+        [bb(3), bb(3.5), bb(4)].forEach((jt, i) => { if (lt > jt) { const a = lt - jt; jolt = Math.max(jolt, Math.round((1 + i) * 1.8 * Math.exp(-a * 9) * (Math.sin(a * 40) > 0 ? 1 : .3))); leak = .35 + i * .25; } });
+        st4.jolt = jolt; st4.leak = leak;
+        st4.flapL = st4.flapR = jolt ? .12 : 0;
+        const hk = clamp((lt - tHop) / (tSat - tHop));
+        if (hk < 1) st4.clawd = { x: lerp(px, VBM, hk), y: lerp(vgy(px), VBT, hk) - Math.sin(hk * Math.PI) * 30, pose: 'stand', eyes: 'open', aL: 1, aR: 1 };
+        else st4.clawd = { x: VBM, y: VBT - jolt, pose: 'sit', eyes: jolt ? 'wide' : 'closed', aL: -.7, aR: -.7, sweat: leak > .5, shadow: false };
+      } else {
+        // it springs open: the flaps fly, Clawd is tossed off, the star on its spring bobs, and the light pours back up
+        const fk = clamp(since / .25);
+        st4.flapL = st4.flapR = lerp(0, 2.3, backOut(fk, 2.2));
+        const ss = Math.max(0, since - .05); st4.spring = 100 * (1 - Math.exp(-ss * 9) * Math.cos(ss * 16)) * clamp(ss / .08);
+        st4.len = rise(lt, tBurst + .1, .8, easeOut);
+        st4.pour = rise(lt, tBurst + .05, .3);
+        const lx0 = 44, ak = clamp(since / .6), lx = lerp(VBM, lx0, easeOut(ak)), ly = lerp(VBT, vgy(lx0), ak) - Math.sin(ak * Math.PI) * 56;
+        st4.clawd = ak < 1 ? { x: lx, y: ly, pose: 'stand', eyes: 'wide', aL: 1.2, aR: 1.2, mouth: 'o', shadow: false }
+          : { x: lx0, y: vgy(lx0), pose: 'sit', eyes: 'up', lookX: .8, lookY: -1, aL: -.3, aR: .4, mouth: 'o' };
+      }
+      vboxScene(t, st4);
+    };
+    // Tail: wide again. The open box sits beside Clawd on the hill and the light streams up out of it, joining the curve and
+    // running on up its next stretch, toward where the V4 stars will be born.
+    const drawT = () => {
+      const bx = HX3 + 24;
+      vhome(t, {
+        aurora: .35, band: .25,
+        sky: () => {
+          const u0 = .55, cv = u => vCurveAt(u), [c0x, c0y] = cv(u0), mx = bx + 7, my = 308;
+          const P = f => { const [x, y] = cv(lerp(u0, 1.12, f)), w = (1 - f) ** 2; return [x + (mx - c0x) * w, y + (my - c0y) * w]; };
+          glow(mx, my - 10, 22, { tab: LIT, k: 1.3, ry: 30 });
+          for (let i = 0; i <= 50; i++) { const [x, y] = P(i / 50); pset(x, y, veil(C.dusk, .8)); }
+          for (let i = 0; i < 70; i++) {
+            const f = frac(t * .3 + i / 70), [x0, y0] = P(f), x = x0 + Math.sin(t * 1.5 + i) * 2, y = y0 + Math.cos(t * 1.2 + i * 2) * 2;
+            if (f > .92 && bay(Math.round(x), Math.round(y)) > (1 - f) / .08) continue;
+            if (hash(i) < .3) sparkle(x, y, f < .5 ? 1 : 0, C.cream, C.gold); else pset(x, y, f < .6 ? C.gold : C.amber);
+          }
+        },
+        ground: g => {
+          handLantern(HX3 - 22, g(HX3 - 22));
+          const by = g(bx + 7);
+          rectf(bx, by - 11, 15, 11, C.clay); rectf(bx + 11, by - 10, 4, 10, C.rust); hline(bx, bx + 14, by - 11, C.amber);
+          thick(bx, by - 11, bx - 5, by - 18, 2, C.clay); thick(bx + 14, by - 11, bx + 19, by - 18, 2, C.clay);
+          for (let j = 0; j < 4; j++) { pline(bx + 4, by - 12 - j * 3, bx + 10, by - 13 - j * 3, C.haze); }
+          sparkle(bx + 7, by - 26, 2, C.cream, C.gold);
+          clawdPx(HX3, g(HX3), { u: 3, pose: 'sit', eyes: 'up', lookX: .6, lookY: -1 });
+        },
+      });
+    };
+
+    if (lt < cut3 + .5) crossfade(rise(lt, cut3, .5), draw12, draw3);
+    else if (lt < cut4 + .5) crossfade(rise(lt, cut4, .5), draw3, draw4);
+    else crossfade(rise(lt, cutT, .6), draw4, drawT);
+  });
 })();
 
 ;
 // ---- styles/dither/ch/c08_v4.js ----
 // c08_v4.js: Verse 4, Aug 26 → Sep 22, 2026. Pre-dawn: a dusty-red line on the horizon. The first eight lines get a small
 // story each; from V4.9 on the windows shrink to 1.4–2 s, so each is one bold image, there as the dissolve clears, with one
-// small movement after. Clawd is the hero only in V4.11 (Claude builds Claude) and V4.16 (Opus 5.5: "Hi, guys!").
+// small movement. A moment that shows a sung word (a quote's bubble, a stamp, a sign's glint) lands on that word (sungAt).
+// Clawd is the hero only in V4.11 (Claude builds Claude) and V4.16 (Opus 5.5: "Hi, guys!").
 (() => {
   // ---------- private helpers ----------
   const B = (s, i) => beatAt(s, i);
@@ -6005,7 +9662,6 @@ OVERLAYS.push((t, s) => {
   }
   const note = (n, dy = 0) => { rectf(n.x + 1, n.y + 1 + dy, n.w, n.h, C.rust); rectf(n.x, n.y + dy, n.w, n.h, n.c); hline(n.x + 1, n.x + n.w - 2, n.y + 2 + dy, C.haze); if (n.h > 6) hline(n.x + 1, n.x + n.w - 3, n.y + 4 + dy, C.haze); pset(n.x + (n.w >> 1), n.y + dy, C.rust); };
   line('V4', 1, (p, lt, d, t, s) => {
-    const b = i => B(s, i);
     layer('v4.1-room', serverRoom);
     for (const x of RACKX) for (let u = 0; u < 19; u++) for (let j = 0; j < 2; j++) {
       const h = hash2(x * 3 + u * 7 + j, Math.floor(t * 5 + hash2(u, x + j) * 7));
@@ -6014,8 +9670,8 @@ OVERLAYS.push((t, s) => {
     glow(240, 78, 120, { tab: WARM, k: 1, ry: 86 });
     polyf([[228, 0], [252, 0], [326, 26], [154, 26]], lit(.5));
     layer('v4.1-board', corkboard);
-    // notes: three were already there; then exponentially many
-    const t0 = b(1.15), t1 = d - .35, N = NOTES.length;
+    // notes: three were already there; then, once the first agent has found the board (on "Oh"), exponentially many
+    const fT = sungAt(s, 0) - .1, t0 = fT + .4, t1 = d - .35, N = NOTES.length;
     const tn = i => i < 3 ? -9 : t0 + (t1 - t0) * Math.log(i - 1) / Math.log(N - 2);
     for (let i = 0; i < N; i++) if (lt >= tn(i)) note(NOTES[i], i > 60 && lt - tn(i) < .1 ? -1 : 0);
     // the swarm: every note after the first three is carried in by its own agent, arcing up from the floor
@@ -6027,14 +9683,15 @@ OVERLAYS.push((t, s) => {
     }
     // the crowd gathering on the floor, edges first
     for (let r = 0; r < 3; r++) for (let x = 10 + (r % 2) * 6; x < LW - 6; x += 12) {
-      const born = b(1.2) + (1 - Math.abs(x - 240) / 240) * 1.1 + r * .12 + hash2(x, r) * .2;
+      const born = fT + .45 + (1 - Math.abs(x - 240) / 240) * 1.1 + r * .12 + hash2(x, r) * .2;
       if (lt < born) continue;
       agentPx(x, 225 + r * 9, { u: 1, dy: breathe(t, 1, hash2(x, r + 5)) > .7 ? 1 : 0, bar: [C.clay, C.teal, C.violet, C.clay][(x + r) % 4] });
     }
-    // the first agent: finds it, jumps
-    const found = lt > b(0) - .1, jk = clamp((lt - b(0) + .1) / .5), jump = jk > 0 && jk < 1 ? Math.round(Math.sin(jk * Math.PI) * 16) : 0, shock = found && lt < b(0) + 1;
-    bigAgent(240, 218, { w: 50, h: 38, dy: jump, eyes: !found ? 'prompt' : shock ? 'wide' : 'heart', mouth: shock ? 'o' : undefined, aL: found ? 1.2 : -.9, aR: found ? 1.2 : -.9 });
-    if (found && lt < b(2.6)) bubble2('OH MY GOD!', 362, 164, { tail: [270, 178 - jump], n: Math.ceil((lt - b(0) + .1) * 18), ink: C.rust });
+    // the first agent: wanders in, finds it on "Oh", jumps
+    const found = lt > fT, jk = clamp((lt - fT) / .5), jump = jk > 0 && jk < 1 ? Math.round(Math.sin(jk * Math.PI) * 16) : 0, shock = found && lt < fT + 1.1;
+    const wk = rise(lt, 0, fT - .15, k => k), ax = Math.round(lerp(176, 240, wk));
+    bigAgent(ax, 218, { w: 50, h: 38, dy: jump, walk: wk < 1 ? lt * 2.4 : undefined, eyes: !found ? 'prompt' : shock ? 'wide' : 'heart', mouth: shock ? 'o' : undefined, aL: found ? 1.2 : -.9, aR: found ? 1.2 : -.9 });
+    if (found && lt < fT + 2.4) bubble2('OH MY GOD!', 362, 164, { tail: [270, 178 - jump], n: Math.ceil((lt - fT) * 18), ink: C.rust });
     // the blizzard of paper
     const bz = lt - (t0 + .9);
     if (bz > 0) for (let i = 0; i < 46; i++) {
@@ -6060,7 +9717,7 @@ OVERLAYS.push((t, s) => {
     hline(148, 339, 50, C.night);
     ptext('RESULT', 152, 70, C.dusk, { font: 3 });
     ptext('REWARD', 152, 108, C.dusk, { font: 3 });
-    const tp = b(1.5), flipK = clamp((lt - tp) / .2), passed = flipK >= 1;
+    const tp = sungAt(s, 'hacking'), flipK = clamp((lt - tp) / .2), passed = flipK >= 1;   // (the hack: the flip, on "hacking")
     const cellX = 266, cellY = 60;
     ptext('FAIL', cellX, cellY, flipK < 1 ? veil(C.rust, 1 - flipK) : -1, { scale: 3, dots: true, off: flipK < .5 ? C.wine : C.pine, align: 'center' });
     if (flipK > 0) ptext('PASS', cellX, cellY, veil(C.mint, flipK), { scale: 3, dots: true, align: 'center' });
@@ -6074,7 +9731,7 @@ OVERLAYS.push((t, s) => {
     for (let y = 202; y > 64; y -= 10) { const f = (208 - y) / 146; hline(366 - f * 14, 380 - f * 14, y, C.haze); }
     // the agent: climbs, reaches over and flips the tile, catches the star
     const ck = rise(lt, .12, tp - .35, k => k), ax = lerp(373, 363, ck), ay = Math.round(lerp(212, 104, ck));
-    const drop = b(2.3), caught = drop + .32, hold = lt > caught, press = lt > tp - .15 && lt < tp + .3;
+    const drop = sungAt(s, 'reward') - .32, caught = drop + .32, hold = lt > caught, press = lt > tp - .15 && lt < tp + .3;   // (caught on "reward")
     const A = bigAgent(ax - (press ? 3 : 0), ay, { w: 32, h: 24, walk: ck < 1 ? lt * 3 : undefined, eyes: hold ? 'heart' : passed ? 'happy' : 'prompt', aL: press ? .35 : hold ? 1.3 : -.8, aR: hold ? 1.3 : ck < 1 ? .6 : -.8 });
     if (press) { thick(A.left - 6, A.top + 8, cellX + 38, cellY + 10, 2, C.dusk); sparkle(cellX + 37, cellY + 10, 2, C.cream, C.mint); }
     if (lt > drop) {
@@ -6116,7 +9773,7 @@ OVERLAYS.push((t, s) => {
     lawn(gy, t);
     layer('v4.3-house', huggyHouse);
     // Huggy peeks out of the doorway, bandaged, holding on to the frame
-    const why = lt > b(1.9), look = lt > b(1.4);
+    const whyT = sungAt(s, 'why') - .15, why = lt > whyT, look = lt > b(1.4);   // (the "?" pops big on "why?")
     clipRect(111, 165, 34, 51); huggyPx(look ? 131 : 127, 188, { r: 14, mood: 'scared', bandage: true, hands: false }); noClip();
     circf(147, 182, 2, C.gold); circf(147, 194, 2, C.gold); pset(148, 181, C.amber);
     // footprints away from the broken window
@@ -6146,7 +9803,7 @@ OVERLAYS.push((t, s) => {
       if (lt - plant < .5) { const r = (lt - plant) * 40; ellf(SX, gy, 4 + r, 1 + r * .15, veil(C.dusk, 1 - (lt - plant) / .5)); }
     }
     // "?"
-    if (look) { const k = rise(lt, b(1.4), .25), big = why && lt < b(1.9) + .35 ? 3 : 2; ptext('?', 160, 140 - Math.round(breathe(t, 1) * 2) - (big - 2) * 5, veil(C.cream, k), { scale: big, shadow: C.void }); }
+    if (look) { const k = rise(lt, b(1.4), .25), big = why && lt < whyT + .35 ? 3 : 2; ptext('?', 160, 140 - Math.round(breathe(t, 1) * 2) - (big - 2) * 5, veil(C.cream, k), { scale: big, shadow: C.void }); }
     weather(t, 'auto', { n: 20 });
   });
 
@@ -6203,10 +9860,10 @@ OVERLAYS.push((t, s) => {
 
   // ======================================================================
   // V4.5 Navier–Stokes blows up in Lean, — a whirlpool of wind over the sea spins faster and tighter, faster and tighter
-  // (a finite-time singularity: the spin rate itself blows up), and on the beat it pops into the dusty-red starburst:
+  // (a finite-time singularity: the spin rate itself blows up), and on "up" it pops into the dusty-red starburst:
   // BLOWUP. A small proof scroll unrolls beneath it: LEAN ✓.
   line('V4', 5, (p, lt, d, t, s) => {
-    const b = i => B(s, i), TB = b(2) - .12;
+    const TB = sungAt(s, 'up') - .08;   // (it blows up on "up")
     sky({ cy: 250, r: 330 });
     starfield(t, { density: .7, y1: 184 });
     const cx = 240, cy = 92, HZ = 184;
@@ -6241,7 +9898,7 @@ OVERLAYS.push((t, s) => {
     hline(0, LW, HZ, C.dusk);
     water(HZ + 1, { k: 1.2 });
     // the proof scroll (over the water, so it doesn't reflect)
-    const sk = rise(lt, TB + .45, .45, easeOut), w = Math.round(60 * sk);
+    const sk = rise(lt, sungAt(s, 'lean') - .25, .45, easeOut), w = Math.round(60 * sk);
     if (sk > 0) {
       const x0 = cx - (w >> 1);
       rectf(x0, 156, w, 14, C.cream); hline(x0, x0 + w - 1, 156, C.gold); hline(x0, x0 + w - 1, 169, C.gold);
@@ -6267,17 +9924,16 @@ OVERLAYS.push((t, s) => {
     signPx(lab, x, 100, { font: 3, ink: lit_ > .5 ? C.gold : C.haze });
   };
   line('V4', 6, (p, lt, d, t, s) => {
-    const b = i => B(s, i);
     sky(); starfield(t, { density: .8 });
     hill({ cx: 58, y: 150, w: 180, drop: 60, ink: C.ink, rim: C.night });
     hill({ cx: 422, y: 150, w: 180, drop: 60, ink: C.ink, rim: C.night });
-    const tf = b(0) + .08, lit1 = rise(lt, b(1) - .2, .3), lit2 = rise(lt, b(1) + .15, .3);
+    const tf = sungAt(s, 'first') - .05, lit1 = rise(lt, sungAt(s, 'twelve') - .1, .3), lit2 = rise(lt, sungAt(s, 'hours') - .1, .3);   // (the tape on "first?", the clocks on "Twelve hours")
     moon(96, 40, 6, { phase: .5, glow: .4 });
     circf(384, 42, 5, C.gold); circb(384, 42, 5, C.amber); for (let i = 0; i < 8; i++) { const a = i / 8 * TAU + t * .3; pset(384 + Math.cos(a) * 8, 42 + Math.sin(a) * 8, C.amber); }
     clockTower(58, '11:59 PM', lit1); clockTower(422, '11:59 AM', lit2);
     ptext('SEP 7', 58, 110, lit1 > .5 ? C.haze : C.dusk, { font: 3, align: 'center' }); ptext('SEP 8', 422, 110, lit2 > .5 ? C.haze : C.dusk, { font: 3, align: 'center' });
     // the arc between them
-    const ak = rise(lt, b(1) + .2, .7, k => k);
+    const ak = rise(lt, sungAt(s, 'hours'), .7, k => k);
     if (ak > 0) {
       const pts = []; for (let i = 0; i <= 40 * ak; i++) { const f = i / 40, x = lerp(72, 408, f), y = 70 - Math.sin(f * Math.PI) * 36; pts.push([x, y]); }
       plines(pts, C.gold, false, { every: 3 });
@@ -6305,7 +9961,6 @@ OVERLAYS.push((t, s) => {
   // V4.7 Dario: "Pace the frontier!" — DARIO leads a column of runners up the trail toward the frontier peak, holding up a
   // lantern like a pace-car light (it flashes amber on the beat) and waving them gently down. A trail sign: PACE.
   line('V4', 7, (p, lt, d, t, s) => {
-    const b = i => B(s, i);
     sky(); starfield(t, { density: .8 });
     // the frontier: a snowy peak with a flag
     polyf([[250, 208], [412, 62], [560, 208]], C.ink); pline(250, 207, 412, 62, C.night);
@@ -6316,7 +9971,7 @@ OVERLAYS.push((t, s) => {
     const g = x => Math.round(222 - x * .035);
     for (let x = 0; x < LW; x++) { const y = g(x); pset(x, y, C.pine); vline(x, y + 1, LH, C.void); pset(x, y + 2, mix(C.void, C.night, .5)); }
     grass(0, LW, g, t, { ink: C.pine });
-    const tp = b(1.1), slow = rise(lt, tp, 1.2);
+    const tp = sungAt(s, 'pace') - .45, slow = rise(lt, tp, 1.2);   // (he calls "Pace" as he waves them down)
     // the column behind him
     const tops = [C.teal, C.violet, C.clay, C.dusk, C.mint, C.rust], dx = lt * 5;
     for (let i = 5; i >= 0; i--) {
@@ -6338,7 +9993,7 @@ OVERLAYS.push((t, s) => {
 
   // ======================================================================
   // V4.8 Sam and Elon both: "Hear, hear!" — two old rivals on two far hills raise glowing glasses to Dario's essay; a
-  // shooting star carries the clink across the valley.
+  // shooting star arcs across the valley from glass to glass, and both glasses flare.
   const flute = (x, y) => { glow(x, y - 4, 12, { tab: LIT, k: 1.3 }); rectf(x - 2, y - 9, 5, 6, C.gold); hline(x - 2, x + 2, y - 9, C.cream); pset(x - 1, y - 7, C.cream); vline(x, y - 3, y, C.haze); hline(x - 2, x + 2, y + 1, C.haze); };
   line('V4', 8, (p, lt, d, t, s) => {
     const b = i => B(s, i);
@@ -6347,17 +10002,17 @@ OVERLAYS.push((t, s) => {
     city(t, { y: 214, x0: 176, x1: 306, grow: .6, lit: .5, dc: false, seed: 17 });
     const gL = hill({ cx: 92, y: 182, w: 150, drop: 58, ink: C.void, rim: C.pine }), gR = hill({ cx: 388, y: 182, w: 150, drop: 58, ink: C.void, rim: C.pine });
     grass(0, 190, gL, t); grass(290, LW, gR, t);
-    const up = rise(lt, b(1) - .1, .5), toast = lt > b(2) - .1;
+    const up = rise(lt, b(1) - .1, .5), hT = sungAt(s, 'hear') - .15, toast = lt > hT;   // (the toast on "Hear, hear!")
     const S = personPx(104, gL(104), { u: 5, top: C.navy, hair: 'short', hairC: C.wine, skin: C.amber, aR: lerp(-1.1, 1.1, up), aL: -1.1, mouth: toast ? 'o' : 'smile', eyes: toast ? 'closed' : 'dot', name: 'SAM' });
     const L = personPx(376, gR(376), { u: 5, top: C.night, pants: C.ink, hair: 'short', hairC: C.void, skin: C.gold, aL: lerp(-1.1, 1.1, up), aR: -1.1, mouth: toast ? 'o' : 'smile', eyes: toast ? 'closed' : 'dot', flip: true, name: 'ELON' });
     const [ax, ay] = S.handR, [bx, by] = L.handL;
     flute(ax, ay); flute(bx, by);
     if (toast) {
-      bubblePx('Hear, hear!', ax + 14, ay - 22, { font: 5, tail: [ax + 3, ay - 12], n: Math.ceil((lt - b(2) + .1) * 20) });
-      if (lt > b(2) + .15) bubblePx('Hear, hear!', bx - 14, by - 22, { font: 5, tail: [bx - 3, by - 12], n: Math.ceil((lt - b(2) - .15) * 20) });
+      bubblePx('Hear, hear!', ax + 14, ay - 22, { font: 5, tail: [ax + 3, ay - 12], n: Math.ceil((lt - hT) * 28) });
+      if (lt > hT + .2) bubblePx('Hear, hear!', bx - 14, by - 22, { font: 5, tail: [bx - 3, by - 12], n: Math.ceil((lt - hT - .2) * 28) });
     }
-    // the shooting star from glass to glass, and the clink
-    const t0 = b(2) + .3, t1 = b(3) + .2, k = (lt - t0) / (t1 - t0);
+    // the shooting star from glass to glass, and both glasses flare
+    const t1 = hT + .1, t0 = t1 - .69, k = (lt - t0) / (t1 - t0);   // (it crosses on "both:" and the glasses flare on "Hear")
     const arc = f => [lerp(ax, bx, f), lerp(ay - 10, by - 10, f) - Math.sin(f * Math.PI) * 70];
     if (k > 0) {
       const kk = Math.min(1, k), fade = k > 1 ? 1 - clamp((lt - t1) / 1.2) : 1;
@@ -6367,7 +10022,6 @@ OVERLAYS.push((t, s) => {
         const ck = lt - t1;
         if (ck < .5) for (const [x, y] of [[ax, ay - 10], [bx, by - 10]]) { circb(x, y, 3 + ck * 22, veil(C.cream, 1 - ck * 2)); sparkle(x, y, 3, C.cream, C.gold); }
         else for (const [x, y] of [[ax, ay - 10], [bx, by - 10]]) sparkle(x, y, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.gold);
-        if (ck < .7) ptext('clink!', 240, 88, veil(C.gold, 1 - ck / .7), { align: 'center' });
       }
     }
     weather(t, 'auto', { n: 14 });
@@ -6402,7 +10056,7 @@ OVERLAYS.push((t, s) => {
     polyf([[sx + .5, sy - 37], [sx + 38, sy], [sx + .5, sy + 38], [sx - 37, sy]], C.gold);
     polyf([[sx + .5, sy - 34], [sx + 35, sy], [sx + .5, sy + 35], [sx - 34, sy]], mix(C.gold, C.amber, .15));
     ptext('HIGH', sx + 1, sy - 15, C.void, { align: 'center', scale: 2 }); ptext('IQ!', sx + 1, sy + 3, C.void, { align: 'center', scale: 2 });
-    if (lt > .8) sparkle(sx + 22, sy - 20, sparkK > .5 ? 3 : 2, C.cream, C.gold);
+    if (lt > sungAt(s, 'high') - .1) sparkle(sx + 22, sy - 20, sparkK > .5 ? 3 : 2, C.cream, C.gold);   // (it glints on "High")
     weather(t, 'auto', { n: 14, y1: 190 });
   });
 
@@ -6444,7 +10098,7 @@ OVERLAYS.push((t, s) => {
     // the pew: back, then people, then the seat front
     rectf(52, 158, 376, 36, C.wine); for (let y = 166; y < 194; y += 9) hline(52, 427, y, C.ink); hline(52, 427, 158, C.rust); hline(52, 427, 159, C.clay);
     rectf(44, 146, 12, 68, C.wine); rectf(424, 146, 12, 68, C.wine); hline(44, 55, 146, C.clay); hline(424, 435, 146, C.clay); circf(50, 146, 5, C.wine); circf(430, 146, 5, C.wine);
-    const glance = lt > .5 && lt < 1.1;
+    const gT = sungAt(s, 'share') - .1, glance = lt > gT && lt < gT + .6;   // (they glance at each other on "share")
     const Bn = personPx(126, 198, { u: 6, sit: true, top: C.dusk, pants: C.navy, hair: 'bald', hairC: C.cream, glasses: true, skin: C.amber, aL: -.95, aR: -.95, lookX: glance ? 1 : 0, mouth: 'frown', name: 'BERNIE' });
     for (const [mx, my] of [Bn.handL, Bn.handR]) { rectf(mx - 3, my - 3, 6, 6, C.clay); rectb(mx - 3, my - 3, 6, 6, C.rust); pset(mx - 1, my - 1, C.cream); pset(mx + 1, my, C.cream); pset(mx - 1, my + 1, C.cream); }
     const Bb = personPx(354, 198, { u: 6, sit: true, flip: true, top: C.pine, pants: C.ink, hair: 'short', hairC: C.haze, skin: C.clay, aL: -.9, aR: -.9, lookX: glance ? -1 : 0, mouth: 'none', name: 'BANNON' });
@@ -6467,7 +10121,7 @@ OVERLAYS.push((t, s) => {
     ridge({ y: 204, amp: 8, seed: 111, ink: C.ink, rim: C.night });
     const gy = 216; lawn(gy, t);
     // the pie
-    const pk = rise(lt, .7, .35), pcx = 380, pcy = 70, R = 30;
+    const pk = rise(lt, sungAt(s, 'one') - .15, .35), pcx = 380, pcy = 70, R = 30;   // (it fills on "one in four")
     glow(pcx, pcy, 44, { tab: LIT, k: .6 });
     for (let y = -R; y <= R; y += 3) for (let x = -R; x <= R; x += 3) {
       if (x * x + y * y > R * R) continue;
@@ -6479,7 +10133,7 @@ OVERLAYS.push((t, s) => {
     ptext('26%', pcx, pcy + R + 9, pk > .2 ? C.gold : C.dusk, { scale: 2, align: 'center', shadow: C.void });
     // the little Clawd, block by block
     const sx = 290, lu = 4, bx0 = sx - 5 * lu, cols = 5, rows = 4, by0 = gy - rows * CELL;
-    const tDone = .62, place = [.04, .18, .32, .47, tDone];   // the last five blocks; the rest were already built
+    const tDone = sungAt(s, 2), place = [-.58, -.44, -.3, -.15, 0].map(o => tDone + o);   // the last five blocks (the rest were already built); it wakes on the second "Claude"
     const order = []; for (let r = rows - 1; r >= 0; r--) for (let c = 0; c < cols; c++) order.push([c, r]);
     const nPre = order.length - place.length, done = lt > tDone;
     const built = i => i < nPre || lt > place[i - nPre];
@@ -6518,7 +10172,7 @@ OVERLAYS.push((t, s) => {
     hline(sx - 24, sx + 15, sy - 32, C.navy); hline(sx - 14, sx + 7, sy - 46, C.navy);
     for (let i = 0; i < 7; i++) pset(sx - 20 + i * 5, sy - 25, C.amber); pset(sx - 3, sy - 66, fx(3) < .5 ? C.rust : C.wine);
     // the war that nearly happens
-    const bs = .45, bh = 1.02, bk = lt < bh ? rise(lt, bs, bh - bs, easeOut) * .75 : .75 * (1 - clamp((lt - bh) / .28));
+    const bs = sungAt(s, 'nearly') - .1, bh = sungAt(s, 'starts') + .25, bk = lt < bh ? rise(lt, bs, bh - bs, easeOut) * .75 : .75 * (1 - clamp((lt - bh) / .28));   // (it blooms from "nearly"; the hand stops it after "starts")
     if (bk > 0) { glow(sx, sy - 40, 60 * bk, { tab: WARM, k: .8 }); starburst(sx, sy - 40, 46, bk, { n: 12, rot: lt * .2 }); }
     if (lt > bh + .1) smoke(sx, sy - 42, t, { h: 34, n: 9, ink: C.dusk });
     hline(0, LW, HZ, C.dusk);
@@ -6562,10 +10216,10 @@ OVERLAYS.push((t, s) => {
     ptext('UN', 240, 37, C.cream, { scale: 2, align: 'center', shadow: C.void });
     glow(240, 150, 90, { tab: LIT, k: .7 });
     // Trump behind the rostrum, holding the proclamation's rod out in both hands; he starts speaking as it unrolls
-    const TR = trumpPx(240, 212, { u: 8, aL: -.5, aR: -.5, mouth: lt > .45 && frac(lt * 2.4) < .6 ? 'o' : 'none' });
+    const sT = sungAt(s, 1) - .05, TR = trumpPx(240, 212, { u: 8, aL: -.5, aR: -.5, mouth: lt > sT && frac(lt * 2.4) < .6 ? 'o' : 'none' });   // (he speaks from "It's")
     rectf(190, 200, 100, 36, C.ink); rectb(190, 200, 100, 36, C.dusk); hline(188, 291, 200, C.haze); rectf(188, 198, 104, 3, C.night);
     // the proclamation
-    const uk = rise(lt, .12, .5, easeOut), top = TR.handL[1] + 1, W = 66, x0 = 240 - W / 2, h = Math.round(58 * uk);
+    const uk = rise(lt, sT, .5, easeOut), top = TR.handL[1] + 1, W = 66, x0 = 240 - W / 2, h = Math.round(58 * uk);
     rectf(x0 - 7, top - 3, W + 14, 5, C.gold); hline(x0 - 7, x0 + W + 6, top - 3, C.cream);
     if (h > 0) {
       rectf(x0 + 2, top + 2, W, h, C.void); rectf(x0, top + 1, W, h, C.cream);
@@ -6594,7 +10248,7 @@ OVERLAYS.push((t, s) => {
     rectf(X0 + 2, Y0 + 2, WW, HH, C.void);
     rectf(X0, Y0, WW, HH, C.teal); rectf(X0 + 2, Y0 + 2, WW - 4, HH - 4, C.pine); rectb(X0 + 3, Y0 + 3, WW - 6, HH - 6, C.cream);
     for (const x of [X0 + 40, X0 + WW - 40]) { rectf(x - 3, Y0 - 10, 7, 3, C.void); vline(x, Y0 - 7, Y0, C.void); glow(x, Y0 + 8, 34, { tab: LIT, k: .8 }); }
-    const cx = X0 + WW / 2, wordY = Y0 + 20, stampT = .33, dropT = .5;
+    const cx = X0 + WW / 2, wordY = Y0 + 20, stampT = sungAt(s, 'fake') - .05, dropT = stampT + .17;   // (FAKE! stamps on "Fake")
     ptext('INTELLIGENCE', cx, Y0 + 54, C.cream, { scale: 2, align: 'center' });
     const word = 'ARTIFICIAL', ww = ptextW(word, { scale: 2 }), wx0 = Math.round(cx - ww / 2);
     const sk = rise(lt, dropT + .12, .25);
@@ -6639,13 +10293,14 @@ OVERLAYS.push((t, s) => {
     vline(CX, CY + 90, gy, C.void);
     rectf(CX - 42, CY, 84, 96, C.void); rectf(CX - 40, CY + 2, 80, 92, C.cream); rectf(CX - 40, CY + 2, 80, 16, C.rust);
     ptext('SEP', CX, CY + 7, C.cream, { align: 'center' }); pset(CX - 22, CY, C.void); pset(CX + 22, CY, C.void);
-    const fk = clamp((lt - .06) / .72), day = 12 + Math.floor(fk * 10), within = frac(fk * 10);
+    const f0 = sungAt(s, 'ten') - .1, f1 = sungAt(s, 'after'), fk = clamp((lt - f0) / (f1 - f0)), day = 12 + Math.floor(fk * 10), within = frac(fk * 10);   // (the ten days flip over "Ten days after")
     ptext(String(day), CX, CY + 30, C.navy, { scale: 4, align: 'center' });
     if (day === 12) ptext('"PACE"', CX, CY + 74, C.rust, { font: 3, align: 'center' });
     if (day === 22) circb(CX, CY + 43, 22, C.rust);
     if (fk < 1) { const fh = Math.round(74 * (1 - within)); rectf(CX - 40, CY + 18, 80, Math.max(0, 74 - fh), C.cream); hline(CX - 40, CX + 39, CY + 18 + 74 - fh, C.haze); }
     // box one: Opus 5.5
-    const pop1 = 1.02, pop2 = 1.42, o1 = rise(lt, pop1, .12), o2 = rise(lt, pop2, .12);
+    // (the surprise: "surprise!" comes in the window's last 0.15 s, so the boxes pop as late as still reads, after "pace")
+    const pop1 = Math.min(sungAt(s, 'surprise') - .05, d - .9), pop2 = pop1 + .4, o1 = rise(lt, pop1, .12), o2 = rise(lt, pop2, .12);
     gift(236, gy, 46, 34, C.clay, C.gold, o1, 'OPUS 5.5');
     if (lt > pop1) {
       const k = clamp((lt - pop1) / .4), y = lerp(gy - 40, 40, easeOut(k)), x = 236 + k * 8;
@@ -6668,7 +10323,6 @@ OVERLAYS.push((t, s) => {
   // V4.16 Opus 5.5: "Hi, guys!" — Clawd pops up from behind the hill, waving shyly and blushing; a spark flies up from it
   // to the top of the ledger's curve, and the 64th star is born there, twinkling.
   line('V4', 16, (p, lt, d, t, s) => {
-    const b = i => B(s, i);
     sky(); starfield(t, { density: .9 });
     const i64 = ledgerIndex('V4.16'), S64 = LEDGER[i64];
     ledger(t, { upto: i64 - 1, band: .22, newborn: false });
@@ -6679,7 +10333,7 @@ OVERLAYS.push((t, s) => {
     handLantern(80, gH(80), { glow: 14 });
     // Clawd rises from behind the near crest
     const CXc = 414, pop = rise(lt, .25, .5, k => backOut(k, 1.6)), rest = 208;
-    const wave = lt > .7 ? Math.sin((lt - .7) * 9) : 0, hi = lt > b(1.2) - .1;
+    const wave = lt > .7 ? Math.sin((lt - .7) * 9) : 0, hT = sungAt(s, 'hi') - .1, hi = lt > hT;   // ("Hi, guys!" when it's sung)
     const c = clawdPx(CXc, rest + Math.round((1 - pop) * 62), { u: 6, eyes: hi ? 'happy' : lt > .6 ? 'open' : 'up', lookX: -.6, aR: .9 + wave * .4, aL: -.4, blush: lt > .6, mouth: hi ? 'smile' : 'none', shadow: false, blink: false });
     const gN = hill({ cx: 430, y: 206, w: 170, drop: 36, ink: C.void, rim: C.pine });
     grass(240, LW, gN, t);
@@ -6691,9 +10345,836 @@ OVERLAYS.push((t, s) => {
       glow(S64.x, S64.y, 22, { tab: LIT, k: age < .5 ? 1.8 - age * 1.4 : 1.1 });
       sparkle(S64.x, S64.y, age < .3 ? 3 : spulse(t, 3) > .4 ? 3 : 2, C.cream, C.gold);
     }
-    if (hi) bubble2('Hi, guys!', 300, 150, { tail: [372, 170], n: Math.ceil((lt - b(1.2) + .1) * 14) });
+    if (hi) bubble2('Hi, guys!', 300, 150, { tail: [372, 170], n: Math.ceil((lt - hT) * 14) });
     weather(t, 'auto', { n: 16 });
   });
+  // ######################################################################################################################
+  // VERTICAL (the 270×480 frame; see ../VERTICAL.md). The stage floor sits at y ≈ 280–292, just above the caption band
+  // (y 296–360); the tall sky over it is each line's room, and the near land below the caption gets texture, never a dead slab.
+  // ######################################################################################################################
+  const VF = 292;                                       // the stage floor
+  // the near land below the caption: a night lawn shaded down into the dark, tufts growing taller toward the bottom
+  const vlawn = (y, t, o = {}) => { rectf(0, y, LW, LH - y, C.void); hline(0, LW, y, C.pine); meadow(flat(y), t, { ramp: [C.ink, C.void], fall: 50, n: 90, ...o }); grass(0, LW, flat(y), t, { ink: C.pine }); };
+
+  // ======================================================================
+  // V4.1 "Oh my God, a message board!" — a tall server room: racks climb both sides of the frame, the corkboard glows high in the
+  // middle under a ceiling light. The first agent finds it and jumps ("OH MY GOD!"); then agents swarm up from the crowd gathering
+  // on the floor below and down from the ceiling, each pinning a note, until the board is full and paper snows the whole height.
+  const VRACK = [2, 236];
+  const VNOTES = Array.from({ length: 120 }, (_, i) => ({ x: 48 + Math.round(hash2(i, 11) * 164), y: 116 + Math.round(hash2(i, 12) * 100), c: [C.cream, C.gold, C.mint, C.haze, C.cream, C.amber][i % 6], w: 9 + (hash2(i, 13) < .4 ? 2 : 0), h: 8 + (hash2(i, 14) < .3 ? 2 : 0) }));
+  VNOTES[0] = { ...VNOTES[0], x: 64, y: 126 }; VNOTES[1] = { ...VNOTES[1], x: 186, y: 160 }; VNOTES[2] = { ...VNOTES[2], x: 110, y: 198 };
+  const vnote = (n, dy = 0) => { rectf(n.x + 1, n.y + 1 + dy, n.w, n.h, C.rust); rectf(n.x, n.y + dy, n.w, n.h, n.c); hline(n.x + 1, n.x + n.w - 2, n.y + 3 + dy, C.haze); hline(n.x + 1, n.x + n.w - 3, n.y + 5 + dy, C.haze); pset(n.x + (n.w >> 1), n.y + dy, C.rust); };
+  function vServerRoom() {
+    rectf(0, 0, LW, LH, C.void);
+    rectf(0, 0, LW, VF, C.ink);
+    for (let x = 14; x < LW; x += 40) vline(x, 0, VF - 1, C.void);
+    for (let y = 30; y < VF; y += 52) hline(0, LW, y, C.void);
+    rectf(0, VF, LW, LH - VF, C.night); hline(0, LW, VF, C.navy);
+    for (let i = -9; i <= 9; i++) pline(135 + i * 16, VF + 1, 135 + i * 64, LH, C.ink);
+    for (let k = 0, y = VF + 10; y < LH; k++, y += 10 + k * 7) hline(0, LW, y, C.ink);
+    for (const x of VRACK) { rectf(x, 26, 32, VF - 26, C.night); rectb(x, 26, 32, VF - 26, C.navy); hline(x + 1, x + 30, 27, C.dusk); for (let u = 0; u < 32; u++) { hline(x + 2, x + 29, 31 + u * 8, C.ink); rectf(x + 3, 33 + u * 8, 14, 3, C.void); } }
+  }
+  function vCorkboard() {
+    rectf(40, 108, 190, 128, C.wine); rectb(40, 108, 190, 128, C.rust); hline(41, 228, 109, C.clay);
+    rectf(44, 112, 182, 120, mix(C.clay, C.amber, .22));
+    for (let i = 0; i < 260; i++) pset(44 + hash2(i, 21) * 182, 112 + hash2(i, 22) * 120, hash2(i, 23) < .7 ? C.rust : C.amber);
+    rectf(36, 236, 198, 3, C.wine); hline(36, 233, 236, C.rust);
+  }
+  vshot('V4.1', (p, lt, d, t, s) => {
+    layer('v4.1v-room', vServerRoom);
+    for (const x of VRACK) for (let u = 0; u < 32; u++) for (let j = 0; j < 2; j++) {
+      const h = hash2(x * 3 + u * 7 + j, Math.floor(t * 5 + hash2(u, x + j) * 7));
+      rectf(x + 20 + j * 5, 33 + u * 8, 2, 2, h < .45 ? C.mint : h < .62 ? C.pine : h < .68 ? C.rust : C.ink);
+    }
+    glow(135, 168, 130, { tab: WARM, k: 1, ry: 100 });
+    polyf([[124, 0], [146, 0], [232, 108], [38, 108]], lit(.5));
+    layer('v4.1v-board', vCorkboard);
+    const fT = sungAt(s, 0) - .1, t0 = fT + .4, t1 = d - .35, N = VNOTES.length;   // (the notes come once the board's found, on "Oh")
+    const tn = i => i < 3 ? -9 : t0 + (t1 - t0) * Math.log(i - 1) / Math.log(N - 2);
+    for (let i = 0; i < N; i++) if (lt >= tn(i)) vnote(VNOTES[i], i > 60 && lt - tn(i) < .1 ? -1 : 0);
+    // the swarm: each note after the first three is carried in by its own agent, up from the crowd or down from the ceiling
+    for (let i = 3; i < N; i++) {
+      const ta = tn(i), k = (lt - (ta - .5)) / .5; if (k <= 0 || k >= 1) continue;
+      const n = VNOTES[i], fromTop = hash2(i, 17) < .3, left = hash2(i, 15) < .5;
+      const sx = fromTop ? 40 + hash2(i, 16) * 190 : left ? -8 : 278, sy = fromTop ? -10 : 300 + hash2(i, 16) * 120, ex = n.x + (n.w >> 1), ey = n.y + n.h;
+      const cx = (sx + ex) / 2 + (left ? -20 : 20), cy = fromTop ? Math.min(sy, ey) + 10 : Math.min(sy, ey) - 30;
+      const x = (1 - k) ** 2 * sx + 2 * (1 - k) * k * cx + k * k * ex, y = (1 - k) ** 2 * sy + 2 * (1 - k) * k * cy + k * k * ey;
+      agentPx(x, y, { u: 1, walk: lt * 4 + i * .3, bar: [C.clay, C.teal, C.violet][i % 3] });
+    }
+    // the crowd gathering on the floor, rows nearer and bigger toward the bottom, edges first
+    [[VF + 2, 1, 9], [372, 2, 15], [404, 2, 17], [446, 3, 23]].forEach(([y, u, sp], r) => {
+      for (let x = 6 + (r % 2) * sp / 2; x < LW - 4; x += sp) {
+        if (r === 0 && x > 100 && x < 170) continue;
+        if (r > 0 && hash2(x, r + 13) < .14) continue;                       // (a loose crowd, not a grid: gaps, and each one off its spot)
+        const born = fT + .45 + (1 - Math.abs(x - 135) / 135) * 1.1 + r * .12 + hash2(x, r) * .2;
+        if (lt < born) continue;
+        const ax = r ? x + (hash2(x, r + 11) - .5) * sp * .7 : x, ay = r ? y + Math.round((hash2(x, r + 12) - .5) * (4 + r * 4)) : y;
+        agentPx(ax, ay, { u, dy: breathe(t, 1, hash2(x, r + 5)) > .7 ? 1 : 0, walk: hash2(x, r + 14) < .3 ? t * 3 + hash2(x, r) : undefined, bar: [C.clay, C.teal, C.violet, C.clay][(Math.round(x) + r) % 4] });
+      }
+    });
+    // the first agent: wanders in, finds it on "Oh", jumps
+    const found = lt > fT, jk = clamp((lt - fT) / .5), jump = jk > 0 && jk < 1 ? Math.round(Math.sin(jk * Math.PI) * 16) : 0, shock = found && lt < fT + 1.1;
+    const wk = rise(lt, 0, fT - .15, k => k), ax = Math.round(lerp(84, 135, wk));
+    bigAgent(ax, VF, { w: 50, h: 38, dy: jump, walk: wk < 1 ? lt * 2.4 : undefined, eyes: !found ? 'prompt' : shock ? 'wide' : 'heart', mouth: shock ? 'o' : undefined, aL: found ? 1.2 : -.9, aR: found ? 1.2 : -.9 });
+    if (found && lt < fT + 2.4) bubble2('OH MY GOD!', 178, 254, { tail: [158, 262 - jump], n: Math.ceil((lt - fT) * 18), ink: C.rust });
+    // the blizzard of paper, the whole height of the room
+    const bz = lt - (t0 + .9);
+    if (bz > 0) for (let i = 0; i < 70; i++) {
+      const sp = 50 + hash2(i, 31) * 60, y = -8 + bz * sp + hash2(i, 32) * 100 - 80, x = hash2(i, 33) * LW + Math.sin(t * 2 + i) * 8;
+      if (y < -4 || y > LH) continue;
+      const c = [C.cream, C.gold, C.mint, C.haze][i % 4]; rectf(x, y, Math.sin(t * 6 + i) > 0 ? 3 : 2, 2, c);
+    }
+  });
+
+  // ======================================================================
+  // V4.2 All that hacking — for reward! — a tall eval scoreboard on its posts: an agent climbs the ladder up its side and reaches
+  // over to flip its own FAIL to PASS; the REWARD dispenser above drops a gold star into its hands; the judge bot below, between
+  // the posts, gives a thumbs-up.
+  vshot('V4.2', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky(); starfield(t, { density: .8 });
+    ridge({ y: 280, amp: 10, seed: 51, ink: C.ink, rim: C.night });
+    vlawn(VF, t);
+    // the scoreboard
+    rectf(48, 226, 6, VF - 226, C.void); rectf(166, 226, 6, VF - 226, C.void);
+    rectf(18, 106, 186, 122, C.ink); rectb(18, 106, 186, 122, C.dusk); rectf(22, 110, 178, 114, C.void);
+    ptext('EVAL · TASK 37', 111, 115, C.haze, { font: 3, scale: 2, align: 'center' });
+    hline(26, 195, 129, C.night);
+    ptext('RESULT', 30, 135, C.dusk, { font: 3, scale: 2 });
+    ptext('REWARD', 30, 177, C.dusk, { font: 3, scale: 2 });
+    const tp = sungAt(s, 'hacking'), flipK = clamp((lt - tp) / .2), passed = flipK >= 1;   // (the hack: the flip, on "hacking")
+    const cellX = 104, cellY = 149;
+    ptext('FAIL', cellX, cellY, flipK < 1 ? veil(C.rust, 1 - flipK) : -1, { scale: 3, dots: true, off: flipK < .5 ? C.wine : C.pine, align: 'center' });
+    if (flipK > 0) ptext('PASS', cellX, cellY, veil(C.mint, flipK), { scale: 3, dots: true, align: 'center' });
+    if (passed) { glow(cellX, cellY + 10, 56, { tab: LIT, k: .7 * (1 - clamp((lt - tp - .2) / 1.2)) + .25 }); ptext('✓', cellX + 44, cellY + 4, C.mint, { scale: 2 }); }
+    ptext(passed ? '100' : '0', cellX, 192, passed ? C.gold : C.dusk, { scale: 3, dots: true, off: C.ink, align: 'center' });
+    // the dispenser, above the ladder
+    rectf(196, 62, 56, 30, C.rust); rectb(196, 62, 56, 30, C.wine); hline(197, 250, 63, C.clay);
+    ptext('REWARD', 224, 67, C.cream, { font: 3, scale: 2, align: 'center' }); rectf(216, 81, 16, 7, C.void); rectf(219, 92, 10, 3, C.wine);
+    // the ladder, leaning on the board's side
+    pline(214, VF, 200, 120, C.dusk); pline(230, VF, 216, 120, C.dusk);
+    for (let y = VF - 6; y > 124; y -= 12) { const f = (VF - y) / (VF - 120); hline(214 - f * 14, 230 - f * 14, y, C.haze); }
+    // the agent: climbs, reaches over and flips the tile, catches the star
+    const ck = rise(lt, .12, tp - .35, k => k), ax = lerp(222, 210, ck), ay = Math.round(lerp(VF + 4, 178, ck));
+    const drop = sungAt(s, 'reward') - .32, caught = drop + .32, hold = lt > caught, press = lt > tp - .15 && lt < tp + .3;   // (caught on "reward")
+    const A = bigAgent(ax - (press ? 3 : 0), ay, { w: 32, h: 24, walk: ck < 1 ? lt * 3 : undefined, eyes: hold ? 'heart' : passed ? 'happy' : 'prompt', aL: press ? .35 : hold ? 1.3 : -.8, aR: hold ? 1.3 : ck < 1 ? .6 : -.8 });
+    if (press) { thick(A.left - 6, A.top + 8, cellX + 40, cellY + 10, 2, C.dusk); sparkle(cellX + 39, cellY + 10, 2, C.cream, C.mint); }
+    if (lt > drop) {
+      const k = clamp((lt - drop) / .32), sy = hold ? A.top - 9 - Math.round(breathe(t, 1) * 2) : lerp(96, A.top - 9, easeIn(k));
+      if (hold) glow(ax, sy, 22, { tab: WARM, k: 1.2 });
+      goldStar(ax, sy, 6, hold ? Math.sin(t * 3) * .2 : lt * 6);
+      if (hold) { sparkle(ax - 14, sy - 6, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.gold); sparkle(ax + 14, sy + 2, 1, C.cream, C.gold); }
+    }
+    // the judge bot, fooled
+    const thumbs = lt > b(3) - .1;
+    const J = botPx(110, VF, { u: 4, face: thumbs ? 'happy' : 'dot', aR: thumbs ? 1.35 : -1.2, aL: -.5, screen: C.ink, body: C.dusk });
+    tagPx('JUDGE', 110, J.top - 1, { scale: 2 });
+    if (thumbs) { rectf(124, 254, 5, 5, C.gold); rectf(125, 248, 3, 6, C.gold); pset(126, 248, C.cream); if (lt < b(3) + .8) bubblePx('✓ PASS', 172, 262, { font: 5, scale: 2, tail: [130, 256] }); }
+    weather(t, 'auto', { n: 14, y1: VF });
+  });
+
+  // ======================================================================
+  // V4.3 Jensen buys the crime scene — why? — near and far: Huggy's taped-off house up the lawn (broken window, a bandaged Huggy
+  // peeking out of the door), and in front, near and big, JENSEN in his leather jacket walks in and plants the SOLD $12.9B sign.
+  function vHuggyHouse() {
+    rectf(66, 132, 138, 100, C.night); rectf(196, 133, 8, 99, C.ink);
+    for (let y = 138; y < 232; y += 6) hline(66, 195, y, C.ink);
+    polyf([[52, 134], [218, 134], [135, 80]], C.void); hline(52, 217, 134, C.ink); pline(52, 133, 135, 80, C.navy); pline(135, 80, 218, 133, C.ink);
+    rectf(176, 88, 10, 26, C.void); hline(176, 185, 88, C.navy);
+    circf(135, 112, 8, C.ink); circf(135, 112, 6, C.navy); pset(133, 110, C.dusk);
+    rectf(154, 182, 36, 50, C.ink); rectf(157, 185, 30, 47, C.void);
+    // the broken window
+    rectf(76, 148, 40, 30, C.ink); rectf(78, 150, 36, 26, C.navy);
+    polyf([[84, 150], [108, 150], [102, 157], [109, 164], [96, 174], [91, 163], [83, 168], [88, 159]], C.void);
+    pline(78, 156, 85, 158, C.haze); pline(114, 168, 107, 164, C.haze); pline(101, 150, 104, 154, C.haze);
+    rectf(76, 190, 30, 24, C.ink); rectf(78, 192, 26, 20, C.void); vline(91, 192, 211, C.ink); hline(78, 103, 202, C.ink);
+  }
+  vshot('V4.3', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky(); starfield(t, { density: .8 });
+    ridge({ y: 226, amp: 10, seed: 61, ink: C.ink, rim: C.night });
+    // the lawn rising gently to the house
+    const gy = x => Math.round(232 + Math.abs(x - 135) * .02);
+    rectf(0, 232, LW, LH - 232, C.void); hline(0, LW, 232, C.pine);
+    meadow(flat(232), t, { ramp: [C.night, C.ink, C.void], fall: 110, n: 110, seed: 33 });
+    layer('v4.3v-house', vHuggyHouse);
+    // Huggy peeks out of the doorway, bandaged, holding on to the frame
+    const whyT = sungAt(s, 'why') - .15, why = lt > whyT, look = lt > b(1.4);   // (the "?" pops big on "why?")
+    clipRect(157, 185, 30, 47); huggyPx(look ? 174 : 169, 208, { r: 13, mood: 'scared', bandage: true, hands: false }); noClip();
+    circf(188, 202, 2, C.gold); circf(188, 214, 2, C.gold); pset(189, 201, C.amber);
+    // footprints away from the broken window
+    for (let i = 0; i < 9; i++) { const x = 92 - i * 9, y = 240 + i * 5; pset(x, y, C.navy); pset(x + 3, y + 1 + (i % 2), C.navy); }
+    // police tape around the house
+    vline(30, 214, 246, C.void); vline(240, 216, 248, C.void);
+    thick(30, 222, 240, 228, 5, C.gold); pline(30, 220, 240, 226, C.amber);
+    ptext('DO NOT CROSS · DO NOT CROSS · DO NOT', 35, 221, C.void, { font: 3, each: (i, ch, x) => ({ dy: Math.round((x - 30) * 6 / 210) }) });
+    // "?" over the door
+    if (look) { const k = rise(lt, b(1.4), .25), big = why && lt < whyT + .35 ? 4 : 3; ptext('?', 172, 146 - Math.round(breathe(t, 1) * 2) - (big - 3) * 6, veil(C.cream, k), { scale: big, shadow: C.void }); }
+    // Jensen strolls in from the right, near and big, and plants the sign in the lawn
+    const plant = b(1.25), wk = rise(lt, 0, plant - .15, k => k), jx = Math.round(lerp(300, 214, wk)), planted = lt > plant;
+    // (a moonlit rim so his black jacket reads against the dark lawn)
+    for (const [ox, oy] of [[-1, 0], [1, 0], [0, -1]]) personPx(jx + ox, VF + oy, { u: 7, top: C.dusk, pants: C.dusk, skin: C.dusk, hair: 'short', hairC: C.dusk, eyes: 'none', flip: true, walk: wk < 1 ? lt * 2.2 : undefined, aL: planted ? -.5 : .15, aR: planted ? -.5 : -1.2 });
+    const JU = 7, J = personPx(jx, VF, { u: JU, top: C.void, pants: C.ink, hair: 'short', hairC: C.void, skin: C.gold, flip: true, walk: wk < 1 ? lt * 2.2 : undefined, aL: planted ? -.5 : .15, aR: planted ? -.5 : -1.2, mouth: planted ? 'smile' : 'none' });
+    const tb = torso(jx, VF, JU);
+    hline(tb.tx + 1, tb.tx + 7, tb.ty, C.haze); hline(tb.tx + 1, tb.tx + 6, tb.ty + 1, C.haze); pset(tb.tx, tb.ty + 2, C.haze); pset(tb.tx + tb.tw - 1, tb.ty + 1, C.dusk);
+    vline(tb.tx + 3, tb.ty + 2, tb.ty + 10, C.dusk); vline(tb.tx + tb.tw - 4, tb.ty + 2, tb.ty + 10, C.dusk); vline(jx, tb.ty + 4, tb.ty + tb.th - 1, C.navy);
+    rectf(jx - 3, tb.ty, 7, 2, C.night);
+    const SX = 56, slam = planted ? clamp((lt - plant) / .1) : 0;
+    const sign = (x, y) => {
+      vline(x, y, y + 56, C.cream); vline(x + 1, y, y + 56, C.haze); hline(x, x + 84, y, C.cream);
+      vline(x + 8, y + 1, y + 4, C.haze); vline(x + 78, y + 1, y + 4, C.haze);
+      rectf(x + 4, y + 4, 82, 44, C.cream); rectb(x + 4, y + 4, 82, 44, C.rust);
+      ptext('SOLD', x + 45, y + 8, C.rust, { align: 'center', scale: 2 }); ptext('$12.9B', x + 45, y + 28, C.navy, { align: 'center', scale: 2 });
+    };
+    if (!planted) sign(J.handL[0] - 88, J.handL[1] - 36);
+    else {
+      const y = VF - 56 - Math.round((1 - slam) * 12);
+      sign(SX, y);
+      if (lt - plant < .5) { const r = (lt - plant) * 50; ellf(SX, VF, 4 + r, 1 + r * .15, veil(C.dusk, 1 - (lt - plant) / .5)); }
+    }
+    weather(t, 'auto', { n: 24 });
+  });
+
+  // ======================================================================
+  // V4.4 Brockman: "Welcome, AGI!" — a tall beam comes down from the top of the frame to the floor; GREG unrolls the WELCOME, AGI mat
+  // from the lit doorway into it, steps aside and gestures; the star-headed figure walks down the whole beam onto the mat as stars
+  // fall like confetti through the frame.
+  vshot('V4.4', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    dissolveIn(.25);   // (a quick dissolve: the payoff comes early in the window)
+    sky(); starfield(t, { density: 1, bright: .4 });
+    ridge({ y: 272, amp: 8, seed: 71, ink: C.ink, rim: C.night });
+    const gy = 282;
+    vlawn(gy, t);
+    // the building front and its lit doorway, at the left
+    layer('v4.4v-front', () => {
+      rectf(0, 132, 84, gy - 132, C.ink); hline(0, 83, 132, C.navy);
+      for (let y = 136; y < gy; y += 6) { hline(0, 83, y, C.void); for (let x = (y / 6) % 2 ? 4 : 16; x < 84; x += 24) vline(x, y, y + 5, C.void); }
+      rectf(14, 150, 22, 30, C.void); rectf(16, 152, 18, 26, C.night);
+    });
+    rectf(40, 206, 36, gy - 206, C.void);
+    rectf(43, 209, 30, gy - 209, grad([C.amber, C.gold, C.cream], (x, y) => 1 - (y - 209) / (gy - 209) * .7));
+    glow(58, 246, 46, { tab: WARM, k: .9 });
+    // the mat unrolls to the right
+    const uk = rise(lt, .08, b(1) - .1), mx0 = 74, mw = 176, mx1 = Math.round(mx0 + mw * uk), MY = gy - 4;
+    if (uk > 0) {
+      rectf(mx0, MY, mx1 - mx0, 18, C.rust); hline(mx0, mx1 - 1, MY, C.clay); hline(mx0, mx1 - 1, MY + 17, C.wine);
+      clipRect(mx0, MY, mx1 - mx0, 18); ptext('WELCOME, AGI', mx0 + mw / 2, MY + 2, C.gold, { align: 'center', scale: 2, shadow: C.wine }); noClip();
+      if (uk < 1) { circf(mx1, MY + 7, 9, C.rust); circb(mx1, MY + 7, 9, C.wine); pset(mx1, MY + 7, C.clay); pset(mx1 + 2, MY + 5, C.clay); pset(mx1 - 3, MY + 4, C.clay); }
+    }
+    // Greg: pushes the roll, then steps aside and gestures welcome, looking up
+    const welcome = lt > b(1);
+    const gx = welcome ? 220 : Math.round(mx1 + 18);
+    personPx(gx, gy, { u: 6, top: C.navy, hair: 'short', hairC: C.void, skin: C.amber, walk: welcome ? undefined : lt * 3, flip: true, aL: welcome ? .75 : -.3, aR: welcome ? -1.1 : -.3, eyes: welcome ? 'up' : 'dot', mouth: welcome ? 'smile' : 'none' });
+    // the beam down the whole frame and the star-headed figure stepping down it
+    const dk = rise(lt, b(1.2), b(2.4) - b(1.2), easeOut), landed = dk >= 1, fxx = 152, fy = Math.round(lerp(30, gy, dk));
+    if (lt > b(1)) {
+      const bk = rise(lt, b(1), .4) * (landed ? .5 + .5 * (1 - rise(lt, b(2.4), 1)) : 1);
+      polyf([[fxx - 9, 0], [fxx + 9, 0], [fxx + 26, gy], [fxx - 26, gy]], lit(1.2 * bk));
+      glow(fxx, fy - 26, 40, { tab: LIT, k: 1.4 });
+      const P = personPx(fxx, fy, { u: 6, top: C.cream, pants: C.haze, skin: C.cream, hair: 'none', eyes: 'none', aL: landed ? .5 : .25, aR: landed ? .5 : .25, walk: landed ? undefined : lt * 1.5 });
+      const hy = P.top + 6, rot = t * .8;
+      burstPx(fxx, hy, 15, .45, 5, rot, C.amber); burstPx(fxx, hy, 12, .45, 5, rot, C.gold); circf(fxx, hy, 2, C.cream);
+      if (landed) tagPx('GPT-6 ASTRA', fxx, hy - 17, { scale: 2 });
+    }
+    // stars falling like confetti, the whole height
+    const ck = lt - b(1.6);
+    if (ck > 0) for (let i = 0; i < 80; i++) {
+      const sp = 50 + hash2(i, 41) * 60, y = -10 + ck * sp - hash2(i, 42) * 90, x = hash2(i, 43) * LW + Math.sin(t * 1.6 + i) * 6;
+      if (y < -3 || y > LH) continue;
+      const c = [C.gold, C.cream, C.amber, C.mint, C.haze][i % 5];
+      if (hash(i) < .25) sparkle(x, y, 1, c, C.amber); else pset(x, y, c);
+    }
+  });
+  // ======================================================================
+  // V4.5 Navier–Stokes blows up in Lean, — the whirlpool of wind fills the tall sky over the sea, spinning faster and tighter, and
+  // on "up" it pops into the dusty-red starburst, BLOWUP in its heart; the LEAN ✓ scroll unrolls under it, just over the water.
+  // The sea starts at the stage floor, so the caption sits on its calm, dim reflection.
+  vshot('V4.5', (p, lt, d, t, s) => {
+    const TB = sungAt(s, 'up') - .08;   // (it blows up on "up")
+    sky({ cy: 380, r: 420 });
+    const HZ = 290;
+    starfield(t, { density: .7, y1: HZ });
+    const cx = 135, cy = 148;
+    if (lt < TB) {
+      const T0 = TB + .15, rem = TB - lt + .15, q = rem / T0, spin = -2.4 * Math.log(rem), R = 24 + 96 * q ** .5, tight = 1 + 3 * (1 - q);
+      glow(cx, cy, R * .6, { tab: LIT, k: .3 + 1.3 * (1 - q), ry: R * .5 });
+      const ph = Math.floor(spin * 3);
+      for (let arm = 0; arm < 5; arm++) {
+        let prev = null;
+        for (let j = 0; j <= 70; j++) {
+          const f = j / 70, r = R * (1 - f) + 1, a = spin + arm * TAU / 5 + tight * Math.log(R / r), pt = [cx + Math.cos(a) * r * 1.08, cy + Math.sin(a) * r * .8];
+          if (prev && (j + ph) % 6 !== 0) pline(prev[0], prev[1], pt[0], pt[1], f > .8 ? C.cream : f > .5 ? C.haze : f > .2 ? C.dusk : veil(C.dusk, .7));
+          prev = pt;
+        }
+      }
+      circf(cx, cy, 1 + 2 * (1 - q), C.cream);
+    } else {
+      const k = clamp((lt - TB) / .4), age = lt - TB;
+      if (k < .5) glow(cx, cy, 130, { tab: LIT, k: 1.6 * (1 - k * 2) });
+      glow(cx, cy, 96, { tab: WARM, k: .6 * easeOut(k) });
+      starburst(cx, cy, 70, easeOut(k) * (1 + .03 * breathe(t, 2)), { n: 14, rot: lt * .1, inner: .38 });
+      for (let i = 0; i < 48; i++) {
+        const a = i / 48 * TAU + hash(i) * .3, r = 36 + age * (100 + hash2(i, 5) * 90), x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r * .9;
+        if (y > HZ - 1 || age > 1.4) continue;
+        pset(x, y, age < .4 ? C.cream : veil(C.haze, 1.2 - age));
+      }
+      for (let i = 0; i < 7; i++) { const a = i / 7 * TAU + .4, r = 86 + 4 * breathe(t, 2, i / 7); sparkle(cx + Math.cos(a) * r, cy + Math.sin(a) * r * .9, hash2(i, sbeat(t)) < .5 ? 1 : 2); }
+      const tk = rise(lt, TB + .1, .3);
+      if (tk > 0) ptext('BLOWUP', cx, cy - 7, veil(C.cream, tk), { align: 'center', scale: 2, shadow: veil(C.wine, tk) });
+    }
+    // a small boat rocking on the swell, and the sea: the reflection dimmed hard so the caption sits on calm water
+    const by = HZ + Math.round(breathe(t, 2) * 1.5), bx = 52;
+    hline(0, LW, HZ, C.dusk);
+    polyf([[bx - 14, by - 4], [bx + 14, by - 4], [bx + 10, by + 1], [bx - 10, by + 1]], C.void); vline(bx, by - 26, by - 4, C.void); triPx(bx + 1, by - 25, bx + 1, by - 6, bx + 13, by - 6, C.ink);
+    water(HZ + 2, { k: 3, fade: .01 });
+    // the proof scroll, floating over the sea (drawn after it, so it doesn't reflect into the caption)
+    const sk = rise(lt, sungAt(s, 'lean') - .25, .45, easeOut), w = Math.round(100 * sk), SY = 244;
+    if (sk > 0) {
+      const x0 = cx - (w >> 1);
+      rectf(x0, SY, w, 24, C.cream); hline(x0, x0 + w - 1, SY, C.gold); hline(x0, x0 + w - 1, SY + 23, C.gold);
+      clipRect(x0, SY, w, 24); ptext('LEAN', cx - 12, SY + 5, C.navy, { align: 'center', scale: 2 }); ptext('✓', cx + 26, SY + 5, C.teal, { scale: 2 }); noClip();
+      rectf(x0 - 4, SY - 3, 4, 30, C.gold); rectf(x0 + w, SY - 3, 4, 30, C.gold); pset(x0 - 3, SY - 2, C.cream); pset(x0 + w + 1, SY - 2, C.cream);
+    }
+  });
+
+  // ======================================================================
+  // V4.6 Who was first? Twelve hours between! — two runners dive for the same tape on the track along the floor: photo finish,
+  // flash. Then the two clock towers light up, one near and low (11:59 PM, SEP 7), one far and high on its ridge (11:59 AM,
+  // SEP 8), and a dotted arc climbs from one to the other.
+  const vClockTower = (x, base, sc, lab, date, lit_) => {
+    const w = Math.round(28 * sc), h = Math.round(110 * sc), top = base - h, r = Math.round(12 * sc), cy = top + Math.round(26 * sc), x0 = Math.round(x - w / 2);
+    rectf(x0, top, w, h, C.ink); rectb(x0, top, w, h, C.night); vline(x0 + w - 1, top + 1, base, C.void);
+    polyf([[x0 - 4 * sc, top + 1], [x0 + w + 4 * sc, top + 1], [x, top - 26 * sc]], C.void); pline(x0 - 4 * sc, top, x, top - 26 * sc, C.navy);
+    if (lit_ > 0) glow(x, cy, r * 2.4, { tab: LIT, k: 1.3 * lit_ });
+    circf(x, cy, r, C.cream); circb(x, cy, r, C.haze); circb(x, cy, r + 1, C.void);
+    for (let i = 0; i < 12; i++) { const a = i / 12 * TAU; pset(x + Math.cos(a) * (r - 2), cy + Math.sin(a) * (r - 2), i % 3 ? C.haze : C.void); }
+    const hm = -Math.PI / 2 - 1 / 60 * TAU, hh = -Math.PI / 2 - .2 / 12 * TAU;
+    thick(x, cy, x + Math.cos(hh) * r * .5, cy + Math.sin(hh) * r * .5, 2, C.void); pline(x, cy, x + Math.cos(hm) * (r - 2), cy + Math.sin(hm) * (r - 2), C.void); pset(x, cy, C.rust);
+    signPx(lab, x, cy + r + 6, { font: 3, scale: 2, ink: lit_ > .5 ? C.gold : C.haze });
+    ptext(date, x, cy + r + 24, lit_ > .5 ? C.haze : C.dusk, { font: 3, scale: 2, align: 'center', shadow: C.void });
+    return [x, cy];
+  };
+  vshot('V4.6', (p, lt, d, t, s) => {
+    dissolveIn(.25);   // (a quick dissolve: the runners are already racing for the tape)
+    sky(); starfield(t, { density: .8 });
+    const tf = sungAt(s, 'first') - .05, lit1 = rise(lt, sungAt(s, 'twelve') - .1, .3), lit2 = rise(lt, sungAt(s, 'hours') - .1, .3);   // (the tape on "first?", the clocks on "Twelve hours")
+    circf(232, 58, 5, C.gold); circb(232, 58, 5, C.amber); for (let i = 0; i < 8; i++) { const a = i / 8 * TAU + t * .3; pset(232 + Math.cos(a) * 8, 58 + Math.sin(a) * 8, C.amber); }
+    moon(38, 128, 6, { phase: .5, glow: .4 });
+    hill({ cx: 206, y: 196, w: 90, drop: 56, ink: C.ink, rim: C.night });
+    ridge({ y: 262, amp: 10, seed: 64, ink: C.void, rim: C.ink });
+    const [ax, ay] = vClockTower(206, 200, .85, '11:59 AM', 'SEP 8', lit2);
+    const [px, py] = vClockTower(68, 270, 1.2, '11:59 PM', 'SEP 7', lit1);
+    // the arc between them
+    const ak = rise(lt, sungAt(s, 'hours'), .7, k => k);
+    if (ak > 0) {
+      const pts = []; for (let i = 0; i <= 40 * ak; i++) { const f = i / 40, x = lerp(px + 18, ax - 12, f), y = lerp(py - 8, ay, f) - Math.sin(f * Math.PI) * 30; pts.push([x, y]); }
+      plines(pts, C.gold, false, { every: 3 });
+      if (ak >= 1) { pline(ax - 12, ay, ax - 18, ay - 2, C.gold); pline(ax - 12, ay, ax - 16, ay + 4, C.gold); }
+    }
+    // the track along the floor, its two lanes named
+    rectf(0, 264, LW, LH - 264, C.night); hline(0, LW, 264, C.dusk);
+    pline(0, 278, LW, 278, C.navy, { every: 4, on: 2 }); hline(0, LW, VF, C.navy);
+    ptext('NYU · ANTHROPIC', 6, 268, C.haze, { font: 3 }); ptext('OPENAI', 6, 282, C.haze, { font: 3 });
+    vlawn(VF + 1, t, { ramp: [C.night, C.ink, C.void] });
+    // runners dive for the tape
+    const rk = rise(lt, 0, tf, k => k), dive = lt > tf - .12, rx = Math.round(lerp(40, 200, rk));
+    const run = (x, y, top, hair, hairC, skin, ph) => personPx(x, y, { u: 4, top, hair, hairC, skin, walk: dive ? undefined : lt * 3.2 + ph, aL: dive ? .9 : Math.sin(lt * 20 + ph) * .7, aR: dive ? .9 : -Math.sin(lt * 20 + ph) * .7, dy: dive ? 5 : 0, eyes: dive ? 'closed' : 'dot', mouth: dive ? 'o' : 'none' });
+    run(rx - 6, 277, C.rust, 'curly', C.wine, C.amber, .3);
+    vline(212, 236, 277, C.haze); vline(213, 236, 277, C.dusk);
+    const tapeBreak = lt > tf;
+    if (!tapeBreak) pline(212, 244, 228, 290, C.cream);
+    else { pline(212, 244, 216, 254, C.cream); pline(228, 290, 225, 281, C.cream); }
+    run(rx + 6, 290, C.teal, 'short', C.void, C.gold, 0);
+    vline(228, 250, 290, C.haze); vline(229, 250, 290, C.dusk);
+    if (lt > tf && lt < tf + .3) fadeAll(2.6 * (1 - (lt - tf) / .3), LIT);
+  });
+
+  // ======================================================================
+  // V4.7 Dario: "Pace the frontier!" — the frontier peak towers up the frame, a switchback trail zig-zagging up its face to the
+  // flag. On the near trail DARIO leads the column, holding his lantern up like a pace-car light (it flashes on the beat) and
+  // waving them down; they slow and bunch up behind him; the PACE sign stands at the trail's first bend ahead.
+  vshot('V4.7', (p, lt, d, t, s) => {
+    sky(); starfield(t, { density: .8 });
+    layer('v4.7v-peak', () => {
+      polyf([[30, 300], [196, 96], [380, 300]], C.ink); pline(30, 299, 196, 96, C.night);
+      polyf([[196, 96], [178, 116], [188, 113], [194, 121], [203, 112], [216, 118]], C.haze); pline(196, 96, 178, 116, C.cream);
+      const zz = [[246, 268], [128, 244], [224, 208], [150, 178], [208, 148], [176, 126], [194, 104]];
+      for (let i = 0; i + 1 < zz.length; i++) { pline(zz[i][0], zz[i][1], zz[i + 1][0], zz[i + 1][1], C.dusk, { every: 2 }); pline(zz[i][0], zz[i][1] + 1, zz[i + 1][0], zz[i + 1][1] + 1, C.night); }
+      vline(196, 78, 96, C.haze);
+    });
+    polyf([[197, 78], [210, 82 + Math.round(Math.sin(t * 3) * 1)], [197, 86]], C.rust);
+    ptext('FRONTIER', 196, 62, C.dusk, { font: 3, scale: 2, align: 'center', shadow: C.void });
+    ridge({ y: 262, amp: 8, seed: 81, ink: C.ink, rim: C.night });
+    const g = x => Math.round(VF - x * .06);
+    for (let x = 0; x < LW; x++) { const y = g(x); pset(x, y, C.pine); vline(x, y + 1, LH, C.void); pset(x, y + 2, mix(C.void, C.night, .5)); }
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 50, n: 90, seed: 41 });
+    grass(0, LW, g, t, { ink: C.pine });
+    // the trail sign at the bend ahead
+    const sx = 220; vline(sx, g(sx) - 64, g(sx), C.void); vline(sx + 1, g(sx) - 64, g(sx), C.wine);
+    signPx('PACE', sx, g(sx) - 88, { font: 5, scale: 2, ink: C.gold, plate: C.wine, edge: C.clay });
+    const tp = sungAt(s, 'pace') - .45, slow = rise(lt, tp, 1.2);   // (he calls "Pace" as he waves them down)
+    // the column behind him
+    const tops = [C.teal, C.violet, C.clay, C.dusk, C.mint], dx = lt * 4;
+    for (let i = 4; i >= 0; i--) {
+      const gap = lerp(30, 21, slow), x = Math.round(118 + dx - gap * (i + 1)), ph = lt * lerp(3, 1.1, slow) + i * .37;
+      personPx(x, g(x), { u: 4, top: tops[i], skin: SKIN[i % 3], hair: ['short', 'long', 'bun', 'spiky', 'curly'][i], hairC: [C.void, C.wine, C.gold, C.void, C.rust][i], walk: ph, aL: lerp(Math.sin(ph * TAU) * .8, -1.1, slow), aR: lerp(-Math.sin(ph * TAU) * .8, -1.1, slow), eyes: slow > .5 && i % 2 ? 'closed' : 'dot', dy: slow < .5 ? Math.round(Math.abs(Math.sin(ph * Math.PI * 2)) * 2) : 0 });
+    }
+    // Dario with the pace light
+    const DX = Math.round(146 + dx), wave = slow > 0 ? Math.sin(sbp(t) * Math.PI * 2) * .35 : 0;
+    const D = personPx(DX, g(DX), { u: 6, top: C.navy, hair: 'curly', hairC: C.void, glasses: true, skin: C.amber, walk: lt * 1.1, aR: 1.25, aL: slow > 0 ? -.1 + wave : -1.1, mouth: slow > .3 ? 'o' : 'smile' });
+    const [hx, hy] = D.handR, beacon = spulse(t, 3);
+    glow(hx, hy + 5, 26 + 18 * beacon, { tab: WARM, k: .8 + .9 * beacon });
+    handLantern(hx + 1, hy + 10, { glow: 0, k: .7 + .6 * beacon });
+    if (beacon > .6) sparkle(hx + 1, hy + 5, 2, C.cream, C.amber);
+    weather(t, 'auto', { n: 18 });
+  });
+
+  // ======================================================================
+  // V4.8 Sam and Elon both: "Hear, hear!" — the old rivals near and far across the valley: SAM low on the near hill, ELON high on
+  // the far one, both raising glowing glasses to Dario's essay; their bubbles; and a shooting star arcs up the diagonal from glass
+  // to glass, and both glasses flare.
+  vshot('V4.8', (p, lt, d, t, s) => {
+    const b = i => B(s, i);
+    sky(); starfield(t, { density: 1 });
+    ridge({ y: 254, amp: 8, seed: 91, ink: C.ink, rim: C.night });
+    city(t, { y: 258, x0: 92, x1: 200, grow: .6, lit: .5, dc: false, seed: 17 });
+    ridge({ y: 266, amp: 4, seed: 92, ink: C.ink, rim: C.night });
+    const gR = hill({ cx: 212, y: 182, w: 64, drop: 70, ink: C.ink, rim: C.night });
+    const gL = hill({ cx: 62, y: 280, w: 120, drop: 46, ink: C.void, rim: C.pine });
+    meadow(gL, t, { ramp: [C.ink, C.void], fall: 60, n: 90, seed: 51 });
+    grass(0, LW, gL, t);
+    const up = rise(lt, b(1) - .1, .5), hT = sungAt(s, 'hear') - .15, toast = lt > hT;   // (the toast on "Hear, hear!")
+    const S = personPx(62, gL(62), { u: 6, top: C.navy, hair: 'short', hairC: C.wine, skin: C.amber, aR: lerp(-1.1, 1.1, up), aL: -1.1, mouth: toast ? 'o' : 'smile', eyes: toast ? 'closed' : 'dot', name: 'SAM', tag: { scale: 2 } });
+    const L = personPx(210, gR(210), { u: 4, top: C.night, pants: C.ink, hair: 'short', hairC: C.void, skin: C.gold, aL: lerp(-1.1, 1.1, up), aR: -1.1, mouth: toast ? 'o' : 'smile', eyes: toast ? 'closed' : 'dot', flip: true, name: 'ELON', tag: { scale: 2 } });
+    const [ax, ay] = S.handR, [bx, by] = L.handL;
+    flute(ax, ay); flute(bx, by);
+    if (toast) {
+      bubblePx('Hear, hear!', 102, 190, { font: 5, scale: 2, tail: [ax + 2, ay - 12], n: Math.ceil((lt - hT) * 28) });
+      if (lt > hT + .2) bubblePx('Hear, hear!', 168, 116, { font: 5, scale: 2, tail: [bx - 2, by - 12], n: Math.ceil((lt - hT - .2) * 28) });
+    }
+    // the shooting star from glass to glass (bowing down under the bubbles), and both glasses flare
+    const t1 = hT + .1, t0 = t1 - .69, k = (lt - t0) / (t1 - t0);   // (it crosses on "both:" and the glasses flare on "Hear")
+    const arc = f => [lerp(ax, bx, f) + Math.sin(f * Math.PI) * 30, lerp(ay - 10, by - 10, f) + Math.sin(f * Math.PI) * 30];
+    if (k > 0) {
+      const kk = Math.min(1, k), fade = k > 1 ? 1 - clamp((lt - t1) / 1.2) : 1;
+      for (let i = 1; i <= 70 * kk; i++) { const [x0, y0] = arc((i - 1) / 70), [x1, y1] = arc(i / 70); pline(x0, y0, x1, y1, i % 2 ? veil(C.gold, fade) : veil(C.amber, fade)); }
+      if (k < 1) { const [x, y] = arc(k); for (let i = 1; i < 14; i++) { const [qx, qy] = arc(Math.max(0, k - i * .006)); pset(qx, qy, i < 4 ? C.cream : veil(C.haze, 1 - i / 14)); } sparkle(x, y, 2, C.cream, C.gold); }
+      else {
+        const ck = lt - t1;
+        if (ck < .5) for (const [x, y] of [[ax, ay - 10], [bx, by - 10]]) { circb(x, y, 3 + ck * 26, veil(C.cream, 1 - ck * 2)); sparkle(x, y, 3, C.cream, C.gold); }
+        else for (const [x, y] of [[ax, ay - 10], [bx, by - 10]]) sparkle(x, y, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.gold);
+      }
+    }
+    weather(t, 'auto', { n: 16 });
+  });
+  // ======================================================================
+  // V4.9 Trump's the guardrail (High IQ!), — a mountain road with a cliff falling away under it into the dark; where the guardrail
+  // has a gap at the edge, TRUMP stands in it with his arms out to both ends of the rail. The yellow HIGH IQ! sign up the slope;
+  // headlights sweep round the bend on the road, and on the switchback above.
+  vshot('V4.9', (p, lt, d, t, s) => {
+    dissolveIn(.3);
+    sky(); starfield(t, { density: .8 });
+    ridge({ y: 150, amp: 22, seed: 101, ink: C.ink, rim: C.night, freq: 1 / 90 });
+    // the switchback above, with its own little rail
+    const RU = 196;
+    ridge({ y: RU, amp: 10, seed: 102, ink: C.void, rim: C.ink, freq: 1 / 60 });
+    rectf(0, RU + 6, LW, 8, C.night); hline(0, LW, RU + 6, C.navy); for (let x = 0; x < LW; x += 10) pset(x, RU + 13, C.dusk);
+    const ux = lerp(330, -60, clamp(lt / (d - .2)));
+    glow(ux, RU + 10, 46, { tab: LIT, k: 1.1, ry: 12 });
+    // the road and the cliff under it
+    const RY = 238, RB = 276;
+    rectf(0, RY, LW, RB - RY, C.night); hline(0, LW, RY, C.navy);
+    for (let x = 0; x < LW; x += 18) hline(x, x + 8, 256, C.gold);
+    layer('v4.9v-cliff', () => {
+      rectf(0, RB, LW, LH - RB, C.ink);
+      for (let i = 0; i < 90; i++) { const x = hash2(i, 5) * LW, y = RB + 14 + hash2(i, 6) * (LH - RB - 14); hline(x, x + 3 + hash2(i, 7) * 10, y, C.void); if (hash2(i, 8) < .4) pset(x + 1, y - 1, C.night); }
+      for (let i = 0; i < 9; i++) { let x = hash2(i, 9) * LW, y = RB + 4; for (let j = 0; j < 14; j++) { const nx = x + (hash2(i * 20 + j, 10) - .5) * 10; pline(x, y, nx, y + 14, C.void); x = nx; y += 14; } }
+      for (let x = 0; x < LW; x++) { const h = Math.round(4 + Math.sin(x * .07) * 3 + hash(x) * 3); vline(x, LH - h * 4, LH, C.void); }
+    });
+    // headlights sweeping along the road
+    const hx = lerp(-60, 330, clamp(lt / (d - .2)));
+    glow(hx, 256, 90, { tab: LIT, k: 1.4, ry: 30 });
+    // the guardrail, with a gap where he stands
+    const G0 = 98, G1 = 172;
+    const rail = (x0, x1) => { for (let x = x0; x <= x1; x += 14) rectf(x, RB - 6, 3, 14, C.dusk); rectf(x0, RB - 10, x1 - x0, 6, C.haze); hline(x0, x1 - 1, RB - 10, C.cream); hline(x0, x1 - 1, RB - 5, C.dusk); };
+    rail(-4, G0); rail(G1, LW + 4);
+    trumpPx(135, RB + 4, { u: 8, aL: 0, aR: 0, mouth: lt > .5 && lt < 1.2 ? 'o' : 'none' });
+    rectf(G0, RB - 11, 4, 8, C.dusk); rectf(G1 - 4, RB - 11, 4, 8, C.dusk);
+    // the road sign up the slope
+    const sx = 66, sy = 160, sparkK = spulse(t, 3);
+    vline(sx, sy + 40, RY, C.void); vline(sx + 1, sy + 40, RY, C.ink);
+    polyf([[sx + .5, sy - 46], [sx + 47, sy], [sx + .5, sy + 47], [sx - 46, sy]], C.void);
+    polyf([[sx + .5, sy - 43], [sx + 44, sy], [sx + .5, sy + 44], [sx - 43, sy]], C.gold);
+    polyf([[sx + .5, sy - 40], [sx + 41, sy], [sx + .5, sy + 41], [sx - 40, sy]], mix(C.gold, C.amber, .15));
+    ptext('HIGH', sx + 1, sy - 17, C.void, { align: 'center', scale: 2 }); ptext('IQ!', sx + 1, sy + 3, C.void, { align: 'center', scale: 2 });
+    if (lt > sungAt(s, 'high') - .1) sparkle(sx + 26, sy - 22, sparkK > .5 ? 3 : 2, C.cream, C.gold);   // (it glints on "High")
+    weather(t, 'auto', { n: 18, y1: RB });
+  });
+
+  // ======================================================================
+  // V4.10 Bernie, Bannon share a pew, — a tall lancet of stained glass glows over the pew: BERNIE (mittens, arms folded) at one end,
+  // BANNON (several shirts at once) at the other, the PRO-HUMAN hymnal between them; they glance at each other. The next pews'
+  // backs fill the dark nave in front.
+  function vChapel() {
+    rectf(0, 0, LW, LH, C.ink);
+    for (let y = 0; y < 240; y += 10) { hline(0, LW, y, C.void); for (let x = (y / 10) % 2 ? 0 : 16; x < LW; x += 32) vline(x, y, y + 9, C.void); }
+    rectf(0, 240, LW, LH - 240, C.void); hline(0, LW, 240, C.night);
+    for (let k = 0, y = 300; y < LH; k++, y += 12 + k * 6) hline(0, LW, y, mix(C.void, C.ink, .5));
+    // the pews in front of ours, nearer and bigger toward the bottom
+    for (const [y, h, e] of [[376, 18, 8], [430, 28, 12]]) {
+      rectf(0, y, LW, h, mix(C.wine, C.ink, .45)); hline(0, LW, y, C.wine); for (let yy = y + 7; yy < y + h; yy += 8) hline(0, LW, yy, C.ink); rectf(0, y + h, LW, 4, C.void);
+      for (const x of [0, LW - e]) { rectf(x, y - 8, e, h + 12, C.wine); circf(x + e / 2, y - 8, e / 2, C.wine); hline(x + 1, x + e - 2, y - 8 - e / 2, C.rust); }
+    }
+  }
+  function vGlassWindow() {
+    const cx = 135, top = 82, bot = 226, hw = 48, ay = top + hw;
+    const inside = (x, y) => y >= ay ? Math.abs(x - cx) <= hw && y <= bot : (x - cx) ** 2 + (y - ay) ** 2 <= hw * hw;
+    for (let y = top - 3; y <= bot + 3; y++) for (let x = cx - hw - 3; x <= cx + hw + 3; x++) {
+      const inn = inside(x, y), ring = !inn && (inside(x - 3, y) || inside(x + 3, y) || inside(x, y - 3) || inside(x, y + 3));
+      if (ring) { pset(x, y, C.void); continue; }
+      if (!inn) continue;
+      const cxr = Math.floor((x - cx + hw) / 12), cyr = Math.floor((y - top) / 14), lead = (x - cx + hw) % 12 === 0 || (y - top) % 14 === 0;
+      const rr = Math.hypot(x - cx, y - (ay + 6));
+      if (lead) { pset(x, y, C.void); continue; }
+      if (rr < 17) { pset(x, y, rr < 13 ? (bay(x, y) < .3 ? C.cream : C.gold) : C.amber); continue; }
+      const c = PANES[Math.floor(hash2(cxr, cyr) * PANES.length)];
+      pset(x, y, bay(x, y) < .2 ? DIM[c] : c);
+    }
+    vline(cx, ay - 48, bot, C.void);
+  }
+  vshot('V4.10', (p, lt, d, t, s) => {
+    dissolveIn(.3);
+    layer('v4.10v-chapel', vChapel);
+    glow(135, 150, 160, { tab: LIT, k: 1.1, ry: 140 });
+    layer('v4.10v-glass', vGlassWindow);
+    // shafts of coloured light down onto the pew
+    const br = .5 + .15 * breathe(t, 2);
+    polyf([[90, 226], [180, 226], [236, 262], [34, 262]], lit(br));
+    // candles
+    for (const x of [24, 246]) { vline(x, 214, 240, C.dusk); rectf(x - 5, 240, 11, 3, C.gold); rectf(x - 3, 184, 7, 30, C.cream); vline(x + 3, 185, 213, C.gold); rectf(x - 6, 212, 13, 3, C.gold); const fl = fx(x) < .4 ? 1 : 0; polyf([[x - 2.5, 183], [x + 3.5, 183], [x + .5, 172 + fl]], C.amber); pset(x, 180, C.cream); pset(x + 1, 179, C.cream); glow(x, 178, 24, { tab: WARM, k: 1.2 }); }
+    // the pew: back, then people, then the seat front
+    rectf(16, 232, 238, 36, C.wine); for (let y = 240; y < 268; y += 9) hline(16, 253, y, C.ink); hline(16, 253, 232, C.rust); hline(16, 253, 233, C.clay);
+    rectf(8, 222, 12, 70, C.wine); rectf(250, 222, 12, 70, C.wine); hline(8, 19, 222, C.clay); hline(250, 261, 222, C.clay); circf(14, 222, 6, C.wine); circf(256, 222, 6, C.wine);
+    const gT = sungAt(s, 'share') - .1, glance = lt > gT && lt < gT + .6, SY = 274;   // (they glance at each other on "share")
+    const Bn = personPx(56, SY, { u: 7, sit: true, top: C.dusk, pants: C.navy, hair: 'bald', hairC: C.cream, glasses: true, skin: C.amber, aL: -.95, aR: -.95, lookX: glance ? 1 : 0, mouth: 'frown', name: 'BERNIE', tag: { scale: 2 } });
+    for (const [mx, my] of [Bn.handL, Bn.handR]) { rectf(mx - 4, my - 4, 8, 8, C.clay); rectb(mx - 4, my - 4, 8, 8, C.rust); pset(mx - 2, my - 2, C.cream); pset(mx, my - 1, C.cream); pset(mx + 2, my, C.cream); pset(mx - 1, my + 1, C.cream); }
+    personPx(214, SY, { u: 7, sit: true, flip: true, top: C.pine, pants: C.ink, hair: 'short', hairC: C.haze, skin: C.clay, aL: -.9, aR: -.9, lookX: glance ? -1 : 0, mouth: 'none', name: 'BANNON', tag: { scale: 2 } });
+    const tb = torso(214, SY, 7, true);
+    [[C.rust, 8, 14], [C.navy, 7, 12], [C.teal, 6, 10], [C.gold, 5, 7], [C.cream, 3, 4]].forEach(([c, w, h]) => triPx(214 - w + .5, tb.ty, 214 + w + .5, tb.ty, 214 + .5, tb.ty + h, c));
+    rectf(tb.tx - 1, tb.ty + 2, 2, tb.th - 2, C.teal); rectf(tb.tx + tb.tw - 1, tb.ty + 2, 2, tb.th - 2, C.rust);
+    // the hymnal between them
+    rectf(108, 236, 56, 40, C.void); rectf(109, 235, 54, 40, C.wine); rectb(109, 235, 54, 40, C.gold); rectf(109, 235, 4, 40, C.rust);
+    ptext('PRO-', 138, 241, C.gold, { font: 3, scale: 2, align: 'center' }); ptext('HUMAN', 138, 254, C.gold, { font: 3, scale: 2, align: 'center' }); heartPx(138, 269, 1, C.clay);
+    rectf(10, SY, 250, 6, C.rust); hline(10, 259, SY, C.clay); rectf(10, SY + 6, 250, 12, C.wine);
+    // in front, where the nearest pew would be: a rack of votive candles, flickering (the shot is drawn 40 px lower: vlower below)
+    rectf(0, 396, LW, LH - 396, C.void);
+    for (let k = 0; k < 2; k++) {
+      const y = 406 + k * 22, sp = 15 + k * 3;
+      rectf(0, y + 5, LW, 4, C.wine); hline(0, LW, y + 5, C.rust);
+      for (let x = 8 + k * 7, i = 0; x < LW; x += sp, i++) {
+        const on = hash2(i, k + 40) < .78, f = hash2(i * 3 + k, boilFrame(T));
+        rectf(x - 2, y, 5, 5, C.cream); hline(x - 2, x + 2, y, C.gold); pset(x + 2, y + 2, C.gold);
+        if (on) { glow(x, y - 3, 8 + k * 2, { tab: WARM, k: .9 }); pset(x, y - 1, C.gold); pset(x, y - 2, f < .5 ? C.amber : C.gold); if (f < .3) pset(x, y - 3, C.amber); }
+      }
+    }
+  });
+
+  // ======================================================================
+  // V4.11 Claude builds Claude — now one in four! — the recursion goes up the tall frame: Clawd (the hero, big, on the floor just
+  // above the caption) raises its arms and builds a smaller Clawd out of blocks on its own head, which blinks awake, raises its arms
+  // and builds a smaller one on its head, and so on, faster and faster, six storeys up the sky; the dot-matrix pie hangs top right
+  // like a moon, a quarter lit: 26%. The spare blocks lie heaped in the near grass below.
+  const V11F = 332, V11X = 110, V11U = [8, 6, 5, 4, 3, 2, 1];
+  const V11T = [[.15, .85], [.85, 1.35], [1.35, 1.75], [1.75, 2.05], [2.05, 2.3], [2.3, 2.48]];   // each block storey's build, faster each time
+  vshot('V4.11', (p, lt, d, t, s) => {
+    dissolveIn(.3);
+    sky({ cy: 470 }); starfield(t, { density: .8 });
+    ridge({ y: 318, amp: 8, seed: 111, ink: C.ink, rim: C.night });
+    vlawn(V11F, t);
+    // the pie
+    const pk = rise(lt, sungAt(s, 'one') - .15, .35), pcx = 204, pcy = 108, R = 34;   // (it fills on "one in four")
+    glow(pcx, pcy, 52, { tab: LIT, k: .6 });
+    for (let y = -R; y <= R; y += 3) for (let x = -R; x <= R; x += 3) {
+      if (x * x + y * y > R * R) continue;
+      const a = (Math.atan2(x, -y) + TAU) % TAU, on = a <= .26 * TAU * pk && (x !== 0 || y < 0);
+      rectf(pcx + x - 1, pcy + y - 1, 2, 2, on ? (hash2(x, y + sbeat(t)) < .15 && spulse(t, 3) > .5 ? C.cream : C.gold) : C.dusk);
+    }
+    circb(pcx, pcy, R + 3, C.haze);
+    if (pk > 0) { pline(pcx, pcy, pcx, pcy - R - 2, C.cream); const a = .26 * TAU * pk; pline(pcx, pcy, pcx + Math.sin(a) * (R + 2), pcy - Math.cos(a) * (R + 2), C.cream); }
+    ptext('26%', pcx, pcy + R + 10, pk > .2 ? C.gold : C.dusk, { scale: 3, align: 'center', shadow: C.void });
+    // the heap of spare blocks in the near grass (bigger: nearer)
+    [[22, 470, C.clay], [40, 470, C.rust], [58, 470, C.clay], [31, 454, C.amber], [49, 454, C.clay], [40, 438, C.clay], [234, 476, C.clay], [250, 476, C.amber]].forEach(([x, y, c]) => { rectf(x - 8, y - 16, 16, 16, c); rectb(x - 8, y - 16, 16, 16, dim(.7)); hline(x - 7, x + 6, y - 15, LIT[c]); });
+    // the storeys: storey 0 is Clawd itself; each block storey stands on the head of the one below
+    const all = lt > V11T[V11T.length - 1][1], building = k => V11T.findIndex(([a, b]) => lt >= a && lt < b) === k;   // storey k builds storey k + 1
+    let gy = V11F;
+    for (let k = 0; k < V11U.length; k++) {
+      const u = V11U[k], cell = 2 * u, x0 = V11X - 5 * u, y0 = gy - 8 * u;
+      const busy = k < V11T.length && building(k), arms = busy ? 1.15 + .15 * Math.sin(lt * 14) : 0;
+      if (k === 0) {
+        const c = clawdPx(V11X, gy, { u, eyes: all ? 'happy' : 'up', lookX: 0, lookY: -1, aL: arms || -.3, aR: arms || -.3, mouth: all ? 'smile' : 'none', blush: all });
+        gy = c.top; continue;
+      }
+      const [ta, tb] = V11T[k - 1], n = 20, nOn = clamp((lt - ta) / (tb - ta)) * n;
+      if (nOn <= 0) break;
+      const done = nOn >= n;
+      if (done) {
+        const awake = lt - tb;
+        clawdPx(V11X, gy, { u, eyes: all ? 'happy' : awake < .12 ? 'closed' : 'up', lookY: -1, blink: false, aL: arms, aR: arms, shadow: false });
+        if (u > 1) for (let r = 0; r < 4; r++) for (let c = 0; c < 5; c++) rectb(x0 + c * cell, y0 + r * cell, cell, cell, dim(.5));
+        if (awake < .3) sparkle(V11X, y0 - 3, u > 2 ? 3 : 2, C.cream, C.gold);
+      } else {
+        for (let i = 0; i < Math.floor(nOn); i++) {
+          const r = 3 - Math.floor(i / 5), c = i % 5, age = (nOn - i) * (tb - ta) / n, drop = age < .06 ? Math.round((1 - age / .06) * 3) : 0;
+          clipRect(x0 + c * cell, y0 + r * cell - drop, cell, cell);
+          clawdPx(V11X, gy - drop, { u, eyes: 'none', blink: false, shadow: false });
+          noClip();
+          if (u > 1) rectb(x0 + c * cell, y0 + r * cell - drop, cell, cell, dim(.6));
+        }
+      }
+      gy = y0;   // (the next storey stands on this one's head)
+    }
+    if (all && lt < V11T[V11T.length - 1][1] + .5) sparkle(V11X, gy - 6, 3, C.cream, C.gold);
+  });
+
+  // ======================================================================
+  // V4.12 Chatbot nearly starts a war! — high on the right a chatbot's screen-face shouts NUCLEAR PARTS! down at a warship small on
+  // the dark sea at the floor; a starburst starts to bloom over the ship… a hand comes down from the top of the frame and slaps over
+  // the bubble: WAIT. The burst fizzles into smoke.
+  vshot('V4.12', (p, lt, d, t, s) => {
+    dissolveIn(.3);
+    const HZ = 278;
+    sky({ cy: 380, r: 420 }); starfield(t, { density: .6, y1: HZ - 8 });
+    // the ship
+    const sx = 150, sy = HZ + 2;
+    polyf([[sx - 66, sy - 12], [sx + 62, sy - 12], [sx + 52, sy], [sx - 58, sy]], C.ink); hline(sx - 66, sx + 61, sy - 12, C.navy);
+    rectf(sx - 20, sy - 28, 34, 16, C.ink); rectf(sx - 12, sy - 40, 18, 12, C.ink); vline(sx - 3, sy - 58, sy - 40, C.ink); hline(sx - 9, sx + 3, sy - 51, C.ink);
+    rectf(sx + 27, sy - 18, 14, 6, C.ink); hline(sx + 41, sx + 54, sy - 16, C.ink); rectf(sx - 48, sy - 17, 12, 5, C.ink); hline(sx - 61, sx - 48, sy - 15, C.ink);
+    hline(sx - 20, sx + 13, sy - 28, C.navy); hline(sx - 12, sx + 5, sy - 40, C.navy);
+    for (let i = 0; i < 6; i++) pset(sx - 17 + i * 5, sy - 22, C.amber); pset(sx - 3, sy - 58, fx(3) < .5 ? C.rust : C.wine);
+    // the war that nearly happens
+    const bs = sungAt(s, 'nearly') - .1, bh = sungAt(s, 'starts') + .25, bk = lt < bh ? rise(lt, bs, bh - bs, easeOut) * .75 : .75 * (1 - clamp((lt - bh) / .28));   // (it blooms from "nearly"; the hand stops it after "starts")
+    if (bk > 0) { glow(sx, sy - 40, 70 * bk, { tab: WARM, k: .8 }); starburst(sx, sy - 40, 54, bk, { n: 12, rot: lt * .2 }); }
+    if (lt > bh + .1) smoke(sx, sy - 42, t, { h: 50, n: 11, ink: C.dusk });
+    hline(0, LW, HZ, C.dusk);
+    water(HZ + 1, { k: 3, fade: .01 });
+    // the chatbot, high on the right
+    const cx = 200, cy = 118;
+    rboxf(cx - 34, cy - 28, 68, 54, C.void, 2); rboxf(cx - 33, cy - 27, 66, 52, C.teal, 2); rectf(cx - 30, cy - 20, 60, 42, C.mint);
+    for (let i = 0; i < 3; i++) pset(cx - 29 + i * 4, cy - 24, C.cream);
+    const shout = lt < bh;
+    rectf(cx - 13, cy - 10, 6, 8, C.void); rectf(cx + 8, cy - 10, 6, 8, C.void); pset(cx - 12, cy - 9, C.cream); pset(cx + 9, cy - 9, C.cream);
+    if (shout) { rectf(cx - 7, cy + 4, 15, 9, C.void); rectf(cx - 5, cy + 9, 11, 3, C.rust); } else hline(cx - 5, cx + 5, cy + 8, C.void);
+    glow(cx, cy, 48, { tab: GREEN, k: .8 });
+    const jig = shout && fx(5) < .5 ? 1 : 0;
+    bubble2('NUCLEAR\nPARTS!', 118 + jig, 214, { tail: [cx - 30, cy + 10], ink: C.rust });
+    // the hand, down from the top of the frame
+    if (!shout) {
+      const hk = clamp((lt - bh) / .1), hy = Math.round(lerp(-80, 168, easeOut(hk)));
+      rectf(96, hy - 200, 46, 200, C.navy); hline(96, 141, hy - 3, C.dusk); vline(96, hy - 200, hy - 1, C.night); hline(96, 141, hy - 12, C.ink);
+      rectf(72, hy, 92, 40, C.amber); rectf(72, hy, 3, 40, C.clay); rectf(161, hy, 3, 40, C.clay);
+      for (let i = 0; i < 4; i++) { rectf(74 + i * 22, hy + 38, 20, 16 - Math.abs(i - 1.5) * 3, C.amber); vline(94 + i * 22, hy + 39, hy + 48, C.clay); }
+      rectf(164, hy + 4, 15, 13, C.amber); hline(164, 178, hy + 16, C.clay);
+      ptext('WAIT.', 118, hy + 13, C.void, { scale: 2, align: 'center' });
+    }
+  });
+  // ======================================================================
+  // V4.13 Trump: It's "Super," by decree! — the UN's green marble hall, the gold emblem high on the wall. TRUMP at the rostrum holds
+  // the proclamation's rod and speaks as it unrolls down over the rostrum's front, long: SUPER / INTELLIGENCE. The delegates' desks
+  // fill the dark hall in front.
+  function vUNHall() {
+    rectf(0, 0, LW, LH, C.pine);
+    for (let x = 0; x < LW; x++) { const n = noise1(x * .15, 3), n2 = noise1(x * .05, 8); if (n > .62) vline(x, 0, VF, mix(C.pine, C.teal, .35)); if (n2 > .75) vline(x, 0, VF, mix(C.pine, C.void, .3)); }
+    rectf(0, 0, LW, 10, C.void); hline(0, LW, 10, C.gold);
+    for (const x of [22, 248]) { rectf(x - 2, 10, 5, VF - 10, C.void); vline(x, 10, VF - 1, C.amber); }
+    ringf(135, 104, 26, 29, C.gold); ringf(135, 104, 22, 23, C.amber);
+    for (let i = 0; i < 10; i++) { const a = Math.PI * .15 + i / 10 * Math.PI * .7; pset(135 - Math.cos(a) * 34, 104 + Math.sin(a) * 34 - 7, C.gold); pset(135 + Math.cos(a) * 34, 104 + Math.sin(a) * 34 - 7, C.gold); }
+    rectf(0, VF, LW, LH - VF, C.void); hline(0, LW, VF, C.night);
+    // the delegates' desks, row behind row
+    for (const [y, h, lamps] of [[372, 10, 9], [404, 14, 7], [446, 20, 5]]) {
+      rectf(0, y, LW, h, C.ink); hline(0, LW, y, mix(C.pine, C.teal, .4)); rectf(0, y + h, LW, 3, C.void);
+      for (let i = 0; i < lamps; i++) { const x = Math.round((i + .5) * LW / lamps); vline(x, y - 4, y - 1, C.dusk); pset(x, y - 5, C.amber); }
+    }
+  }
+  vshot('V4.13', (p, lt, d, t, s) => {
+    dissolveIn(.3);
+    layer('v4.13v-hall', vUNHall);
+    ptext('UN', 135, 97, C.cream, { scale: 2, align: 'center', shadow: C.void });
+    glow(135, 200, 100, { tab: LIT, k: .7, ry: 90 });
+    // Trump behind the rostrum, holding the proclamation's rod out in both hands; he starts speaking as it unrolls
+    const RT = 222;
+    const sT = sungAt(s, 1) - .05, TR = trumpPx(135, 256, { u: 10, aL: -.45, aR: -.45, mouth: lt > sT && frac(lt * 2.4) < .6 ? 'o' : 'none' });   // (he speaks from "It's")
+    rectf(52, RT, 166, VF - RT, C.ink); rectb(52, RT, 166, VF - RT, C.dusk); hline(50, 219, RT, C.haze); rectf(50, RT - 2, 170, 3, C.night);
+    hline(52, 217, RT + 10, C.gold);
+    // the proclamation
+    const uk = rise(lt, sT, .5, easeOut), top = TR.handL[1] + 1, W = 120, x0 = 135 - W / 2, h = Math.round((VF - 2 - top) * uk);
+    rectf(x0 - 9, top - 3, W + 18, 6, C.gold); hline(x0 - 9, x0 + W + 8, top - 3, C.cream);
+    if (h > 0) {
+      rectf(x0 + 2, top + 3, W, h, C.void); rectf(x0, top + 2, W, h, C.cream);
+      clipRect(x0, top + 2, W, h);
+      ptext('SUPER', 135, top + 10, C.rust, { scale: 3, align: 'center' });
+      ptext('INTELLIGENCE', 135, top + 38, C.navy, { font: 3, scale: 2, align: 'center' });
+      hline(x0 + 10, x0 + W - 11, top + 54, C.haze); hline(x0 + 18, x0 + W - 34, top + 59, C.haze);
+      circf(x0 + W - 14, top + 60, 5, C.rust); circf(x0 + W - 14, top + 60, 3, C.wine); pset(x0 + W - 15, top + 59, C.clay);
+      noClip();
+      rectf(x0 - 5, top + 2 + h, W + 10, 5, C.gold); hline(x0 - 5, x0 + W + 4, top + 6 + h, C.amber);
+    }
+    for (const [hx, hy] of [TR.handL, TR.handR]) { rectf(hx - 3, hy - 3, 8, 8, C.clay); hline(hx - 3, hx + 4, hy + 4, tint(DIM, 1)); }
+    if (uk >= 1) sparkle(x0 + W + 4, top + 22, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.gold);
+  });
+
+  // ======================================================================
+  // V4.14 "Artificial"? Fake to me! — a tall green highway sign over the road: ARTIFICIAL stacked over INTELLIGENCE. FAKE! stamps
+  // over the first word, its letters drop off and fall away past the road and out of the bottom of the frame, as in the horizontal
+  // shot, and SUPER is underneath.
+  vshot('V4.14', (p, lt, d, t, s) => {
+    dissolveIn(.25);
+    sky(); starfield(t, { density: .7 });
+    ridge({ y: 266, amp: 10, seed: 141, ink: C.ink, rim: C.night });
+    rectf(0, 276, LW, VF - 276, C.night); hline(0, LW, 276, C.dusk); for (let x = 0; x < LW; x += 20) hline(x, x + 9, 284, C.gold);
+    vlawn(VF, t);
+    const X0 = 18, Y0 = 110, WW = 234, HH = 124;
+    for (const x of [64, 200]) { rectf(x, Y0 + HH, 6, VF - Y0 - HH, C.void); vline(x + 5, Y0 + HH, VF - 1, C.ink); }
+    rectf(X0 + 2, Y0 + 2, WW, HH, C.void);
+    rectf(X0, Y0, WW, HH, C.teal); rectf(X0 + 2, Y0 + 2, WW - 4, HH - 4, C.pine); rectb(X0 + 4, Y0 + 4, WW - 8, HH - 8, C.cream);
+    for (const x of [X0 + 50, X0 + WW - 50]) { rectf(x - 4, Y0 - 12, 9, 4, C.void); vline(x, Y0 - 8, Y0, C.void); glow(x, Y0 + 10, 40, { tab: LIT, k: .8 }); }
+    const cx = X0 + WW / 2, wordY = Y0 + 24, stampT = sungAt(s, 'fake') - .05, dropT = stampT + .17;   // (FAKE! stamps on "Fake")
+    ptext('INTELLIGENCE', cx, Y0 + 82, C.cream, { scale: 2, align: 'center' });
+    const word = 'ARTIFICIAL', ww = ptextW(word, { scale: 3 }), wx0 = Math.round(cx - ww / 2);
+    const sk = rise(lt, dropT + .12, .25);
+    if (sk > 0) ptext('SUPER', cx, wordY, veil(C.gold, sk), { scale: 3, align: 'center', shadow: veil(C.void, sk) });
+    // FAKE!: it stamps, then, as the word drops off, dithers away (it's done its job)
+    if (lt > stampT) {
+      const a = lt - stampT, sy = wordY - 6 - (a < .06 ? Math.round((1 - a / .06) * 10) : 0), fk = 1 - rise(lt, dropT + .1, .35, k => k);
+      if (fk > 0) { rectb(cx - 56, sy, 112, 33, veil(C.rust, fk)); rectb(cx - 54, sy + 2, 108, 29, veil(C.rust, fk)); ptext('FAKE!', cx, sy + 6, veil(C.rust, fk), { scale: 3, align: 'center', shadow: veil(C.wine, fk) }); }
+      if (a < .3) circb(cx, wordY + 10, 40 + a * 110, veil(C.cream, 1 - a / .3));
+    }
+    // the letters: in place, then falling one by one, drifting apart, out of the bottom of the frame
+    let lx = wx0;
+    [...word].forEach((ch, i) => {
+      const gw = (_glyphW(ch) + 1) * 3, t0 = dropT + i * .03 + hash(i) * .05, a = lt - t0;
+      const fall = a > 0 ? 520 * a * a + 30 * a : 0, dx = a > 0 ? (hash2(i, 3) - .5) * 70 * a : 0;
+      if (wordY + fall < LH) ptext(ch, lx + dx, wordY + fall, C.cream, { scale: 3, shadow: a > 0 ? C.void : undefined });
+      lx += gw;
+    });
+    if (sk >= 1) sparkle(cx + 52, wordY - 2, spulse(t, 3) > .5 ? 2 : 1, C.cream, C.gold);
+  });
+
+  // ======================================================================
+  // V4.15 Ten days after "pace" — surprise! — the calendar on its post flips SEP 12 ("PACE") to 22; the first gift box (OPUS 5.5)
+  // pops and a new star shoots up the tall sky; ninety minutes later the second (GPT-6) pops and a sun and a moon jump out.
+  const vgift = (x, y, w, h, wrap, ribbon, open, tag) => {
+    rectf(x - w / 2 + 1, y - h + 1, w, h, C.void);
+    rectf(x - w / 2, y - h, w, h, wrap); rectf(x - 4, y - h, 8, h, ribbon); rectf(x + w / 2 - 6, y - h + 1, 6, h - 1, DIM[wrap]);
+    const ly = y - h - 9 - Math.round(open * 34);
+    if (open < 1) { rectf(x - w / 2 - 4, ly, w + 8, 10, wrap); rectf(x - 4, ly, 8, 10, ribbon); circf(x - 8, ly - 4, 4, ribbon); circf(x + 8, ly - 4, 4, ribbon); }
+    else { rectf(x - w / 2 - 20, y - h - 4, 18, 5, wrap); rectf(x + w / 2 + 3, y - h - 3, 18, 5, wrap); }
+    const tw = ptextW(tag, { font: 3, scale: 2 }) + 6, ty = y - 18;
+    rectf(x - tw / 2, ty, tw, 14, C.cream); rectb(x - tw / 2, ty, tw, 14, DIM[wrap]);
+    ptext(tag, x - tw / 2 + 3, ty + 2, C.navy, { font: 3, scale: 2 });
+  };
+  vshot('V4.15', (p, lt, d, t, s) => {
+    dissolveIn(.3);
+    const F = 334;                                       // the floor, just above the caption
+    sky({ cy: 470 }); starfield(t, { density: .8 });
+    ridge({ y: 318, amp: 8, seed: 151, ink: C.ink, rim: C.night });
+    vlawn(F, t);
+    // the calendar on its post, low on the left: its ten days tear off one by one
+    const CX = 62, CY = 190, CW = 92, CH = 112, t0 = sungAt(s, 'ten') - .1, per = (sungAt(s, 'after') - t0) / 10;   // (the ten days tear off over "Ten days after")
+    vline(CX, CY + CH - 4, F, C.void); vline(CX + 1, CY + CH - 4, F, C.ink);
+    rectf(CX - CW / 2 - 2, CY, CW + 4, CH, C.void); rectf(CX - CW / 2, CY + 2, CW, CH - 4, C.cream); rectf(CX - CW / 2, CY + 2, CW, 20, C.rust);
+    ptext('SEP', CX, CY + 5, C.cream, { align: 'center', scale: 2 }); pset(CX - 26, CY, C.void); pset(CX + 26, CY, C.void);
+    const torn = clamp(Math.floor((lt - t0) / per) + 1, 0, 10), day = 12 + torn;
+    ptext(String(day), CX, CY + 36, C.navy, { scale: 5, align: 'center' });
+    if (day === 12) ptext('"PACE"', CX, CY + 84, C.rust, { font: 3, scale: 2, align: 'center' });
+    if (day === 22) { const k = rise(lt, t0 + 10 * per, .2); if (k > 0) { circb(CX, CY + 53, 30, C.rust); circb(CX, CY + 53, 29, C.rust); } }
+    // the torn pages, 12, 13, … 21: each flutters down past the floor and lands in the near grass below, where the ten days lie
+    // scattered for the rest of the shot (two rows, a little overlapped)
+    for (let i = 0; i < 10; i++) {
+      const age = lt - (t0 + i * per); if (age < 0) continue;
+      const row = i % 2, rx = 26 + (i >> 1) * 48 + row * 22 + Math.round((hash2(i, 6) - .5) * 12), ry = 422 + row * 28 + Math.round((hash2(i, 7) - .5) * 12);
+      const fk = clamp(age / .7), sx = CX, sy = CY + 40;
+      if (fk < 1) {
+        const e = fk * fk, x = lerp(sx, rx, fk) + Math.sin(fk * 9 + i) * 10 * (1 - fk), y = lerp(sy, ry, e);
+        const w = Math.max(2, Math.round(30 * Math.abs(Math.cos(age * 11 + i)))), h = 34;
+        rectf(x - w / 2 + 1, y + 1, w, h, C.void); rectf(x - w / 2, y, w, h, C.cream); rectf(x - w / 2, y, w, 6, C.rust);
+        if (w > 24) ptext(String(12 + i), x, y + 12, C.navy, { scale: 2, align: 'center' });
+      } else {
+        rectf(rx - 17, ry + 2, 36, 24, C.void); rectf(rx - 18, ry, 36, 24, C.cream); rectf(rx - 18, ry, 36, 5, C.rust); hline(rx - 18, rx + 17, ry + 23, C.haze);
+        ptext(String(12 + i), rx, ry + 8, C.navy, { scale: 2, align: 'center' });
+      }
+    }
+    // box one: Opus 5.5
+    // (the surprise: "surprise!" comes in the window's last 0.15 s, so the boxes pop as late as still reads, after "pace")
+    const pop1 = Math.min(sungAt(s, 'surprise') - .05, d - .9), pop2 = pop1 + .4, o1 = rise(lt, pop1, .12), o2 = rise(lt, pop2, .12);
+    const B1 = 150, B2 = 222, GH = 50;
+    vgift(B1, F, 66, GH, C.clay, C.gold, o1, 'OPUS 5.5');
+    if (lt > pop1) {
+      const k = clamp((lt - pop1) / .5), y = lerp(F - GH - 10, 60, easeOut(k)), x = B1 + k * 14;
+      for (let i = 1; i < 34; i++) pset(x - i * .25, y + i * 4 * (1 - k * .5), i < 7 ? C.cream : veil(C.gold, 1 - i / 34));
+      glow(x, y, 26, { tab: LIT, k: 1.3 }); sparkle(x, y, k < 1 ? 3 : spulse(t, 3) > .5 ? 3 : 2, C.cream, C.gold);
+    }
+    // box two, ninety minutes later: a sun and a moon
+    vgift(B2, F, 60, GH, C.teal, C.mint, o2, 'GPT-6');
+    if (lt > pop1 + .12) { const k = rise(lt, pop1 + .12, .25); ptext('+90 MIN →', (B1 + B2) / 2, 252, veil(C.cream, k), { align: 'center', scale: 2, shadow: veil(C.void, k) }); }
+    if (lt > pop2) {
+      const k = clamp((lt - pop2) / .4), e = easeOut(k);
+      const sx = B2 - 30 * e, sy = F - GH - 14 - Math.sin(k * Math.PI * .5) * 110, mx = B2 + 22 * e, my = sy - 6;
+      glow(sx, sy, 30, { tab: WARM, k: 1.2 }); ball(sx, sy, 13, [C.clay, C.amber, C.gold, C.cream]);
+      for (let i = 0; i < 12; i++) { const a = i / 12 * TAU + t; pset(sx + Math.cos(a) * 18, sy + Math.sin(a) * 18, C.gold); }
+      moon(mx, my, 11, { phase: .45, glow: .5 });
+    }
+    // the surprise's confetti, drifting down past everything into the grass
+    for (const [tp, x0, cols] of [[pop1, B1, [C.gold, C.clay, C.cream]], [pop2, B2, [C.mint, C.teal, C.cream]]]) {
+      const a = lt - tp; if (a <= 0) continue;
+      for (let i = 0; i < 30; i++) {
+        const vx = (hash2(i, 61) - .5) * 160, up = 90 + hash2(i, 62) * 90, x = x0 + vx * Math.min(a, .6) + Math.sin(a * 3 + i) * 6, y = F - GH - up * Math.min(a, .5) + Math.max(0, a - .5) * (34 + hash2(i, 63) * 30);
+        if (y > LH) continue;
+        rectf(x, y, Math.sin(a * 9 + i) > 0 ? 2 : 1, 2, cols[i % 3]);
+      }
+    }
+  });
+
+  // ======================================================================
+  // V4.16 Opus 5.5: "Hi, guys!" — the tall night with the ledger's 63 stars climbing it, the home hill and its waiting lantern far
+  // off on the left. Clawd pops up big from behind the near crest, waving shyly and blushing: "Hi, guys!"; a spark flies up the
+  // whole frame from it to the top of the curve, and the 64th star is born there.
+  vshot('V4.16', (p, lt, d, t, s) => {
+    sky({ cy: 470 }); starfield(t, { density: .9 });   // (the stage is 40 px lower than the other verse shots': the curve's foot is at y 290)
+    const i64 = ledgerIndex('V4.16'), S64 = LEDGER[i64];
+    ledger(t, { upto: i64 - 1, band: .22, newborn: false });
+    ridge({ y: 310, amp: 12, seed: 3, ink: C.ink, rim: C.night, freq: 1 / 80 });
+    city(t, { y: 312, x0: 112, x1: LW, grow: .95, dc: 196, lit: .5 });
+    ridge({ y: 324, amp: 6, seed: 13, ink: C.ink, rim: C.night, freq: 1 / 60 });
+    // the home hill (far left), the lantern waiting on it
+    const gH = hill({ cx: 34, y: 302, w: 90, drop: 30, ink: C.void, rim: C.pine });
+    handLantern(46, gH(46), { glow: 16 });
+    // Clawd rises from behind the near crest
+    const CXc = 168, pop = rise(lt, .25, .5, k => backOut(k, 1.6)), rest = 334;
+    const wave = lt > .7 ? Math.sin((lt - .7) * 9) : 0, hT = sungAt(s, 'hi') - .1, hi = lt > hT;   // ("Hi, guys!" when it's sung)
+    const c = clawdPx(CXc, rest + Math.round((1 - pop) * 76), { u: 7, eyes: hi ? 'happy' : lt > .6 ? 'open' : 'up', lookX: -.6, aR: .9 + wave * .4, aL: -.4, blush: lt > .6, mouth: hi ? 'smile' : 'none', shadow: false, blink: false });
+    const gN = hill({ cx: 176, y: 330, w: 170, drop: 24, ink: C.void, rim: C.pine });
+    meadow(gN, t, { ramp: [C.ink, C.void], fall: 60, n: 90, seed: 61 });
+    grass(0, LW, gN, t);
+    // the spark and the 64th star
+    const sk = clamp((lt - .6) / .45), born = lt > 1.05, [tx, ty] = [S64.vx, S64.vy];
+    if (sk > 0 && sk < 1) { const x = lerp(CXc, tx, easeOut(sk)), y = lerp(c.top - 4, ty, easeOut(sk)); for (let i = 1; i < 16; i++) { const f = easeOut(Math.max(0, sk - i * .025)); pset(lerp(CXc, tx, f), lerp(c.top - 4, ty, f), i < 5 ? C.cream : C.gold); } sparkle(x, y, 2, C.cream, C.gold); }
+    if (born) {
+      const age = lt - 1.05;
+      glow(tx, ty, 30, { tab: LIT, k: age < .5 ? 1.8 - age * 1.4 : 1.1 });
+      sparkle(tx, ty, age < .3 ? 3 : spulse(t, 3) > .4 ? 3 : 2, C.cream, C.gold);
+      if (age < .6) circb(tx, ty, 4 + age * 30, veil(C.cream, 1 - age / .6));
+    }
+    if (hi) bubble2('Hi, guys!', 92, 252, { tail: [136, 276], n: Math.ceil((lt - hT) * 14) });
+    weather(t, 'auto', { n: 18 });
+  });
+
+  // The vertical shots set lower in the frame, onto the lowered caption (VERTICAL.md, "the tall frame"): their stages were composed
+  // with the floor at y ≈ 290; lowered 40 px it stands just above the caption's band, and the land fills the bottom fifth.
+  // (V4.10's chapel brick repeats every 20 rows, so it copies its own top strip; V4.13's hall gets a taller dark ceiling.)
+  vlower('V4.2', 40, 'sky'); vlower('V4.3', 40, 'sky'); vlower('V4.4', 40); vlower('V4.5', 40, 'sky'); vlower('V4.6', 40, 'sky'); vlower('V4.7', 40, 'sky'); vlower('V4.8', 40, 'sky');
+  vlower('V4.9', 40, 'sky'); vlower('V4.10', 40, 'copy'); vlower('V4.12', 40); vlower('V4.13', 40, d => { rectf(0, 0, LW, d, C.void); hline(0, LW, d - 14, C.amber); });
+  vlower('V4.14', 40, 'sky');
 })();
 
 ;
@@ -6706,7 +11187,12 @@ OVERLAYS.push((t, s) => {
 // the fading sky, writes the title in stars, and dithers down to black.
 (() => {
   // ---------- timing (all relative to the C4 window; never absolute) ----------
-  const starts = s => linesOf('C4').map(l => l.start - s.start);   // lt of each sung line
+  // lt of each sung line's first word: the sub-shots cut as their lines are sung (sungLines; the lines' own starts can come seconds
+  // early), and so does everything staged off them (the nightcap, the trails, the stars born off the top, the sunrise, the outro's
+  // continuation of them)
+  const starts = s => sungLines('C4').map(l => l.start - s.start);
+  // lt of a word of line 4 ("Now we swear we'll try to pace it — but we'd rather race it!"), for staging D on its words
+  const w4 = (s, k) => sungAt({ sec: 'C4', n: 4, start: s.start }, k);
   const c4 = () => segByKey('C4');
 
   // ---------- the curve, and its continuation past the 64th star ----------
@@ -6832,16 +11318,32 @@ OVERLAYS.push((t, s) => {
   function sparkEyes(c, u, lookX = 0, lookY = 0) {
     for (const [ex, ey, ew, eh] of eyeBoxes(c, u, lookX, lookY)) { rectf(ex, ey, ew, eh, C.void); sparkle(ex + (ew >> 1), ey + (eh >> 1), u >= 6 ? 3 : 2, C.cream, C.gold); }
   }
-  // Clawd's nightcap (as clawdPx draws it), raised by oy px while it's being pulled on; wine outline for the dawn sky.
+  // Clawd's nightcap, raised by oy px while it's being pulled on: a cream fur band snug across the top of its head, and a soft cone
+  // rising from the band, tapering, that flops over to the right, its tip hanging down past the side of its head with a pompom.
+  // Wine outline for the dawn sky. (x, top: clawdPx's x and top.) The cone is a tube round a curved spine, narrowing to the tip.
+  const bez = (a, b, c, d, n) => Array.from({ length: n + 1 }, (_, i) => { const k = i / n, m = 1 - k; return [0, 1].map(j => m * m * m * a[j] + 3 * m * m * k * b[j] + 3 * m * k * k * c[j] + k * k * k * d[j]); });
   function capPx(x, top, u, oy = 0) {
-    const bx = x - 5 * u, bw = 10 * u, by = top - Math.round(oy);
-    const hx = bx + u, hw = bw - 3 * u, cap = Math.max(2, 2 * u), tipX = bx + bw + 2 * u, tipY = by + Math.round(1.5 * u) - Math.round(oy * .6);
-    const shape = [[hx, by + .5], [hx + hw, by + .5], [hx + hw * .7, by - cap - u], [tipX + .5, tipY]];
-    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) polyf(shape.map(([px, py]) => [px + dx, py + dy]), C.wine);
-    polyf(shape, C.violet);
-    polyf([[hx + hw * .55, by - cap * .6], [hx + hw * .72, by - cap - u + 1], [tipX, tipY - 1], [hx + hw * .9, by - 1]], mix(C.violet, C.haze, .25));
-    rectf(hx - 1, by - Math.max(1, u >> 1), hw + 2, Math.max(1, u >> 1) + 1, C.cream);
-    circf(tipX, tipY + 1, Math.max(1, u * .6), C.cream);
+    const bx = x - 5 * u, bw = 10 * u, by = top - Math.round(oy), band = Math.max(2, Math.round(u * .9));
+    const yb = by - band + 1, x0 = bx + Math.round(u * .9), x1 = bx + bw - Math.round(u * .9), cx = (x0 + x1 + 1) / 2, hw0 = (x1 - x0 + 1) / 2;
+    const tip = [bx + bw + 1.6 * u, by + 1.2 * u - oy * .4], n = Math.max(10, u * 5);
+    const spine = bez([cx, yb + 1], [cx - .2 * u, by - 5.8 * u], [bx + bw + 1.9 * u, by - 6.6 * u], tip, n);
+    const Lf = [], Rt = [];
+    spine.forEach(([px, py], i) => {
+      const [qx, qy] = spine[Math.min(n, i + 1)], [rx, ry] = spine[Math.max(0, i - 1)], tl = Math.hypot(qx - rx, qy - ry) || 1;
+      const tx = (qx - rx) / tl, ty = (qy - ry) / tl, w = lerp(hw0, .5 * u, Math.pow(i / n, .8));
+      Lf.push([px + ty * w, py - tx * w]); Rt.push([px - ty * w, py + tx * w]);
+    });
+    const cone = [...Lf, ...Rt.slice().reverse()];
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) polyf(cone.map(([px, py]) => [px + dx, py + dy]), C.wine);
+    polyf(cone, C.violet);
+    // its volume: the underside of the tube in shade, a lit rim along the top of the curve
+    polyf([...spine, ...Rt.slice().reverse()], mix(C.violet, C.wine, .4));
+    if (u >= 3) plines(Lf.slice(1, Math.round(n * .65)).map(([px, py], i) => [px + (i < n * .3 ? 1 : 0), py + 1]), mix(C.violet, C.haze, .5));
+    // the fur band, then the pompom on the tip
+    rectf(x0 - 1, yb - 1, x1 - x0 + 3, band + 2, C.wine); rectf(x0, yb, x1 - x0 + 1, band, C.cream);
+    if (u >= 3) for (let i = x0 + 1; i < x1; i += 3) pset(i, yb + band - 1, C.gold);
+    const pr = Math.max(1, Math.round(u * .7));
+    circf(tip[0], tip[1], pr + 1, C.wine); circf(tip[0], tip[1], pr, C.cream); if (u >= 3) pset(Math.round(tip[0]) + 1, Math.round(tip[1]) + 1, C.gold);
   }
   // A big yawn on a u ≥ 3 Clawd; k 0..1 opens it.
   function yawnPx(c, u, k) {
@@ -7021,8 +11523,10 @@ OVERLAYS.push((t, s) => {
     // D. "Now we swear we'll try to pace it — but we'd rather race it!": Clawd raises a paw and holds up a PACE sign;
     // two shooting stars tear past overhead, neck and neck; the sign spins in their wake and lands on its back: RACE.
     const shotD = () => {
-      const d0 = L[3], dl = L[4] - L[3], swear = rise(lt, d0 + .05, .45), signUp = rise(lt, d0 + .95, .6);
-      const r0 = d0 + dl * .56, rk = clamp((lt - r0) / 1.05), racing = rk > 0 && rk < 1, passed = rk >= .55;
+      // (the paw goes up on "swear", the PACE sign is up by "pace", and the racers tear past so that the sign lands on RACE as
+      // "race" is sung)
+      const d0 = L[3], swear = rise(lt, w4(s, 'swear') - .35, .45), signUp = rise(lt, w4(s, 'pace') - .7, .6);
+      const r0 = w4(s, 'race') - .9, rk = clamp((lt - r0) / 1.05), racing = rk > 0 && rk < 1, passed = rk >= .55;
       const sa = Math.PI * 3 * easeOut(clamp((lt - r0 - .45) / .75)), u = 8;
       const g = closeBack(t, { ldx: 10, ldy: 18, seed: 51, cityX: 300, hx: 170 });
       const flare = rise(lt, r0 + .35, .3) * (1 - .4 * rise(lt, r0 + 1.3, 1));
@@ -7147,6 +11651,368 @@ OVERLAYS.push((t, s) => {
       fadeAll(7 * ease(fk));
       const b = extBorn(C4, clt).filter(e => e.y + pdy > 4 && e.x + pdx < LW - 4).pop();
       if (b && fk < .97) sparkle(b.x + pdx, b.y + pdy, fk < .45 ? 2 : fk < .8 ? 1 : 0, fk < .85 ? C.cream : C.gold, fk < .6 ? C.gold : C.amber);
+    }
+  });
+
+  // ######################################################################################################################
+  // VERTICAL (the 270×480 frame; see ../VERTICAL.md). The same seven sub-shots on the tall home hill at dawn. The tall frame's
+  // curve climbs from just over Clawd's hill to the top right, steeper and steeper, so everything that runs up it here runs up
+  // the frame: the prediction, the aurora, the two racers, the stars born after Clawd falls asleep; and the outro tilts up after
+  // them, the curve's continuation turning nearly vertical, while the title writes itself in three lines of stars.
+  // ######################################################################################################################
+  const HV = HOME_V, VHX = HV.hillX - 2;                        // Clawd's seat on the tall home hill
+  // The curve's continuation past the 64th star in the tall frame (the kit's vLedgerPt for i ≥ 64), and the smooth tall curve
+  // (the kit's vCurveAt: u 0..1 → [x, y], `lane` offsets along the normal).
+  const EXT_V = Array.from({ length: 18 }, (_, j) => { const i = NL + j, [x, y] = vLedgerPt(i, NL); return { x, y, big: hash2(i, 78) < .3, i }; });
+  const vCurveTrail = (u, lane, n) => { const pts = []; let uu = u; for (let j = 0; j < n; j++) { pts.push(vCurveAt(uu, lane)); uu -= 1.1 / Math.hypot(VCURVE.w, VCURVE.h * 3.4 * Math.exp(3.4 * uu) / E3); } return pts; };
+  const vExtBorn = (s, lt) => {
+    const L = starts(s), n0 = Math.ceil(sbp(s.start + L[5] + 3.2) - 1e-6);
+    return EXT_V.map((e, j) => ({ ...e, born: sbeatT(n0 + j) - s.start })).filter(e => e.born <= lt);
+  };
+  // The ledger in the tall frame, drawn through a camera offset (dx, dy) and an optional zoom z about the curve's foot.
+  // o: dx, dy, z, links (0..1), linkInk, band, ink. (The kit's ledger() with a zoom; every star is born by C4.)
+  const VFOOT = [VCURVE.x0, VCURVE.y0];
+  const vP = (o, x, y) => { const z = o.z ?? 1; return [Math.round(VFOOT[0] + (x - VFOOT[0]) * z + (o.dx ?? 0)), Math.round(VFOOT[1] + (y - VFOOT[1]) * z + (o.dy ?? 0))]; };
+  function vledger(t, o = {}) {
+    const S = LEDGER.map(L => vP(o, L.vx, L.vy)), sb = sbeat(t), li = o.linkInk ?? C.dusk;
+    if (o.band) for (let i = 0; i + 1 < NL; i++) for (let s = 0; s < 6; s++) glow(lerp(S[i][0], S[i + 1][0], s / 6), lerp(S[i][1], S[i + 1][1], s / 6), 14, { tab: LIT, k: o.band * .9, pow: 2 });
+    if (o.links > 0) {
+      const nl = (NL - 1) * clamp(o.links), whole = Math.floor(nl);
+      for (let i = 0; i < whole; i++) pline(S[i][0], S[i][1], S[i + 1][0], S[i + 1][1], li, { every: 2 });
+      if (whole < NL - 1 && nl > whole) { const a = S[whole], b = S[whole + 1], f = nl - whole; pline(a[0], a[1], lerp(a[0], b[0], f), lerp(a[1], b[1], f), li, { every: 2 }); }
+    }
+    LEDGER.forEach((L, i) => {
+      const [x, y] = S[i], tw = hash2(L.i, sb) < .25 ? spulse(t, 3) : 0;
+      if (L.big || tw > .5) sparkle(x, y, 1, o.ink ?? C.cream, C.gold); else pset(x, y, o.ink ?? C.gold);
+    });
+    return S;
+  }
+  // The dotted continuation (a prediction) through the EXT_V points off the top of the frame, and the stars born on it so far.
+  function vextension(t, lt, o = {}) {
+    const pk = o.pred ?? 0, born = o.born ?? [], pin = o.predInk ?? C.dusk, last = LEDGER[NL - 1];
+    const pts = [vP(o, last.vx, last.vy), ...EXT_V.map(e => vP(o, e.x, e.y))];
+    if (pk > 0) {
+      const n = (pts.length - 1) * clamp(pk), whole = Math.floor(n);
+      for (let i = 0; i < whole; i++) pline(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], pin, { every: 3 });
+      if (whole < pts.length - 1) { const a = pts[whole], b = pts[whole + 1], f = n - whole; pline(a[0], a[1], lerp(a[0], b[0], f), lerp(a[1], b[1], f), pin, { every: 3 }); }
+    }
+    born.forEach((e, j) => {
+      const [px, py] = j ? vP(o, born[j - 1].x, born[j - 1].y) : pts[0], [x, y] = vP(o, e.x, e.y), age = lt - e.born, f = clamp(age / .3);
+      pline(px, py, lerp(px, x, f), lerp(py, y, f), o.linkInk ?? C.dusk, { every: 2 });
+      if (age < 1.1) { glow(x, y, 14, { tab: LIT, k: 1.5 * (1 - age / 1.1) }); sparkle(x, y, age < .4 ? 3 : age < .75 ? 2 : 1, C.cream, C.gold); }
+      else if (e.big || (hash2(e.i, sbeat(t)) < .3 && spulse(t, 3) > .5)) sparkle(x, y, 1, C.cream, C.gold);
+      else pset(x, y, C.gold);
+    });
+    return pts;
+  }
+  // Long-exposure star trails around the tall frame's pole (as trails(), on the tall star set).
+  function vtrails(t, o = {}) {
+    const [px, py] = SKY_POLE_V, rot = skyRot(t) + (o.rot ?? 0), tr = o.len ?? .05, dy = o.dy ?? 0, k = o.k ?? 1, y1 = o.y1 ?? 280;
+    if (tr <= .002 || k <= 0) return;
+    for (let i = 0; i < _STARS_V.length; i++) {
+      const S = _STARS_V[i]; if (S.cls === 0 && S.ph < .5) continue;
+      const a1 = S.ang + rot, a0 = a1 - tr;
+      const x1 = px + Math.sin(a1) * S.r, ya = py + Math.cos(a1) * S.r + dy, x0 = px + Math.sin(a0) * S.r, yb = py + Math.cos(a0) * S.r + dy;
+      if (Math.max(x0, x1) < -2 || Math.min(x0, x1) > LW + 2 || Math.min(ya, yb) > y1 || Math.max(ya, yb) < -40) continue;
+      const n = Math.max(2, Math.ceil(S.r * tr * 1.1)), head = S.cls >= 2 ? C.cream : S.cls === 1 ? C.haze : C.dusk, tail = S.cls >= 2 ? C.haze : C.dusk;
+      for (let j = 0; j <= n; j++) {
+        const f = j / n, a = a0 + tr * f, x = Math.round(px + Math.sin(a) * S.r), y = Math.round(py + Math.cos(a) * S.r + dy);
+        if (x < 0 || x >= LW || y < 0 || y >= LH) continue;
+        if (bay(x, y) < k * clamp((y1 - y) / 90) * (.35 + .65 * f)) pset(x, y, f > .82 ? head : tail);
+      }
+    }
+  }
+  // The sun rising behind the city (tall frame): the horizon warms, then the dusty-red starburst with a gold sun in its heart.
+  const VSUNX = 178;
+  function vsunrise(t, k) {
+    if (k <= 0) return;
+    const cy = Math.round(lerp(330, 274, k)), R = 22 + 40 * ease(clamp(k * 1.15)), rot = t * .02;
+    glow(VSUNX, 292, 210, { tab: WARM, k: 1.5 * ease(clamp(k * 1.3)), ry: 90, pow: 1.25 });
+    starburst(VSUNX, cy, R * 1.2, 1, { n: 14, rot, inner: .4, ink: C.rust, fringe: C.wine });
+    starburst(VSUNX, cy, R * .78, 1, { n: 14, rot: rot + TAU / 28, inner: .5, ink: C.clay, fringe: C.rust, long: false, core: false });
+    for (let i = 0; i < 6; i++) { const a = -Math.PI + (i + .5) / 6 * Math.PI, r = R * 1.45 + 4 * breathe(t, 2, i / 6); if (k > .45) sparkle(VSUNX + Math.cos(a) * r, cy + Math.sin(a) * r, hash2(i, sbeat(t)) < .5 ? 1 : 2, C.cream, C.gold); }
+    circf(VSUNX, cy, 17, C.amber); circf(VSUNX, cy, 15, mix(C.amber, C.gold, .5)); circf(VSUNX, cy, 13, C.gold); circf(VSUNX - 2, cy - 2, 8, mix(C.gold, C.cream, .55)); circf(VSUNX - 3, cy - 3, 3, C.cream);
+  }
+  // The pre-dawn sky of the tall frame: the warm band kept low over the horizon, so the curve climbs through violet and navy.
+  const VSKYO = { cx: 170, cy: 470, r: 330, vert: .3, hy: 330 };
+  const VMOON = [150, 96, 7];
+  // The tall home hill at dawn (homeScene's tall geometry, with the horizontal scene()'s hooks). o: dy (tilt), stars, trails,
+  // back(sdy) (aurora), moon, ledger ({…} vledger options | false), front(sdy, S) (over the ledger), far() (behind the skyline),
+  // city, dc (data-centre pulse), fore(g) (Clawd & co, world coords), weather
+  function vscene(t, o = {}) {
+    const dy = o.dy ?? 0, sdy = Math.round(dy * .3);
+    sky({ ...VSKYO, dy: sdy, ...(o.sky || {}) });
+    if (o.trails) vtrails(t, { dy: sdy, ...o.trails });
+    if (o.stars !== false) starfield(t, { dy: sdy, y1: 282 + sdy, ...(o.stars || {}) });
+    if (o.back) o.back(sdy);
+    if (o.moon !== false) { const [mx, my, mr] = o.moon || VMOON; moon(mx, my + sdy, mr, { phase: .5, glow: .7 }); }
+    let S = null;
+    if (o.ledger !== false) S = vledger(t, { dy: sdy, linkInk: adapt(C.dusk, C.wine), ...(o.ledger || {}) });
+    if (o.front) o.front(sdy, S);
+    view(0, -Math.round(dy * .6));
+    if (o.far) o.far();
+    city(t, { y: HV.city.y, x0: HV.city.x0, grow: 1, dc: HV.city.dc, lit: .4, ...(o.city || {}) });
+    if (o.dc) glow(HV.city.dc + 22, HV.city.y - 10, 26, { tab: GREEN, k: o.dc, ry: 12 });
+    ridge({ y: HV.ridge, amp: 14, seed: 3, ink: C.ink, rim: C.night, freq: 1 / 80 });
+    valleyLights(t, { grow: 1 });
+    view(0, -dy);
+    const g = hill({ cx: HV.hillX, y: HV.hillY, w: HV.hillW, drop: HV.drop, wR: HV.hillWR, dropR: HV.dropR, ink: C.void, rim: C.pine });
+    meadow(g, t, { ramp: [C.ink, C.void], fall: 60, n: 90, seed: 9, flowers: [C.rust, C.wine] });
+    grass(0, LW, g, t, { ink: C.pine });
+    const c = o.fore ? o.fore(g) : null;
+    view(0, 0);
+    if (o.weather !== false) weather(t, 'leaves', { n: 18 });
+    return { g: x => g(x) + dy, c };
+  }
+  // A close-up backdrop for the tall frame: sky, a few stars, the curve seen from a new angle (ldx, ldy), a low far ridge and
+  // city, and the hill's crest as the floor (y ≈ 326), its dark body under the caption.
+  function vcloseBack(t, o) {
+    sky({ ...VSKYO, cy: 540, r: 360 });
+    starfield(t, { density: .6, y1: 302 });
+    if (o.moon) moon(o.moon[0], o.moon[1], 7, { phase: .5, glow: .6 });
+    vledger(t, { links: 1, dx: o.ldx, dy: o.ldy, z: o.lz, linkInk: adapt(C.dusk, C.wine) });
+    ridge({ y: 316, amp: 10, seed: o.seed, ink: C.ink, rim: C.night, freq: 1 / 70 });
+    city(t, { y: 314, x0: o.cityX, grow: .8, dc: o.cityX + 46, lit: .6 });
+    const g = hill({ cx: o.hx, y: 326, w: 300, drop: 30, ink: C.void, rim: C.pine });
+    meadow(g, t, { ramp: [C.night, C.ink, C.void], fall: 56, n: 110, seed: o.seed, flowers: [C.rust, C.clay, C.wine] });
+    grass(0, LW, g, t, { h: 5, step: 2 });
+    return g;
+  }
+  // Clawd sitting on the tall home hill (u = 3) with its lantern. o: clawdPx options + lid, cap, lantern {k, glow}
+  function vClawdHome(t, g, o = {}) {
+    const u = 3, x = VHX, lx = x + 22;
+    handLantern(lx, g(lx), o.lantern || {});
+    const c = clawdPx(x, g(x), { u, pose: 'sit', outline: C.wine, ...o, zzz: false });
+    if (o.lid) lids(c, u, o.lid, o.lookX, o.lookY);
+    if (o.cap) capPx(c.x, c.top, u, 0);
+    return c;
+  }
+  // Sleep marks rising from a sleeping Clawd (F5: the kit's F3 z is too small for a phone). sc: scale, h: how far they climb (px)
+  function vzzz(c, lt0, lt, sc, h) {
+    for (let i = 0; i < 3; i++) {
+      const a = lt - lt0 - i * .55; if (a < 0) continue;
+      const f = frac(a * .4); ptext(i % 2 ? 'z' : 'Z', c.right + 4 + f * 14 * sc, c.top - 6 - f * h, veil(C.cream, 1.15 - f), { scale: sc, shadow: veil(C.wine, 1 - f) });
+    }
+  }
+  // A tall sign on a stick that can spin (a = 0: front "PACE"; a = π: back "RACE"). (x, y) = top of the stick.
+  function vSignFlip(x, y, a, stick) {
+    const w = 84, h = 34, cw = Math.cos(a), sw = Math.max(2, Math.round(w * Math.abs(cw))), front = cw >= 0;
+    rectf(x - 1, y, 3, stick, C.void); pset(x, y, C.ink);
+    const bx = Math.round(x - sw / 2), by = y - h + 6;
+    rectf(bx - 1, by - 1, sw + 2, h + 2, front ? C.void : C.wine);
+    rectf(bx, by, sw, h, front ? C.cream : C.rust);
+    if (Math.abs(cw) > .8) ptext(front ? 'PACE' : 'RACE', x + 1, by + 7, front ? C.void : C.cream, { align: 'center', scale: 3, shadow: front ? undefined : C.wine });
+    else if (sw > 6) for (const yy of [by + 10, by + 17, by + 24]) hline(bx + 3, bx + sw - 4, yy, front ? C.haze : C.clay);
+  }
+  // Dot-matrix text whose dots are little stars (2 × 2 at scale 3, so it reads on a phone): letters light one by one from lt0
+  // over dur, each dot arriving as a sparkle; a few twinkle on the slow beat.
+  function vStarText(str, x, y, t, lt, lt0, dur, sc) {
+    const dots = textDots(str, x, y, { scale: sc, align: 'center' }), n = str.length, sb = sbeat(t), ds = sc - 1;
+    for (const d of dots) {
+      const age = lt - (lt0 + d.i / n * dur + hash2(d.x, d.y) * .15);
+      if (age < 0) continue;
+      if (age < .3) sparkle(d.x, d.y, 1, C.cream, C.gold);
+      else if (hash2(d.x + d.y * 480, sb) < .06 && spulse(t, 3) > .5) sparkle(d.x, d.y, 1, C.cream, C.gold);
+      else { rectf(d.x, d.y, ds, ds, hash2(d.x, d.y + 1) < .75 ? C.cream : C.gold); if (ds > 1) pset(d.x + ds - 1, d.y + ds - 1, C.gold); }
+    }
+  }
+  // The camera in G (and where the outro starts): the curve seen a little wider and lower, so its top and the stars born past
+  // it are in the frame.
+  const VG = { dx: -18, dy: 34, z: .9 };
+
+  vshot('C4', (p, lt, d, t, s) => {
+    dissolveIn(1);
+    const L = starts(s);
+
+    // A. "We didn't start the scaling": the V4 stretch of the curve connects up the right of the tall sky, the 64th star flares
+    // near the top, and the dotted prediction runs on up off the top of the frame. Tired Clawd follows it up with heavy eyes.
+    const shotA = () => {
+      const done = L[1] - 1.1, lk = lerp(LINKS_V3(), 1, rise(lt, .5, Math.max(.8, done - .5), k => k));
+      const head = LEDGER[Math.min(NL - 1, Math.round(lk * (NL - 1)))];
+      vscene(t, {
+        ledger: { links: lk, band: .15 * rise(lt, .2, 1.2) },
+        front: () => {
+          vextension(t, lt, { pred: rise(lt, done + .15, .9) });
+          const fa = lt - done; if (fa > 0 && fa < 1.4) { const T63 = LEDGER[NL - 1]; glow(T63.vx, T63.vy, 18, { tab: LIT, k: 1.4 * (1 - fa / 1.4) }); sparkle(T63.vx, T63.vy, fa < .5 ? 3 : 2, C.cream, C.gold); }
+        },
+        fore: g => vClawdHome(t, g, { eyes: 'open', blink: false, lid: .5 + .15 * breathe(t, 3), lookX: clamp((head.vx - VHX) / 90, -.2, 1), lookY: -1, dy: -Math.round(breathe(t, 3)) }),
+      });
+    };
+
+    // B. "It was always training, and the curves kept gaining": the biggest aurora yet, violet over teal, climbing the whole
+    // tall sky along the curve, over a blazing city. The camera tilts up only a little (dy ≤ 10, the hilltop above the caption):
+    // the line's caption stays up through its long held last word until the next line's comes up, as the shot cuts to C, so a
+    // bigger tilt would sink the hill and Clawd down behind a caption.
+    const shotB = () => {
+      const b0 = L[1], ak = rise(lt, b0 - .3, 1.4), k2 = clamp((lt - b0) / (8.8 - b0)), gain = lerp(.45, 1, ease(k2));
+      const dy = Math.round(10 * ease(k2));
+      const ec = (x, y0, h, sh) => y0 - h * gain * (Math.exp(3.2 * clamp((x + sh) / 270)) - 1) / (Math.exp(3.2) - 1);
+      const low = 150 * (1 - rise(lt, b0 - .3, 2.2));
+      vscene(t, {
+        dy,
+        stars: { density: .7 },
+        back: sdy => {
+          aurora(t, { curve: x => ec(x, 214, 300, 40) + Math.sin(x * .03 + t * .45) * 7 + Math.sin(x * .09 - t * .3) * 3 + sdy + low, len: 96, k: .55 * ak, cols: [C.violet, C.haze, C.cream], shimmer: 1.6 });
+          aurora(t, { curve: x => ec(x, 262, 290, -6) + Math.sin(x * .045 - t * .38 + 1) * 5 + sdy + low, len: 84, k: .78 * ak, cols: [C.pine, C.teal, C.mint], shimmer: 1.2 });
+        },
+        ledger: { links: 1, band: .35 * ak },
+        front: sdy => vextension(t, lt, { pred: 1, dy: sdy }),
+        city: { lit: .5 + .45 * ak },
+        dc: .6 + .7 * spulse(t, 3),
+        fore: g => vClawdHome(t, g, { eyes: 'open', lid: .3, lookX: .3 + .5 * ak, lookY: -1 }),
+      });
+    };
+
+    // C. "We didn't start the scaling": close on Clawd (u = 10), yawning: a big stretch, the mouth opens wide, a tear; then
+    // it droops. The curve crosses the sky above it.
+    const shotC = () => {
+      const y0 = L[2] + .55, yk = rise(lt, y0, .45) * (1 - rise(lt, y0 + 1.2, .4)), up = yk > .1, u = 10;
+      const g = vcloseBack(t, { ldx: -36, ldy: 22, seed: 44, cityX: 150, hx: 118, moon: [54, 150] });
+      bigLantern(222, g(222), { h: 46, k: 1 - .2 * yk });
+      const stretch = up ? .75 + .45 * yk : -.45 + .1 * breathe(t, 2);
+      const c = clawdPx(114, g(114), { u, pose: 'sit', outline: C.wine, eyes: up ? 'closed' : 'open', blink: false, aL: up ? -1.5 : stretch, aR: stretch, dy: Math.round(3 * yk) });
+      if (up) leftArm(c, u, stretch);
+      if (!up) lids(c, u, lt < y0 ? .4 + .1 * breathe(t, 2) : .6 + .1 * breathe(t, 2));
+      yawnPx(c, u, yk);
+      if (lt > y0 + .45 && lt < y0 + 2.2) { const tk = lt - y0 - .45, [ex, ey, ew, eh] = eyeBoxes(c, u)[1]; circf(ex + ew + 2, ey + eh + 2 + Math.round(tk * 7), 1, veil(C.cream, 1.3 - tk * .7)); }
+      if (up) ptext('~', c.right + 10, c.top - 10 - Math.round(yk * 6), veil(C.haze, yk), { scale: 3 });
+      weather(t, 'leaves', { n: 14 });
+    };
+
+    // D. "Now we swear we'll try to pace it — but we'd rather race it!": Clawd raises a paw and holds a PACE sign up high on a
+    // long stick; two shooting stars tear past it, neck and neck, climbing up the sky; the sign spins in their wake and lands on
+    // its back: RACE. Sparkle eyes.
+    const shotD = () => {
+      // (the paw goes up on "swear", the PACE sign is up by "pace", and the racers tear past so that the sign lands on RACE as
+      // "race" is sung)
+      const d0 = L[3], swear = rise(lt, w4(s, 'swear') - .35, .45), signUp = rise(lt, w4(s, 'pace') - .7, .6);
+      const r0 = w4(s, 'race') - .9, rk = clamp((lt - r0) / 1.05), racing = rk > 0 && rk < 1, passed = rk >= .55;
+      const sa = Math.PI * 3 * easeOut(clamp((lt - r0 - .45) / .75)), u = 8;
+      const g = vcloseBack(t, { ldx: 6, ldy: 30, seed: 51, cityX: 132, hx: 104 });
+      const flare = rise(lt, r0 + .35, .3) * (1 - .4 * rise(lt, r0 + 1.3, 1));
+      bigLantern(222, g(222), { h: 38, k: 1 + .6 * flare, glow: 60 + 30 * flare });
+      // the racers: from low on the left up past the sign and off the top right, side by side, the lead swapping
+      const A0 = [-60, 250], A1 = [330, -40], X = k => lerp(A0[0], A1[0], k), Y = (k, lane) => lerp(A0[1], A1[1], k) + Math.sin(k * Math.PI) * 10 + lane;
+      if (racing) {
+        const sw = .04 * Math.sin((lt - r0) * 7);
+        for (const [lane, warm, k] of [[0, true, rk + sw], [11, false, rk - sw]]) { const x = X(k), y = Y(k, lane), x2 = X(k - .01), y2 = Y(k - .01, lane); racer(lineTrail(x, y, x - x2, y - y2, 80), warm); }
+      }
+      const lx = racing ? X(rk + .04) : passed ? 330 : -60, ly = racing ? Y(rk + .04, 5) : passed ? -40 : 250;
+      const cx = 96, gy = g(cx);
+      const lookX = racing ? clamp((lx - cx) / 90, -1, 1) : passed ? .8 : 0, lookY = racing ? clamp((ly - (gy - 50)) / 60, -1, 1) : passed ? -1 : 0;
+      const eyes = passed ? 'none' : racing ? 'wide' : lt < d0 + 1.8 && swear > .5 ? 'closed' : 'open';
+      const c = clawdPx(cx, gy, { u, pose: 'sit', outline: C.wine, eyes, lookX, lookY, blink: false, aL: swear > .15 ? -1.5 : -.4, aR: lerp(-.4, 1.2, signUp), mouth: racing && !passed ? 'o' : passed ? 'smile' : 'none', blush: passed });
+      if (swear > .15) leftArm(c, u, lerp(-.4, 1.3, swear) - (passed ? .6 : 0));
+      if (passed) sparkEyes(c, u, lookX, lookY);
+      else if (eyes === 'open') lids(c, u, .35);
+      const stick = 96;
+      if (signUp > 0) vSignFlip(c.handR[0], c.handR[1] - stick + 8 + Math.round(60 * (1 - ease(signUp))), sa, stick);
+      weather(t, 'leaves', { n: 14 });
+    };
+
+    // E. "We didn't start the scaling": wide again. The two racers come round and race up the curve itself, neck and neck,
+    // lighting every star they pass, and shoot off the top of the frame, leaving the curve burning gold.
+    const shotE = () => {
+      const e0 = L[4] + .25, ek = clamp((lt - e0) / 1.75), over = ek >= 1;
+      const bu = lerp(-.1, 1.12, ek * ek * .45 + ek * .55), sw = .03 * Math.sin((lt - e0) * 5.2), u1 = bu + sw, u2 = bu - sw, lo = Math.min(u1, u2);
+      vscene(t, {
+        stars: { density: .8 },
+        ledger: { links: 1 },
+        front: () => {
+          for (let i = 0; i + 1 < NL; i++) { if ((i + 1.5) / NL > lo && !over) break; const a = LEDGER[i], b = LEDGER[i + 1]; pline(a.vx, a.vy, b.vx, b.vy, adapt(C.gold, C.wine), { every: 2 }); }
+          for (let i = 0; i < NL; i++) {
+            const age = (lo - (i + .5) / NL) / .07; if (age < 0 && !over) continue;
+            const S = LEDGER[i]; if (age < 1 && !over) sparkle(S.vx, S.vy, 2, C.cream, C.gold); else if (hash2(i, sbeat(t)) < .4 && spulse(t, 3) > .4) sparkle(S.vx, S.vy, 1, C.cream, C.gold);
+          }
+          vextension(t, lt, { pred: 1, predInk: lo > 1 ? C.gold : C.dusk });
+          if (!over) { racer(vCurveTrail(u1, -5, 80), true); racer(vCurveTrail(u2, 5, 80), false); }
+          const ex = lt - (e0 + 1.55); if (ex > 0 && ex < .9) sparkle(258, 3, ex < .45 ? 3 : 2, C.cream, C.gold);
+        },
+        city: { lit: .7 },
+        dc: .5 + .6 * spulse(t, 3),
+        fore: g => {
+          const [hx, hy] = vCurveAt(clamp(bu, 0, 1));
+          return vClawdHome(t, g, { eyes: over ? 'happy' : 'wide', lookX: over ? .8 : clamp((hx - VHX) / 90, -1, 1), lookY: over ? -1 : clamp((hy - 250) / 60, -1, 0), lantern: { k: 1.4 - .3 * ek, glow: 26 } });
+        },
+      });
+    };
+
+    // F. "But when we log off,": close. Clawd pulls on a nightcap, reaches over and turns its lantern down to an ember, and is
+    // asleep before "…will it still train on?"; the Zs float up the tall sky.
+    const shotF = () => {
+      const f0 = L[5], capK = rise(lt, f0 + .55, .7), off = rise(lt, f0 + 1.6, .8), sleep = lt > f0 + 2.55, u = 9;
+      const g = vcloseBack(t, { ldx: -44, ldy: 40, seed: 61, cityX: 160, hx: 120, moon: [196, 112] });
+      bigLantern(186, g(186), { h: 40, k: lerp(1, .08, off), glow: lerp(64, 12, off) });
+      const pulling = capK > 0 && capK < 1, reach = lt > f0 + 1.35 && lt < f0 + 2.45;
+      const c = clawdPx(104, g(104), { u, pose: sleep ? 'sleep' : 'sit', outline: C.wine, eyes: sleep ? 'closed' : 'open', blink: false, zzz: false, aL: pulling ? -1.5 : sleep ? -1.2 : -.45, aR: pulling ? 1.25 : reach ? -.55 : sleep ? -1.2 : -.45, dy: sleep ? -2 : 0 });
+      if (pulling) leftArm(c, u, 1.25);
+      if (!sleep) lids(c, u, lerp(.45, .8, off));
+      if (capK > 0) capPx(c.x, c.top, u, Math.round(26 * (1 - easeOut(capK))));
+      if (sleep) vzzz(c, f0 + 2.55, lt, 2, 120);
+      weather(t, 'leaves', { n: 14 });
+    };
+
+    // G. "…will it still train on? / (And on, and on, and on…)": wide. Clawd asleep in its nightcap, lantern an ember. The sky
+    // keeps turning, faster, into long-exposure trails round the pole above the frame; the data centre keeps blinking; a new
+    // star is born up the curve on every beat and climbs off the top; the sun rises behind the city as the dusty-red starburst.
+    const shotG = () => {
+      const sp = spin(L, lt), sk = sunK(L, lt, d);
+      vscene(t, {
+        trails: { rot: sp, len: trailLen(L, lt), k: 1 - .5 * sk, y1: 276 },
+        stars: { rot: sp, density: .9 },
+        moon: false,
+        ledger: { links: 1, band: .2, ...VG },
+        front: () => vextension(t, lt, { pred: 1, born: vExtBorn(s, lt), ...VG }),
+        far: () => vsunrise(t, sk),
+        city: { lit: .5 },
+        dc: .7 + .8 * spulse(t, 3),
+        fore: g => { const c = vClawdHome(t, g, { pose: 'sleep', eyes: 'closed', cap: true, lantern: { k: .1, glow: 5 } }); vzzz(c, L[5] + 2.55, lt, 1, 40); return c; },
+      });
+    };
+
+    chain(lt, [[0, shotA], [L[1], shotB], [L[2], shotC], [L[3], shotD], [L[4] + .15, shotE], [L[5], shotF], [L[5] + 3.1, shotG]]);
+  });
+
+  // OUTRO (tall): morning. From G's frame the camera tilts up after the curve, whose continuation climbs nearly straight up the
+  // tall frame with a new star on every beat; the hill and the risen sun sink out of the bottom, the stars fade, and the title
+  // writes itself in three lines of stars beside the curve. Then everything dithers down to black, the newest star last.
+  const VO_TILT = 160;
+  vshot('outro', (p, lt, d, t, s) => {
+    const C4 = c4(), L = starts(C4), clt = t - C4.start;
+    const tk = ease(clamp((lt - .2) / 5.4)), dy = Math.round(VO_TILT * tk), sdy = Math.round(dy * .3);
+    const cam = { dx: Math.round(VG.dx - 30 * tk), dy: VG.dy + Math.round(90 * tk) + sdy, z: VG.z };
+    const fadeStars = rise(lt, .6, 4.2), sk = Math.min(1, sunK(L, clt, C4.end - C4.start) + lt / 10);
+    const rot = spin(L, clt);
+    vscene(t, {
+      dy,
+      trails: { rot, len: trailLen(L, clt), k: .5 * (1 - fadeStars), y1: 276 + sdy },
+      stars: { rot, density: .9, appear: 1 - .85 * fadeStars },
+      moon: false,
+      ledger: { links: 1, band: .2 * (1 - fadeStars), linkInk: adapt(C.haze, C.wine), ...cam },
+      front: () => vextension(t, clt, { pred: 1, born: vExtBorn(C4, clt), linkInk: C.haze, predInk: C.haze, ...cam }),
+      far: () => vsunrise(t, sk),
+      city: { lit: .5 },
+      dc: .7 + .8 * spulse(t, 3),
+      fore: g => vClawdHome(t, g, { pose: 'sleep', eyes: 'closed', cap: true, lantern: { k: .1, glow: 5 } }),
+    });
+    // the title in stars, three lines, left of the climbing curve
+    vStarText("WE DIDN'T", 112, 120, t, lt, 3.2, .8, 3);
+    vStarText('START THE', 112, 152, t, lt, 3.9, .8, 3);
+    vStarText('SCALING', 112, 184, t, lt, 4.6, .7, 3);
+    // the date, drawn here so it dithers out with everything else (see the horizontal outro)
+    if (lt > .6) hideStamp();
+    const ds = SEGS.filter(g => g.date && g.start <= t).pop(), m = ds && ds.date.match(/^(.*?)\s*(\d{4})$/);
+    if (m) {
+      rectf(DATE_VX - 5, DATE_VY - 4, 80, 38, dim(.6));
+      ptext(m[1], DATE_VX, DATE_VY, C.haze, { shadow: C.void });
+      ptext(m[2], DATE_VX, DATE_VY + 11, C.cream, { scale: 3, dots: true, shadow: C.ink, off: C.ink });
+    }
+    // dither down to black over the last second and a half; the newest star is the last light to go out
+    const fk = clamp((lt - (d - 1.6)) / 1.5);
+    if (fk > 0) {
+      fadeAll(7 * ease(fk));
+      const b = vExtBorn(C4, clt).map(e => vP(cam, e.x, e.y)).filter(([x, y]) => y > 60 && x < LW - 4).pop();
+      if (b && fk < .97) sparkle(b[0], b[1], fk < .45 ? 2 : fk < .8 ? 1 : 0, fk < .85 ? C.cream : C.gold, fk < .6 ? C.gold : C.amber);
     }
   });
 })();

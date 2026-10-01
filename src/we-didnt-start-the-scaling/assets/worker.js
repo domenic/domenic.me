@@ -13,6 +13,8 @@ self.onmessage = async (e) => {
   try {
     if (m.type === 'init') {
       self.OUT_CANVAS = m.canvas;
+      // (the vertical video: the engine draws its 1080×1920 frame, composed for it, rather than its 1920×1080 one)
+      self.VERTICAL = !!m.vertical;
       self.RENDER_SCALE = m.scale;
       self.STYLE_DPR = m.dpr;
       self.TIMING = m.timing;

@@ -1995,6 +1995,7 @@
     720
    ],
    "alt": "A punk-zine cover: We Didn’t Start the Scaling in cut-out ransom-note letters over an exponential curve",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/pop-punk-vertical.jpg",
    "audio": "/we-didnt-start-the-scaling/assets/audio/pop-punk.m4a",
    "download": "/we-didnt-start-the-scaling/assets/download/pop-punk.mp3",
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/pop-punk.mp3",
@@ -2018,6 +2019,7 @@
     720
    ],
    "alt": "A 1989 TV news title card: We Didn’t Start the Scaling in chrome letters over a neon grid, “A Channel 89 special report, 2017–2026”",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/piano-rock-vertical.jpg",
    "audio": "/we-didnt-start-the-scaling/assets/audio/piano-rock.m4a",
    "download": "/we-didnt-start-the-scaling/assets/download/piano-rock.mp3",
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/piano-rock.mp3",
@@ -2041,6 +2043,7 @@
     1080
    ],
    "alt": "The four members of ATTN!, anime idols in pearl white with pink, mint, violet and gold accents, point to the sky on a dark, glittering stage, two on each side, under “ATTN! · The 2nd Mini Album” and the title in script",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/k-pop-vertical.jpg",
    "audio": "/we-didnt-start-the-scaling/assets/audio/k-pop.m4a",
    "download": "/we-didnt-start-the-scaling/assets/download/k-pop.mp3",
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/k-pop.mp3",
@@ -2064,6 +2067,7 @@
     720
    ],
    "alt": "A 1996 PC demo’s title screen: “Frontier Crew presents” over We Didn’t Start the Scaling in pink and cyan chrome pixel letters, a magenta and cyan plasma between them, and a tiny pixel mascot in headphones in the corner",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/eurodance-vertical.jpg",
    "audio": "/we-didnt-start-the-scaling/assets/audio/eurodance.m4a",
    "download": "/we-didnt-start-the-scaling/assets/download/eurodance.mp3",
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/eurodance.mp3",
@@ -2087,6 +2091,7 @@
     1080
    ],
    "alt": "An anime opening’s title card: We Didn’t Start the Scaling in bubbly letters on a blue sky with cherry petals, and three students, one hugging a boxy mascot",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/anisong-vertical.jpg",
    "audio": "/we-didnt-start-the-scaling/assets/audio/anisong.m4a",
    "download": "/we-didnt-start-the-scaling/assets/download/anisong.mp3",
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/anisong.mp3",
@@ -2110,6 +2115,7 @@
     1080
    ],
    "alt": "A pixel-art night sky: We Didn’t Start the Scaling written in stars above a dark hill, with a tiny figure and the lights of a far-off town",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/indie-folk-vertical.jpg",
    "audio": "/we-didnt-start-the-scaling/assets/audio/indie-folk.m4a",
    "download": "/we-didnt-start-the-scaling/assets/download/indie-folk.mp3",
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/indie-folk.mp3",
@@ -2227,6 +2233,7 @@
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/pop-punk.mp3",
    "timing": "/we-didnt-start-the-scaling/assets/timing/pop-punk.json",
    "poster": "/we-didnt-start-the-scaling/assets/posters/pop-punk.jpg",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/pop-punk-vertical.jpg",
    "url": "/we-didnt-start-the-scaling/",
    "pageTitle": "We Didn't Start the Scaling"
   },
@@ -2240,6 +2247,7 @@
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/piano-rock.mp3",
    "timing": "/we-didnt-start-the-scaling/assets/timing/piano-rock.json",
    "poster": "/we-didnt-start-the-scaling/assets/posters/piano-rock.jpg",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/piano-rock-vertical.jpg",
    "url": "/we-didnt-start-the-scaling/piano-rock/",
    "pageTitle": "We Didn't Start the Scaling (Piano Rock)"
   },
@@ -2253,6 +2261,7 @@
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/k-pop.mp3",
    "timing": "/we-didnt-start-the-scaling/assets/timing/k-pop.json",
    "poster": "/we-didnt-start-the-scaling/assets/posters/k-pop.jpg",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/k-pop-vertical.jpg",
    "url": "/we-didnt-start-the-scaling/k-pop/",
    "pageTitle": "We Didn't Start the Scaling (K-Pop)"
   },
@@ -2266,6 +2275,7 @@
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/eurodance.mp3",
    "timing": "/we-didnt-start-the-scaling/assets/timing/eurodance.json",
    "poster": "/we-didnt-start-the-scaling/assets/posters/eurodance.jpg",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/eurodance-vertical.jpg",
    "url": "/we-didnt-start-the-scaling/eurodance/",
    "pageTitle": "We Didn't Start the Scaling (Eurodance)"
   },
@@ -2279,6 +2289,7 @@
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/anisong.mp3",
    "timing": "/we-didnt-start-the-scaling/assets/timing/anisong.json",
    "poster": "/we-didnt-start-the-scaling/assets/posters/anisong.jpg",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/anisong-vertical.jpg",
    "url": "/we-didnt-start-the-scaling/anisong/",
    "pageTitle": "We Didn't Start the Scaling (Anisong)"
   },
@@ -2292,6 +2303,7 @@
    "audioMP3": "/we-didnt-start-the-scaling/assets/audio/indie-folk.mp3",
    "timing": "/we-didnt-start-the-scaling/assets/timing/indie-folk.json",
    "poster": "/we-didnt-start-the-scaling/assets/posters/indie-folk.jpg",
+   "posterVertical": "/we-didnt-start-the-scaling/assets/posters/indie-folk-vertical.jpg",
    "url": "/we-didnt-start-the-scaling/indie-folk/",
    "pageTitle": "We Didn't Start the Scaling (Indie Folk)"
   },
@@ -2540,8 +2552,20 @@
  "changelog": {
   "pop-punk": {
    "title": "Errata & reprints",
-   "current": "1.0.4",
+   "current": "1.1",
    "releases": [
+    {
+     "version": "1.1",
+     "name": "pocket edition",
+     "date": "2026-10-06",
+     "notes": [
+      "The video now comes in a vertical version too, composed for the 9:16 frame shot by shot rather than cropped from the 16:9 one.",
+      "The zine becomes portrait pages: the cover assembles as a portrait zine, and the finale turns the last page over to a portrait back cover.",
+      "The crowd passes the crowd-surfing GPU hand to hand, instead of floating arms carrying it.",
+      "The back cover credits the lyrics, music and video."
+     ],
+     "shown": "Oct 6"
+    },
     {
      "version": "1.0.4",
      "name": "fifth printing",
@@ -2594,8 +2618,22 @@
   },
   "piano-rock": {
    "title": "Corrections & updates",
-   "current": "1.2.2",
+   "current": "1.3",
    "releases": [
+    {
+     "version": "1.3",
+     "name": "portrait edition",
+     "date": "2026-10-06",
+     "notes": [
+      "The video now comes in a vertical version too, composed for the 9:16 frame shot by shot rather than cropped from the 16:9 one.",
+      "Channel 89’s special airs on a tall tube: two-shots and satellite splits stack, and tall things tilt into view.",
+      "Sam fits inside the revolving door.",
+      "The 4o heart keeps its whole outline as it breaks.",
+      "The sock puppets carry the handles the agent really used.",
+      "The end card credits the lyrics, music and video."
+     ],
+     "shown": "Oct 6"
+    },
     {
      "version": "1.2.2",
      "date": "2026-09-30",
@@ -2648,8 +2686,21 @@
   },
   "k-pop": {
    "title": "Discography",
-   "current": "2.1",
+   "current": "2.2",
    "releases": [
+    {
+     "version": "2.2",
+     "name": "vertical ver.",
+     "date": "2026-10-06",
+     "notes": [
+      "The video now comes in a vertical version too, composed for the 9:16 frame shot by shot rather than cropped from the 16:9 one.",
+      "The comeback as it reaches a phone: fancams follow one member, and the teasers, the premiere page and the music show’s LED wall go portrait.",
+      "The dance practice keeps moving up to the cut to the staircase, instead of freezing for half a second.",
+      "The first-win photocard shows all four members, on a wash of their colours.",
+      "The video holds a steady amount of memory instead of growing all song, and sends the GPU half as much a frame: the LED walls and scrolling panels draw on the GPU, panels upload only what changed, and one-off work no longer makes the page lower the quality."
+     ],
+     "shown": "Oct 6"
+    },
     {
      "version": "2.1",
      "name": "repackage",
@@ -2726,8 +2777,20 @@
   },
   "eurodance": {
    "title": "History",
-   "current": "2.0.1",
+   "current": "2.1",
    "releases": [
+    {
+     "version": "2.1",
+     "name": "pivot version",
+     "date": "2026-10-06",
+     "notes": [
+      "The video now comes in a vertical version too, composed for the 9:16 frame shot by shot rather than cropped from the 16:9 one.",
+      "The demo runs on a monitor turned to portrait, from its 1996 text mode to its modern scenes.",
+      "Sam’s and Elon’s traces merge into a colour of their own.",
+      "A stray tick no longer pokes out of the line joining Bernie and Bannon."
+     ],
+     "shown": "Oct 6"
+    },
     {
      "version": "2.0.1",
      "name": "final version",
@@ -2786,8 +2849,23 @@
   },
   "anisong": {
    "title": "Broadcast notes",
-   "current": "1.3",
+   "current": "1.4",
    "releases": [
+    {
+     "version": "1.4",
+     "name": "Blu-ray vol. 4",
+     "date": "2026-10-06",
+     "notes": [
+      "The video now comes in a vertical version too, composed for the 9:16 frame shot by shot rather than cropped from the 16:9 one.",
+      "Most shots have new tall stills, over a hundred, most of them drawn with the same model as the originals.",
+      "The UNKNOWN and MISALIGNED? stamps are gone; they only restated their lines.",
+      "Gwern’s eyes stay hidden in his hood until he gives up his pseudonym.",
+      "The “buy three” boxes are SSI, THINKY and PERPLEXITY.",
+      "Clawd’s flashlight points the way its beam goes.",
+      "The OpenClaw name card’s text is centred."
+     ],
+     "shown": "Oct 6"
+    },
     {
      "version": "1.3",
      "name": "Blu-ray vol. 3",
@@ -2842,8 +2920,26 @@
   },
   "indie-folk": {
    "title": "notes from the night",
-   "current": "1.1.2",
+   "current": "1.2",
    "releases": [
+    {
+     "version": "1.2",
+     "name": "morning",
+     "date": "2026-10-06",
+     "notes": [
+      "The video now comes in a vertical version too, composed for the 9:16 frame shot by shot rather than cropped from the 16:9 one.",
+      "The skies, the hill and the town are repainted for the tall frame.",
+      "A shot dissolving away at a section change keeps its own sky’s colours, instead of flashing to the next section’s.",
+      "The typed lyrics start on each line’s first sung word and end on its last, instead of running up to three seconds ahead of the singing.",
+      "The chorus cuts, and the moments timed to a word, land when it’s sung.",
+      "Andrej faces his laptop’s screen.",
+      "The “you may observe” bubble sits in front of the window bars.",
+      "All nineteen tally marks fit on the rock.",
+      "No “clink!” when the two lights meet.",
+      "Clawd’s nightcap is redrawn."
+     ],
+     "shown": "Oct 6"
+    },
     {
      "version": "1.1.2",
      "name": "first light",

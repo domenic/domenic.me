@@ -4,7 +4,12 @@
 // they load; this style draws that canvas with WebGL2 (gl.js), so it keeps its own copy of what it needs from them.
 // Everything a shot draws must be a pure function of song time `t`: frames render out of order, in parallel, and live.
 
-const W = 1920, H = 1080, TAU = Math.PI * 2;
+// The frame: 1920 × 1080, or 1080 × 1920 in the vertical video (VERT: self.VERTICAL, which the site sets before the engine's scripts
+// run, or ?vertical in the studio page). W and H are the frame's logical size, in units the shots draw in; landscape() (below) lends
+// code written for the 1920 × 1080 frame a 16:9 one within the vertical frame.
+const VERT = !!self.VERTICAL || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('vertical'));
+let W = VERT ? 1080 : 1920, H = VERT ? 1920 : 1080;
+const TAU = Math.PI * 2;
 // In a page the canvas is #out; in a Web Worker the host sets self.OUT_CANVAS (an OffscreenCanvas) before loading the engine.
 const HAS_DOM = typeof document !== 'undefined';
 const canvas = HAS_DOM ? document.getElementById('out') : self.OUT_CANVAS;
@@ -13,7 +18,7 @@ function makeCanvas(w, h) {
   if (!HAS_DOM) return new OffscreenCanvas(w, h);
   const c = document.createElement('canvas'); c.width = w; c.height = h; return c;
 }
-// Render scale: the scene is authored in 1920 × 1080 logical units; the canvas holds W·RS × H·RS pixels. The host sets it with ?scale=
+// Render scale: the scene is authored in W × H logical units; the canvas holds W·RS × H·RS pixels. The host sets it with ?scale=
 // (studio, renderer) or setRenderScale() (the site, which steps it down when frames are slow). gl.js resizes its buffers in SCALE_HOOKS.
 let RS = +(self.RENDER_SCALE || (typeof location !== 'undefined' && new URLSearchParams(location.search).get('scale')) || 1);
 const SCALE_HOOKS = [];
@@ -157,6 +162,26 @@ const SHOTS = {};
 function line(verse, n, fn) { SHOTS[`${verse}.${n}`] = fn; }
 function section(key, fn) { SHOTS[key] = fn; }
 let DEFAULT_SHOT = null;
+// The vertical video's shots, composed for its 1080 × 1920 frame: vshot('V1.5', fn) or vshot('C1', fn), keyed and called like
+// line()'s and section()'s. A window without one draws its horizontal shot through landscape(): a stand-in while the vertical video is
+// being made, never in the finished one.
+const VSHOTS = {};
+function vshot(key, fn) { VSHOTS[key] = fn; }
+// landscape(fn, cx, cy, zoom): runs fn(), code written for the 1920 × 1080 frame (W and H are 1920 and 1080 while it runs), with its
+// point (cx, cy) at the middle of this frame, scaled by zoom (by default, enough for its 1080 height to fill the frame's). The 3D
+// scene, plane2D(), sky() and layers follow it (VIEW, in gl.js): the camera keeps its 16:9 picture, and a layer's drawing is mapped
+// with the rest. Inside an offscreen() picture nothing is remapped.
+// VIEW: { k, ox, oy, fw, fh }: the 16:9 frame's point (x, y) lands at (ox + x·k, oy + y·k) of the fw × fh frame; null outside.
+let VIEW = null;
+function landscape(fn, cx = 960, cy = 540, zoom = H / 1080) {
+  const saved = { W, H, VIEW, ASPECT };
+  VIEW = { k: zoom, ox: W / 2 - cx * zoom, oy: H / 2 - cy * zoom, fw: W, fh: H };
+  W = 1920; H = 1080; ASPECT = W / H;
+  try { return fn(); } finally { ({ W, H, VIEW, ASPECT } = saved); }
+}
+// the shot a window draws: its own; in the vertical video its vertical shot, or its horizontal one through landscape()
+const standIn = fn => fn && ((...a) => landscape(() => fn(...a)));
+const shotOf = key => !VERT ? SHOTS[key] : VSHOTS[key] ?? standIn(SHOTS[key]);
 
 // ---------- the frame ----------
 let T = 0;
@@ -173,12 +198,15 @@ function renderFrame(t) {
   T = t;
   const c = cutAt(t), s = c.seg;
   FRAME_BEGIN.forEach((f, i) => { try { f(t, s); } catch (e) { frameError(`frame setup ${i}`, t, e); } });
-  const fn = SHOTS[c.key] || DEFAULT_SHOT, args = [clamp((t - c.start) / (c.end - c.start)), t - c.start, c.end - c.start, t, s];
+  const dflt = VERT ? standIn(DEFAULT_SHOT) : DEFAULT_SHOT;
+  const fn = shotOf(c.key) || dflt, args = [clamp((t - c.start) / (c.end - c.start)), t - c.start, c.end - c.start, t, s];
   try {
     if (fn) fn(...args);
   } catch (e) {
     frameError(`shot ${s && s.key}`, t, e);
-    try { if (DEFAULT_SHOT && fn !== DEFAULT_SHOT) DEFAULT_SHOT(...args); } catch (e2) { frameError('default shot', t, e2); }
+    // (a vertical shot that throws is drawn again as its horizontal one, through landscape())
+    const back = VERT && VSHOTS[c.key] && SHOTS[c.key] ? standIn(SHOTS[c.key]) : dflt;
+    try { if (back && fn !== DEFAULT_SHOT) back(...args); } catch (e2) { frameError('default shot', t, e2); }
   }
   FRAME_END.forEach((f, i) => { try { f(t, s); } catch (e) { frameError(`frame end ${i}`, t, e); } });
 }
@@ -906,7 +934,7 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
   // draw only.
   const pages = [], ATLAS = new Map();   // (key → {page, x, y, w, h, o, a0} or, in a texture of its own, {tex, …})
   let tick = 0, bigBytes = 0;
-  const stats = { own: 0, rasters: 0, evictions: 0 }, recent = [];   // (and the keys of the sprites made lately, for looking into what a frame uploads)
+  const stats = { own: 0, rasters: 0, evictions: 0, images: 0 }, recent = [];   // (and the keys of the sprites made lately, for looking into what a frame uploads)
   function newPage() {
     const t = gl.createTexture(); upload(t, null, 0, 0, 0, 0, [PAGE, PAGE]); gl.bindTexture(gl.TEXTURE_2D, t); setNearest();
     const P = { tex: t, shelves: [], top: 0, keys: new Set(), last: 0 }; pages.push(P); return P;
@@ -1009,7 +1037,7 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
     const w = img.width | 0, h = img.height | 0;
     if (!w || !h) return null;
     const v = img.__v | 0;
-    if (!r) { r = { tex: gl.createTexture(), w: 0, h: 0, v: -1, id: nextId++, fr: 0 }; IMGS.set(img, r); }
+    if (!r) { r = { tex: gl.createTexture(), w: 0, h: 0, v: -1, id: nextId++, fr: 0 }; IMGS.set(img, r); stats.images++; }
     if (r.w !== w || r.h !== h || r.v !== v) {
       if (r.fr === frameNo && r.w) {
         const tex = gl.createTexture(); upload(tex, img, 0, 0, w, h, [w, h]); frameTemps.push(tex);
@@ -1592,6 +1620,10 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
       L.w = w; L.h = h;
     };
     L.target = () => tgt;
+    // bounds(): what the layer's drawing this frame covers, [x0, y0, x1, y1] in its pixels (y down), outside which its texture is clear;
+    // null if it drew nothing (for a host that composites the layer over just that part of the frame)
+    let box = null;
+    L.bounds = () => L.rec !== recording ? null : box;
     // flush(): the texture the layer's drawing this frame is in (empty if it wasn't drawn on this frame)
     L.flush = () => {
       init();
@@ -1634,6 +1666,14 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
       const unchanged = tgt && tgt.w === L.w && tgt.h === L.h && last && same(U, prev.U) && same(meta, prev.meta) && same(PU, prev.PU) && same(new Uint32Array(PT.buffer), prev.PT);
       prev = { U: U.slice(), meta, PU: PU.slice(), PT: new Uint32Array(PT.buffer) };
       if (unchanged) return;
+      // (the bounds of what's drawn, in the layer's pixels: outside them its target is clear; see L.bounds())
+      let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+      for (const it of items) {
+        const I = inst, o = it.o, x = I[o], y = I[o + 1], ux = I[o + 2], uy = I[o + 3], vx = I[o + 4], vy = I[o + 5];
+        bx0 = Math.min(bx0, x, x + ux, x + vx, x + ux + vx); bx1 = Math.max(bx1, x, x + ux, x + vx, x + ux + vx);
+        by0 = Math.min(by0, y, y + uy, y + vy, y + uy + vy); by1 = Math.max(by1, y, y + uy, y + vy, y + uy + vy);
+      }
+      box = bx0 < bx1 && by0 < by1 ? [Math.max(0, Math.floor(bx0)), Math.max(0, Math.floor(by0)), Math.min(L.w, Math.ceil(bx1)), Math.min(L.h, Math.ceil(by1))] : null;
       // (every sprite the items draw with, looked up, and those not in the atlas made; then each item told where its sprites are)
       const { got, temps } = settle(reqs);
       const skip = new Set();
@@ -1793,7 +1833,15 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
   function makeLayer(...a) { const L = layer(...a); allLayers.push(L); return L; }
   // (called once a frame's layers are drawn: images uploaded for that frame alone go)
   function endFrame() { frameNo++; if (gl) for (const t of frameTemps.splice(0)) gl.deleteTexture(t); }
-  return { layer: makeLayer, endFrame, stats: () => ({ pages: pages.length, sprites: ATLAS.size, ...stats }), recent: () => recent.splice(0) };
+  // forget(img): an image that won't be drawn again (a picture let go of, a canvas freed): its texture goes now, or with the frame's
+  // own if this frame has drawn with it, rather than whenever the image is collected
+  function forget(img) {
+    const r = IMGS.get(img);
+    if (!r) return;
+    IMGS.delete(img);
+    if (r.fr === frameNo) frameTemps.push(r.tex); else gl?.deleteTexture(r.tex);
+  }
+  return { layer: makeLayer, endFrame, forget, stats: () => ({ pages: pages.length, sprites: ATLAS.size, ...stats }), recent: () => recent.splice(0) };
 })();
 
 ;
@@ -1824,6 +1872,9 @@ if (!gl) {
   throw err;
 }
 const HDR = !!gl.getExtension('EXT_color_buffer_float');
+// (ONE_OFF: the frame being drawn, or the work between it and the last, did something later frames won't: a texture made for a picture or
+// a panel, a sheet's frames cut, a render target made. The kit's STYLE_ONEOFF() reports it to the page.)
+let ONE_OFF = false;
 
 // ---------- shaders ----------
 const VS_FULL = `#version 300 es
@@ -2117,6 +2168,7 @@ const MESH = (() => {
 
 // ---------- render targets ----------
 function makeTarget(w, h, hdr) {
+  ONE_OFF = true;
   const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, hdr ? gl.RGBA16F : gl.RGBA8, w, h, 0, gl.RGBA, hdr ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -2149,13 +2201,25 @@ function texImage(src) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
 }
+// texSub(src, x, y): a picture or 2D canvas into part of the bound texture, at (x, y), as texImage() uploads it
+function texSub(src, x, y) {
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+}
 // texOf(src): a GL texture for an ImageBitmap or canvas, made on first use (premultiplied, mipmapped). Canvases that change call
-// texOf(src, true) to re-upload.
+// texOf(src, true) to re-upload (into the texture they have, if it's still their size).
 const _texs = new Map();
 function texOf(src, update = false) {
   let t = _texs.get(src);
   if (t && !update) { t.used = T; return t; }
-  if (!t) { t = { tex: gl.createTexture(), w: src.width, h: src.height, mip: !update }; _texs.set(src, t); }
+  if (t && !t.mip && t.w === src.width && t.h === src.height) {
+    gl.bindTexture(gl.TEXTURE_2D, t.tex);
+    texSub(src, 0, 0);
+    t.used = T;
+    return t;
+  }
+  if (!t) { t = { tex: gl.createTexture(), w: src.width, h: src.height, mip: !update }; _texs.set(src, t); ONE_OFF = true; }
   gl.bindTexture(gl.TEXTURE_2D, t.tex);
   texImage(src);
   if (t.mip) gl.generateMipmap(gl.TEXTURE_2D);
@@ -2165,47 +2229,44 @@ function texOf(src, update = false) {
   t.w = src.width; t.h = src.height; t.used = T;
   return t;
 }
-// cellTexs(src, cols, rows, n): the first n cells of a picture cut into a cols × rows grid (a clip's sprite sheet, or its stand-in), each
-// a texture of its own holding that cell and nothing else, made on first use and kept with the picture (dropTex(src) frees them). The
-// picture is uploaded once, each cell copied out of it on the GPU (blitFramebuffer), and the whole picture's texture deleted at once:
-// no draw can ever sample a whole sheet, whatever state a UV rectangle, an upload or a decode is in. Each is { tex, w, h } (w and h:
-// the cell's own size, unrounded, which is what sets a plane's aspect).
-const _cellTexs = new Map(), _cellFB = { read: null, draw: null };
-function cellTexs(src, cols, rows, n) {
+// cellTex(src, cols, rows, n, i): cell i of the first n cells of a picture cut into a cols × rows grid (a clip's sprite sheet, or its
+// stand-in), a texture of its own holding that cell and nothing else (mipmapped), made on first use and kept with the picture (dropTex(src)
+// frees them): no draw can ever sample a whole sheet, whatever state a UV rectangle, an upload or a decode is in. Each is { tex, w, h } (w
+// and h: the cell's own size, unrounded, which is what sets a plane's aspect). A cell is copied out of the picture onto a canvas its size
+// and uploaded from there, one at a time: a sheet is 7 to 35 MB, and its frames are drawn one by one, at 12 a second (prepPics() in the
+// kit uploads the next ones between frames). (Uploading the whole sheet to cut it on the GPU made a 13.7 MB burst four times a second in
+// a chorus; uploading a cell straight from the picture with UNPACK_SKIP_PIXELS copies the whole picture in Firefox, for each cell.)
+// cellTexs(src, cols, rows, n) makes them all.
+const _cellTexs = new Map();
+let _cellC = null, _cellG = null;
+function cellTex(src, cols, rows, n, i) {
   let cells = _cellTexs.get(src);
-  if (cells) return cells;
-  _cellFB.read ??= gl.createFramebuffer(); _cellFB.draw ??= gl.createFramebuffer();
-  const whole = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, whole);
-  texImage(src);
-  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, _cellFB.read);
-  gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, whole, 0);
-  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, _cellFB.draw);
+  if (!cells) _cellTexs.set(src, cells = []);
+  if (cells[i]) return cells[i];
   const cw = src.width / cols, ch = src.height / rows;
-  cells = [];
-  for (let i = 0; i < n; i++) {
-    const x0 = Math.round((i % cols) * cw), y0 = Math.round(Math.floor(i / cols) * ch), x1 = Math.round((i % cols + 1) * cw), y1 = Math.round((Math.floor(i / cols) + 1) * ch);
-    const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0), t = { tex: gl.createTexture(), w: cw, h: ch, used: T };
-    gl.bindTexture(gl.TEXTURE_2D, t.tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.tex, 0);
-    // (texture rows run from the picture's top, in both textures: the cell lands the right way up)
-    gl.blitFramebuffer(x0, y0, x1, y1, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    cells.push(t);
-  }
-  gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
-  gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
-  gl.deleteTexture(whole);
-  bindScene();
-  _cellTexs.set(src, cells);
-  return cells;
+  const x0 = Math.round((i % cols) * cw), y0 = Math.round(Math.floor(i / cols) * ch), x1 = Math.round((i % cols + 1) * cw), y1 = Math.round((Math.floor(i / cols) + 1) * ch);
+  const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0), t = { tex: gl.createTexture(), w: cw, h: ch, used: T };
+  if (!_cellC) { _cellC = makeCanvas(w, h); _cellG = _cellC.getContext('2d'); }
+  if (_cellC.width !== w || _cellC.height !== h) { _cellC.width = w; _cellC.height = h; }
+  _cellG.globalCompositeOperation = 'copy';
+  _cellG.drawImage(src, x0, y0, w, h, 0, 0, w, h);
+  gl.bindTexture(gl.TEXTURE_2D, t.tex);
+  texImage(_cellC);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  cells[i] = t;
+  return t;
+}
+function cellTexs(src, cols, rows, n) {
+  for (let i = 0; i < n; i++) cellTex(src, cols, rows, n, i);
+  return _cellTexs.get(src);
 }
 function dropTex(src) {
   const t = _texs.get(src); if (t) { gl.deleteTexture(t.tex); _texs.delete(src); }
-  const m = _cellTexs.get(src); if (m) { for (const c of m) gl.deleteTexture(c.tex); _cellTexs.delete(src); }
+  const m = _cellTexs.get(src); if (m) { for (const c of m) if (c) gl.deleteTexture(c.tex); _cellTexs.delete(src); }
+  // (and the texture draw2d.js made of it for the layers, if one drew it)
+  D2.forget(src);
 }
 
 // ---------- matrices and the camera ----------
@@ -2237,8 +2298,25 @@ function cam(o = {}) {
   const near = o.near ?? .05, far = o.far ?? 400, ty = 1 / Math.tan(fov / 2), asp = ASPECT;
   // (a lens shift moves the picture without turning the camera: shiftX/shiftY in fractions of the frame)
   const proj = new Float32Array([ty / asp, 0, 0, 0, 0, ty, 0, 0, -(o.shiftX ?? 0) * 2, -(o.shiftY ?? 0) * 2, (far + near) / (near - far), -1, 0, 0, 2 * far * near / (near - far), 0]);
-  CAM = { pos, at, fov, VP: m4mul(proj, view), right: r, up: u, fwd: f };
+  const VP = m4mul(proj, view);
+  // (GVP: what the GPU draws with; inside landscape(), the 16:9 picture placed in the frame, while project() and VP keep its own)
+  CAM = { pos, at, fov, VP, GVP: viewed(VP), right: r, up: u, fwd: f };
   return CAM;
+}
+// viewed(m): a view-projection (or ORTHO) as drawn into the frame: inside landscape() (VIEW), the clip space of the 16:9 frame's
+// picture mapped to where VIEW puts it in this one; else m itself. (Not inside an offscreen() picture, which keeps its own.)
+function viewed(m) {
+  const V = VIEW;
+  if (!V || TARGET) return m;
+  const ax = 1920 * V.k / V.fw, bx = (2 * V.ox + 1920 * V.k) / V.fw - 1, ay = 1080 * V.k / V.fh, by = 1 - (2 * V.oy + 1080 * V.k) / V.fh;
+  return m4mul(new Float32Array([ax, 0, 0, 0, 0, ay, 0, 0, 0, 0, 1, 0, bx, by, 0, 1]), m);
+}
+// the view-projection a draw call uploads: the camera's (o.vp undefined), ORTHO (screen pixels: the current W × H, which landscape()
+// makes 1920 × 1080), or another given outright
+function glVP(vp) {
+  if (vp === undefined) return CAM.GVP;
+  if (vp === ORTHO && (W !== ORTHO_WH[0] || H !== ORTHO_WH[1])) vp = orthoOf(W, H);
+  return viewed(vp);
 }
 // A world point's screen position in logical pixels, and its depth w (0 or less: behind the camera).
 function project(p) {
@@ -2247,8 +2325,10 @@ function project(p) {
 }
 // the screen height in pixels of a 1 m tall object at depth w
 const pxPerM = w => H / (2 * Math.tan(CAM.fov / 2) * w);
-// an orthographic "camera" in which world units are screen pixels (y down), for plane2D()
-const ORTHO = new Float32Array([2 / W, 0, 0, 0, 0, -2 / H, 0, 0, 0, 0, -1, 0, -1, 1, 0, 1]);
+// an orthographic "camera" in which world units are screen pixels (y down), for plane2D(): the frame's (ORTHO, which plane2D() passes
+// as a token: glVP() swaps in the current W × H's inside landscape())
+const orthoOf = (w, h) => new Float32Array([2 / w, 0, 0, 0, 0, -2 / h, 0, 0, 0, 0, -1, 0, -1, 1, 0, 1]);
+const ORTHO = orthoOf(W, H), ORTHO_WH = [W, H];
 
 // ---------- frame state and blending ----------
 const BLEND = {
@@ -2287,12 +2367,17 @@ function u3(prog, name, c, k = 1) { const v = hexRGB(c); gl.uniform3f(prog.u[nam
 function sky(o = {}) {
   bindScene(); BLEND.none();
   const P = PROG.sky; gl.useProgram(P.p); gl.bindVertexArray(VAO_EMPTY);
-  let hy = o.horizonY;
+  let hy = o.horizonY, gw = o.glowW ?? .06, asp = W / H, s = o.spot ?? [.5, .5, .3, 0];
   if (hy === undefined) { const q = project(v3add(CAM.pos, v3mul(v3norm([CAM.fwd[0], 0, CAM.fwd[2]]), 1000))); hy = 1 - q[1] / H; }
+  // (inside landscape(), the 16:9 frame's heights and places, 0..1 up and across it, as this frame's)
+  if (VIEW && !TARGET) {
+    const V = VIEW, up = y => 1 - (V.oy + (1 - y) * H * V.k) / V.fh, kh = H * V.k / V.fh;
+    hy = up(hy); gw *= kh; asp = V.fw / V.fh; s = [(V.ox + s[0] * W * V.k) / V.fw, up(s[1]), s[2] * kh, s[3]];
+  }
   u3(P, 'uTop', o.top ?? '#05040A'); u3(P, 'uHor', o.horizon ?? '#1A1430'); u3(P, 'uBot', o.bottom ?? o.horizon ?? '#1A1430');
-  u3(P, 'uGlow', o.glow ?? '#FFB0D8'); gl.uniform1f(P.u.uGlowK, o.glowK ?? .35); gl.uniform1f(P.u.uGlowW, o.glowW ?? .06);
-  gl.uniform1f(P.u.uHorY, hy); gl.uniform1f(P.u.uAspect, W / H); gl.uniform1f(P.u.uSeed, (T * 7.13) % 1);
-  const s = o.spot ?? [.5, .5, .3, 0]; gl.uniform4f(P.u.uSpot, s[0], s[1], s[2], s[3]); u3(P, 'uSpotCol', o.spotCol ?? '#FFFFFF');
+  u3(P, 'uGlow', o.glow ?? '#FFB0D8'); gl.uniform1f(P.u.uGlowK, o.glowK ?? .35); gl.uniform1f(P.u.uGlowW, gw);
+  gl.uniform1f(P.u.uHorY, hy); gl.uniform1f(P.u.uAspect, asp); gl.uniform1f(P.u.uSeed, (T * 7.13) % 1);
+  gl.uniform4f(P.u.uSpot, s[0], s[1], s[2], s[3]); u3(P, 'uSpotCol', o.spotCol ?? '#FFFFFF');
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 // floor(o): base colour, pool: [x, z, radius, k] with poolCol, glitter (colour) and glitterK, fog (colour) and fogD (the distance it's
@@ -2300,7 +2385,7 @@ function sky(o = {}) {
 function floor(o = {}) {
   bindScene(); BLEND.none();
   const P = PROG.floor; gl.useProgram(P.p); gl.bindVertexArray(FLOOR_VAO);
-  gl.uniformMatrix4fv(P.u.uVP, false, CAM.VP);
+  gl.uniformMatrix4fv(P.u.uVP, false, CAM.GVP);
   const e = o.extent ?? [-250, -400, 250, 40]; gl.uniform4f(P.u.uExtent, e[0], e[1], e[2], e[3]);
   u3(P, 'uBase', o.base ?? '#07060C');
   const pool = o.pool ?? [0, 0, 3, .25]; gl.uniform4f(P.u.uPool, pool[0], pool[1], pool[2], pool[3]); u3(P, 'uPoolCol', o.poolCol ?? '#FFFFFF');
@@ -2349,7 +2434,7 @@ function plane(src, o = {}) {
   bindScene(); (BLEND[o.blend ?? 'normal'])();
   const P = PROG.plane; gl.useProgram(P.p);
   const G = o.grid === false ? PLANE_QUAD : PLANE_GRID; gl.bindVertexArray(G.vao);
-  gl.uniformMatrix4fv(P.u.uVP, false, o.vp ?? CAM.VP);
+  gl.uniformMatrix4fv(P.u.uVP, false, glVP(o.vp));
   gl.uniform3f(P.u.uO, O[0], O[1], O[2]); gl.uniform3f(P.u.uR, R[0], R[1], R[2]); gl.uniform3f(P.u.uU, U[0], U[1], U[2]);
   gl.uniform4f(P.u.uUVR, uv[0], uv[1], uv[2] - uv[0], uv[3] - uv[1]);
   gl.uniform4f(P.u.uBend, o.sway ?? 0, o.phase ?? 0, o.squash ?? 0, o.wave ?? 0);
@@ -2380,7 +2465,7 @@ function particles(mode, o = {}) {
   if (MODE[mode] === 6 && o.pos && PART.posKey !== (o.posKey ?? o.pos)) {
     gl.bindBuffer(gl.ARRAY_BUFFER, PART.pb); gl.bufferSubData(gl.ARRAY_BUFFER, 0, o.pos); PART.posKey = o.posKey ?? o.pos;
   }
-  gl.uniformMatrix4fv(P.u.uVP, false, CAM.VP);
+  gl.uniformMatrix4fv(P.u.uVP, false, CAM.GVP);
   gl.uniform3f(P.u.uCR, ...CAM.right); gl.uniform3f(P.u.uCU, ...CAM.up);
   gl.uniform1f(P.u.uT, o.t ?? T); gl.uniform1f(P.u.uSize, o.size ?? .03); gl.uniform1i(P.u.uMode, MODE[mode]);
   const v4 = v => [...(v ?? []), 0, 0, 0, 0].slice(0, 4), A = v4(o.a), B = v4(o.b), C = v4(o.c);
@@ -2409,7 +2494,7 @@ function ribbon(src, pts, o = {}) {
   bindScene(); (BLEND[o.blend ?? 'normal'])();
   const P = PROG.mesh; gl.useProgram(P.p); gl.bindVertexArray(MESH.vao);
   gl.bindBuffer(gl.ARRAY_BUFFER, MESH.b); gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array(verts));
-  gl.uniformMatrix4fv(P.u.uVP, false, o.vp ?? CAM.VP);
+  gl.uniformMatrix4fv(P.u.uVP, false, glVP(o.vp));
   const mul = hexRGB(o.mul ?? [1, 1, 1]), k = o.gain ?? 1; gl.uniform4f(P.u.uMul, mul[0] * k, mul[1] * k, mul[2] * k, o.alpha ?? 1);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t.tex); gl.uniform1i(P.u.uTex, 0);
   gl.drawArrays(gl.TRIANGLES, 0, verts.length / 5);
@@ -2451,7 +2536,7 @@ const GL = (() => {
 })();
 
 // ---------- 2D layers and panels ----------
-// layer(): a full-frame 2D context (at the render scale, drawn in logical 1920 × 1080 units), empty, in the 2D context's default state
+// layer(): a full-frame 2D context (at the render scale, drawn in the frame's logical W × H units), empty, in the 2D context's default state
 // but for that scale; put(g, o) composites it into the scene at this point in the order (o.gain brightens it past white so that it
 // blooms; o.alpha). Outside render mode the context is draw2d.js's stand-in (shared with the demoscene's modern engine): it records
 // the drawing, and put() draws it with WebGL into the layer's own texture, text and other shapes as sprites kept in an atlas, so a
@@ -2470,23 +2555,36 @@ function layer() {
     LAYERS.push(L);
   }
   let g;
-  if (L.d2) { L.d2.size(PW, PH); g = L.d2.begin(); g.setTransform(RS, 0, 0, RS, 0, 0); }
+  if (L.d2) { L.d2.size(PW, PH); g = L.d2.begin(); layerXf(g); }
   else {
     if (L.c.width !== PW || L.c.height !== PH) { L.c.width = PW; L.c.height = PH; }
     g = L.g;
     g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, PW, PH);
-    g.setTransform(RS, 0, 0, RS, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    layerXf(g); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
   }
   _layerOf.set(g, L);
   return g;
+}
+// a layer's transform: W × H logical units at the render scale; inside landscape(), the 16:9 frame's units where VIEW puts them (inside
+// an offscreen() picture there, stretched over the layer, which is put over the whole picture)
+function layerXf(g) {
+  const V = VIEW;
+  if (!V) g.setTransform(RS, 0, 0, RS, 0, 0);
+  else if (TARGET) g.setTransform(PW / W, 0, 0, PH / H, 0, 0);
+  else g.setTransform(RS * V.k, 0, 0, RS * V.k, RS * V.ox, RS * V.oy);
 }
 // (draw2d.js's frames: each frame's drawing on the layers is a recording of its own, begun with the frame, so a layer drawn and put
 // any time in the frame, nested in another or not, draws just that frame's drawing; the frame's own uploads go once it's done, below)
 if (!CANVAS_LAYERS) FRAME_BEGIN.push(() => { (_d2Clock ??= D2.layer('frame', 1, 1, { frame: true })).begin(); });
 function put(g, o = {}) {
   const L = _layerOf.get(g);
-  let tex, flip;
-  if (L.d2) { tex = L.d2.flush().tex; flip = false; }
+  let tex, flip, box;
+  if (L.d2) {
+    tex = L.d2.flush().tex; flip = false;
+    // (composited over just the part of the frame its drawing covers: outside that its texture is clear, and blends to nothing)
+    box = L.d2.bounds();
+    if (!box) return;
+  }
   else {
     gl.bindTexture(gl.TEXTURE_2D, L.tex);
     texImage(L.c);
@@ -2494,27 +2592,49 @@ function put(g, o = {}) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     tex = L.tex; flip = true;
   }
-  const item = { tex, flip, gain: o.gain ?? 1, alpha: o.alpha ?? 1, blend: o.blend ?? 'normal' };
+  const item = { tex, flip, box, gain: o.gain ?? 1, alpha: o.alpha ?? 1, blend: o.blend ?? 'normal' };
   // (with the scene drawn at less than the canvas's resolution, a layer over the scene (the lyric, the interfaces' type) is held back
   // and drawn over the finished frame at the canvas's full resolution, so that type stays crisp at every quality level)
   if (!TARGET && QUALITY.sceneK < 1) { _crisp.push(item); return; }
-  bindScene(); blitLayer(item);
+  bindScene(); blitLayer(item, (TARGET ?? SCENE).w, (TARGET ?? SCENE).h);
 }
-function blitLayer(it) {
+// (dw × dh: the size of what it's drawn into; a layer covers it whole, stretched if they differ)
+function blitLayer(it, dw, dh) {
   (BLEND[it.blend])();
   const P = PROG.blit; gl.useProgram(P.p); gl.bindVertexArray(VAO_EMPTY);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, it.tex); gl.uniform1i(P.u.uTex, 0); gl.uniform1f(P.u.uGain, it.gain); gl.uniform1f(P.u.uAlpha, it.alpha);
   gl.uniform1f(P.u.uFlip, it.flip ? 1 : 0);
+  if (it.box) {
+    // (its bounds in the target's pixels, rows from the bottom, with room for the filtering's reach where it's stretched)
+    const sx = dw / PW, sy = dh / PH, m = Math.ceil(Math.max(sx, sy)) + 1, [x0, y0, x1, y1] = it.box;
+    const X0 = Math.max(0, Math.floor(x0 * sx) - m), X1 = Math.min(dw, Math.ceil(x1 * sx) + m), Y0 = Math.max(0, Math.floor((PH - y1) * sy) - m), Y1 = Math.min(dh, Math.ceil((PH - y0) * sy) + m);
+    if (X0 >= X1 || Y0 >= Y1) return;
+    gl.enable(gl.SCISSOR_TEST); gl.scissor(X0, Y0, X1 - X0, Y1 - Y0);
+  }
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.SCISSOR_TEST);
 }
 function flushCrisp() {
   _flushing = true;
-  try { bindScene(); for (const it of _crisp) blitLayer(it); } finally { _crisp = []; _flushing = false; }
+  try { bindScene(); for (const it of _crisp) blitLayer(it, SCENE.w, SCENE.h); } finally { _crisp = []; _flushing = false; }
 }
 // panel(key, w, h, draw, o): a 2D canvas w × h logical pixels (at o.res pixels per logical pixel, default 1), for plane() or ribbon().
 // draw(g, w, h) paints it. A panel with the same key and o.stamp as last time isn't repainted (give a stamp that changes with whatever
-// the picture shows, e.g. how many chat messages are in); o.live repaints it every frame.
+// the picture shows, e.g. how many chat messages are in); o.live repaints it every frame. A panel no frame has drawn for a while is
+// freed, its canvas and its texture (the video's 130 or so panels came to 270 MB of each by its end): drawn again, it's painted anew,
+// which draws the same picture, since what a panel shows depends only on its draw() and stamp.
 const PANELS = new Map();
+const PANEL_IDLE_FRAMES = 45, PANEL_IDLE_MS = 3000;
+let _panelFrame = 0;
+FRAME_END.push(() => {
+  _panelFrame++;
+  const now = performance.now();
+  for (const [key, p] of PANELS) {
+    if (_panelFrame - p.frame <= PANEL_IDLE_FRAMES || now - p.at <= PANEL_IDLE_MS) continue;
+    dropTex(p.c); p.c.width = p.c.height = 0;
+    PANELS.delete(key);
+  }
+});
 // (PANEL_PICS.touch(name), set by the kit: a picture a panel was painted from counts as drawn on every frame the panel is used, not only
 // the frames it's repainted on, so the loader keeps it, and PIC_USE records it, for as long as it's on screen)
 const PANEL_PICS = { painting: null, touch: null };
@@ -2522,25 +2642,265 @@ function panel(key, w, h, draw, o = {}) {
   const res = o.res ?? 1, cw = Math.max(1, Math.round(w * res)), ch = Math.max(1, Math.round(h * res));
   let p = PANELS.get(key);
   if (!p || p.c.width !== cw || p.c.height !== ch) {
-    if (p) dropTex(p.c);
+    if (p) { dropTex(p.c); p.c.width = p.c.height = 0; }
     const c = makeCanvas(cw, ch);
-    p = { c, g: c.getContext('2d'), stamp: undefined };
+    p = { c, g: c.getContext('2d'), stamp: undefined, rec: null, full: 0, skip: 0 };
+    ONE_OFF = true;
     PANELS.set(key, p);
   }
+  p.frame = _panelFrame; p.at = performance.now();
   const stamp = o.live ? (QUALITY.liveRate ? `live${Math.floor(T * QUALITY.liveRate)}` : Symbol()) : (o.stamp ?? 0);
   if (p.stamp !== stamp) {
-    const g = p.g;
-    g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cw, ch); g.setTransform(res, 0, 0, res, 0, 0);
-    g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    const outer = PANEL_PICS.painting;
+    PANEL_PICS.painting = p.pics = new Set();
+    let t;
+    try { t = CANVAS_LAYERS ? paintWhole(p, draw, w, h, res) : repaint(p, draw, w, h, res); } finally { PANEL_PICS.painting = outer; }
+    for (const n of p.pics) outer?.add(n);
+    p.stamp = stamp;
+    return t;
+  }
+  if (p.pics) for (const n of p.pics) { PANEL_PICS.touch?.(n); PANEL_PICS.painting?.add(n); }
+  return texOf(p.c);
+}
+// livePanel(key, w, h, draw, o): a panel that changes from frame to frame (an LED wall carrying the lyric, the radar's sweep), as
+// panel() makes it (the same arguments; it's for plane()), but outside render mode drawn on the GPU by draw2d.js, as the layers are,
+// into a texture of its own: nothing is painted on a 2D canvas or uploaded but the sprites of its text. Render mode paints it with
+// panel(), as the video was rendered. (The texture is the panel's size, its rows from the bottom, as an offscreen() picture's.)
+const LIVE_PANELS = new Map(), _livePanelOf = new Map();   // (key → its draw2d layer and stamp; a layer's context → its size)
+function livePanel(key, w, h, draw, o = {}) {
+  if (CANVAS_LAYERS) return panel(key, w, h, draw, o);
+  const res = o.res ?? 1, cw = Math.max(1, Math.round(w * res)), ch = Math.max(1, Math.round(h * res));
+  let p = LIVE_PANELS.get(key);
+  if (!p) LIVE_PANELS.set(key, p = { L: D2.layer(`panel ${key}`, cw, ch), stamp: undefined, tex: null });
+  const stamp = o.live ? (QUALITY.liveRate ? `live${Math.floor(T * QUALITY.liveRate)}` : Symbol()) : (o.stamp ?? 0);
+  if (p.stamp !== stamp || !p.tex || p.tex.w !== cw || p.tex.h !== ch) {
+    p.L.size(cw, ch);
+    const g = p.L.begin();
+    _livePanelOf.set(g, { width: cw, height: ch });
+    g.setTransform(res, 0, 0, res, 0, 0);
     const outer = PANEL_PICS.painting;
     PANEL_PICS.painting = p.pics = new Set();
     try { draw(g, w, h); } finally { PANEL_PICS.painting = outer; }
     for (const n of p.pics) outer?.add(n);
+    p.tex = { tex: p.L.flush().tex, w: cw, h: ch, fbo: true };
     p.stamp = stamp;
-    return texOf(p.c, true);
+  } else if (p.pics) for (const n of p.pics) { PANEL_PICS.touch?.(n); PANEL_PICS.painting?.add(n); }
+  return p.tex;
+}
+// (render mode's paint, as the video was rendered: the canvas cleared, and drawn on in whatever state the last paint left)
+function paintWhole(p, draw, w, h, res) {
+  const g = p.g;
+  g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, p.c.width, p.c.height); g.setTransform(res, 0, 0, res, 0, 0);
+  g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+  draw(g, w, h);
+  return texOf(p.c, true);
+}
+
+// ---------- panels uploaded in part ----------
+// A panel's new stamp usually leaves most of its picture as it was: the tall LED wall's curve and pixel grid under one word popping in,
+// a board whose one counter ticks. Outside render mode, a repaint first runs draw() on a recorder, which draws nothing but notes each
+// drawing call's every input (its arguments, the transform, the drawing state, the fill or stroke style, the path, the clip) as a key,
+// and the pixels the call can touch as a box. The calls this paint and the last share at their start and at their end, and those both
+// make in the same order in between, draw the same pixels as before; the boxes of the others bound every pixel that can have changed.
+// The canvas is then painted as before, and only that region of it is uploaded (a region of more than half the panel, the whole panel);
+// a paint whose calls are all the last one's isn't painted at all. (The recorder starts from the drawing state the last paint left, as the
+// paint does. A panel whose repaints change most of it, three times running, isn't recorded for its next ten.)
+const REC = (() => {
+  // (a context that keeps the recorder's drawing state, as canvas takes it, and measures its text)
+  const MIR = makeCanvas(1, 1).getContext('2d');
+  const STATE = ['globalAlpha', 'globalCompositeOperation', 'lineWidth', 'lineCap', 'lineJoin', 'miterLimit', 'lineDashOffset', 'font', 'textAlign',
+    'textBaseline', 'direction', 'letterSpacing', 'wordSpacing', 'fontKerning', 'fontStretch', 'fontVariantCaps', 'textRendering', 'shadowBlur',
+    'shadowColor', 'shadowOffsetX', 'shadowOffsetY', 'filter', 'imageSmoothingEnabled', 'imageSmoothingQuality'].filter(k => k in MIR);
+  const IS_STATE = new Set(STATE);
+  // (composite operations that change pixels outside what's drawn)
+  const SPILL = new Set(['copy', 'source-in', 'source-out', 'destination-in', 'destination-atop']);
+  const ids = new WeakMap();
+  let nextId = 1;
+  const idOf = o => { let i = ids.get(o); if (!i) ids.set(o, i = nextId++); return i; };
+  const num = a => Array.prototype.map.call(a, v => typeof v === 'number' ? String(v) : typeof v === 'string' ? JSON.stringify(v) : v && typeof v === 'object' ? (v.k ?? `{${v.x},${v.y}}`) : String(v)).join(',');
+  // (one recording: the calls [{k, b: [x0, y0, x1, y1]}], and whether it can be trusted)
+  let R = null, M, MK, stack, fill, stroke, SK, clip, path, pbox, cw, ch;
+  const bad = why => { R.bad ??= why; };
+  const setM = m => { M = m; MK = m.join(','); };
+  // (a fill or stroke style as canvas takes it: a colour, normalised, or a gradient of the recorder's; an invalid colour changes nothing)
+  const styleOf = (v, cur) => {
+    if (v && typeof v === 'object') return v;
+    MIR.fillStyle = '#010203'; MIR.fillStyle = v;
+    const n = MIR.fillStyle;
+    return n === '#010203' && !/^\s*#010203\s*$/i.test(String(v)) ? cur : n;
+  };
+  // (long keys, the drawing state's and the clip's, as short ones)
+  const INTERN = new Map();
+  const intern = s => { let i = INTERN.get(s); if (i === undefined) { if (INTERN.size > 20000) INTERN.clear(); INTERN.set(s, i = INTERN.size); } return i; };
+  const styleKey = s => typeof s === 'object' ? s.key() : s;
+  const stateKey = () => SK ??= 's' + intern(STATE.map(k => MIR[k]).join('|') + '|' + MIR.getLineDash().join(','));
+  const pt = (x, y, box = pbox) => { const X = M[0] * x + M[2] * y + M[4], Y = M[1] * x + M[3] * y + M[5]; if (X < box[0]) box[0] = X; if (Y < box[1]) box[1] = Y; if (X > box[2]) box[2] = X; if (Y > box[3]) box[3] = Y; };
+  const rectBox = (x, y, w, h, box) => { pt(x, y, box); pt(x + w, y, box); pt(x, y + h, box); pt(x + w, y + h, box); return box; };
+  const scaleOf = () => Math.sqrt(Math.max(M[0] * M[0] + M[1] * M[1], M[2] * M[2] + M[3] * M[3]));
+  function op(name, a, box) { path.push(`${name}(${num(a)})@${MK}`); box?.(); }
+  function call(k, b, extra = 0) {
+    if (!(b[0] <= b[2])) { R.calls.push({ k, b: null }); return; }
+    // (a shadow, in the canvas's pixels whatever the transform; antialiasing; anything that reaches outside what's drawn)
+    const sc = MIR.shadowColor, sh = (MIR.shadowBlur > 0 || MIR.shadowOffsetX || MIR.shadowOffsetY) && !/,\s*0\)$/.test(sc) && sc !== 'transparent' ? MIR.shadowBlur * 1.5 + Math.abs(MIR.shadowOffsetX) + Math.abs(MIR.shadowOffsetY) : 0;
+    if (MIR.filter !== 'none' && MIR.filter !== undefined) bad('filter');
+    const pad = extra + sh + 3;
+    R.calls.push({ k, b: SPILL.has(MIR.globalCompositeOperation) ? [0, 0, cw, ch] : [b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad] });
   }
-  if (p.pics) for (const n of p.pics) { PANEL_PICS.touch?.(n); PANEL_PICS.painting?.add(n); }
-  return texOf(p.c);
+  const NONE = () => [Infinity, Infinity, -Infinity, -Infinity];
+  function gradient(kind, a) {
+    const stops = [];
+    return { kind, a, stops, addColorStop(o, c) { stops.push(`${o}=${c}`); }, key() { return `${kind}(${num(a)})[${stops.join(';')}]@${MK}`; } };
+  }
+  const G = {
+    save() { MIR.save(); stack.push([M, MK, fill, stroke, clip]); },
+    restore() { if (!stack.length) { bad('restore'); return; } MIR.restore(); [M, MK, fill, stroke, clip] = stack.pop(); SK = null; },
+    setTransform(...a) { const m = a[0] && typeof a[0] === 'object' ? [a[0].a, a[0].b, a[0].c, a[0].d, a[0].e, a[0].f] : a.map(Number); if (m.every(isFinite)) setM(m); },
+    resetTransform() { setM([1, 0, 0, 1, 0, 0]); },
+    getTransform() { return new DOMMatrix(M); },
+    transform(a, b, c, d, e, f) { setM([M[0] * a + M[2] * b, M[1] * a + M[3] * b, M[0] * c + M[2] * d, M[1] * c + M[3] * d, M[0] * e + M[2] * f + M[4], M[1] * e + M[3] * f + M[5]]); },
+    translate(x, y) { G.transform(1, 0, 0, 1, x, y); },
+    scale(x, y) { G.transform(x, 0, 0, y, 0, 0); },
+    rotate(r) { const c = Math.cos(r), s = Math.sin(r); G.transform(c, s, -s, c, 0, 0); },
+    setLineDash(d) { MIR.setLineDash(d); SK = null; },
+    getLineDash() { return MIR.getLineDash(); },
+    measureText(s) { return MIR.measureText(s); },
+    createLinearGradient(...a) { return gradient('L', a); },
+    createRadialGradient(...a) { return gradient('R', a); },
+    createConicGradient(...a) { return gradient('C', a); },
+    beginPath() { path = []; pbox = NONE(); },
+    closePath() { op('closePath', []); },
+    moveTo(x, y) { op('moveTo', [x, y], () => pt(x, y)); },
+    lineTo(x, y) { op('lineTo', [x, y], () => pt(x, y)); },
+    bezierCurveTo(...a) { op('bezierCurveTo', a, () => { pt(a[0], a[1]); pt(a[2], a[3]); pt(a[4], a[5]); }); },
+    quadraticCurveTo(...a) { op('quadraticCurveTo', a, () => { pt(a[0], a[1]); pt(a[2], a[3]); }); },
+    arcTo(...a) { op('arcTo', a, () => { pt(a[0], a[1]); pt(a[2], a[3]); }); },
+    arc(x, y, r, ...a) { op('arc', [x, y, r, ...a], () => rectBox(x - r, y - r, 2 * r, 2 * r, pbox)); },
+    ellipse(x, y, rx, ry, ...a) { const r = Math.max(Math.abs(rx), Math.abs(ry)); op('ellipse', [x, y, rx, ry, ...a], () => rectBox(x - r, y - r, 2 * r, 2 * r, pbox)); },
+    rect(...a) { op('rect', a, () => rectBox(a[0], a[1], a[2], a[3], pbox)); },
+    roundRect(...a) { op('roundRect', a.map(v => Array.isArray(v) ? `[${num(v)}]` : v), () => rectBox(a[0], a[1], a[2], a[3], pbox)); },
+    clip(rule) { if (rule && typeof rule === 'object') bad('clip(Path2D)'); clip = `|c${intern(`${clip}|clip(${rule ?? ''}):${path.join(';')}`)}`; },
+    fill(rule) {
+      if (rule && typeof rule === 'object') bad('fill(Path2D)');
+      call(`fill(${rule ?? ''}):${path.join(';')}@${MK}|${stateKey()}|${styleKey(fill)}${clip}`, pbox.slice());
+    },
+    stroke(p) {
+      if (p) bad('stroke(Path2D)');
+      const lw = MIR.lineWidth * scaleOf() / 2 * (MIR.lineJoin === 'miter' ? Math.max(1.5, MIR.miterLimit) : 1.5);
+      call(`stroke:${path.join(';')}@${MK}|${stateKey()}|${styleKey(stroke)}${clip}`, pbox.slice(), lw);
+    },
+    fillRect(x, y, w, h) { call(`fillRect(${num([x, y, w, h])})@${MK}|${stateKey()}|${styleKey(fill)}${clip}`, rectBox(x, y, w, h, NONE())); },
+    strokeRect(x, y, w, h) { call(`strokeRect(${num([x, y, w, h])})@${MK}|${stateKey()}|${styleKey(stroke)}${clip}`, rectBox(x, y, w, h, NONE()), MIR.lineWidth * scaleOf() * MIR.miterLimit); },
+    clearRect(x, y, w, h) { call(`clearRect(${num([x, y, w, h])})@${MK}${clip}`, rectBox(x, y, w, h, NONE())); },
+    fillText(s, x, y, mw) { text('fillText', s, x, y, mw, fill, 0); },
+    strokeText(s, x, y, mw) { text('strokeText', s, x, y, mw, stroke, MIR.lineWidth); },
+    drawImage(img, ...a) {
+      if (!img || !a.length) { bad('drawImage'); return; }
+      const [dx, dy, dw = img.width, dh = img.height] = a.length >= 8 ? a.slice(4) : a;
+      call(`drawImage(${idOf(img)}v${img.__v | 0}:${img.width}x${img.height}|${num(a)})@${MK}|${stateKey()}${clip}`, rectBox(dx, dy, dw, dh, NONE()));
+    },
+  };
+  function text(name, s, x, y, mw, style, lw) {
+    s = String(s);
+    const m = MIR.measureText(s), ls = Math.abs(parseFloat(MIR.letterSpacing) || 0) * s.length + lw;
+    const b = rectBox(x - m.actualBoundingBoxLeft - ls, y - m.actualBoundingBoxAscent - lw, m.actualBoundingBoxLeft + m.actualBoundingBoxRight + 2 * ls, m.actualBoundingBoxAscent + m.actualBoundingBoxDescent + 2 * lw, NONE());
+    call(`${name}(${num([s, x, y, mw])})@${MK}|${stateKey()}|${styleKey(style)}${clip}`, b);
+  }
+  // (the recorder's stand-in for the context: anything else it's asked to do makes the recording one not to trust)
+  let canvas = null;
+  const proxy = new Proxy(G, {
+    get(t, k) {
+      if (k in t) return t[k];
+      if (k === 'canvas') return canvas;
+      if (k === 'fillStyle') return fill;
+      if (k === 'strokeStyle') return stroke;
+      if (IS_STATE.has(k)) return MIR[k];
+      bad(`get ${String(k)}`);
+      return typeof MIR[k] === 'function' ? () => {} : undefined;
+    },
+    set(t, k, v) {
+      if (k === 'fillStyle') fill = styleOf(v, fill);
+      else if (k === 'strokeStyle') stroke = styleOf(v, stroke);
+      else if (IS_STATE.has(k)) { MIR[k] = v; SK = null; }
+      else bad(`set ${String(k)}`);
+      return true;
+    },
+  });
+  // record(p, draw, w, h, res): a recording of draw()'s paint of panel p
+  // (a panel painted inside another's draw() is recorded inside its recording: the outer one's is put aside meanwhile)
+  const outer = [];
+  function record(p, draw, w, h, res) {
+    if (R) { outer.push([R, M, MK, stack, fill, stroke, SK, clip, path, pbox, cw, ch, canvas]); MIR.save(); }
+    R = { calls: [], bad: null, fonts: `${self.fonts?.size}:${self.fonts?.status}` };
+    cw = p.c.width; ch = p.c.height; canvas = p.c;
+    if (!outer.length) { if (MIR.reset) MIR.reset(); else MIR.canvas.width = 1; }
+    // (from the state the panel's last paint left, as the paint itself starts: but for its transform, alpha and composite operation)
+    const g = p.g;
+    for (const k of STATE) MIR[k] = g[k];
+    MIR.setLineDash(g.getLineDash()); MIR.globalAlpha = 1; MIR.globalCompositeOperation = 'source-over';
+    const held = v => typeof v === 'string' ? v : { key: () => `held${idOf(v)}` };
+    stack = []; fill = held(g.fillStyle); stroke = held(g.strokeStyle); SK = null; clip = ''; path = []; pbox = NONE();
+    setM([res, 0, 0, res, 0, 0]);
+    try { draw(proxy, w, h); } catch (e) { bad(`threw ${e}`); }
+    if (stack.length) bad('save without restore');
+    const r = R;
+    R = null;
+    if (outer.length) { while (stack.length) { MIR.restore(); stack.pop(); } MIR.restore(); [R, M, MK, stack, fill, stroke, SK, clip, path, pbox, cw, ch, canvas] = outer.pop(); }
+    return r;
+  }
+  // changed(A, B): the box (in the canvas's whole pixels) bounding every pixel that recording B can paint differently from A; null if
+  // none can, or 'all'
+  function changed(A, B) {
+    if (A.fonts !== B.fonts) return 'all';
+    const a = A.calls, b = B.calls;
+    let i = 0, ja = a.length, jb = b.length;
+    while (i < ja && i < jb && a[i].k === b[i].k) i++;
+    while (ja > i && jb > i && a[ja - 1].k === b[jb - 1].k) { ja--; jb--; }
+    if (i === ja && i === jb) return null;
+    // (in between: the calls both make, in the same order, aren't changes)
+    const n = new Map();
+    for (let k = i; k < ja; k++) n.set(a[k].k, (n.get(a[k].k) ?? 0) + 1);
+    const both = [];
+    for (let k = i; k < jb; k++) { const c = n.get(b[k].k); if (c) { n.set(b[k].k, c - 1); both.push(b[k].k); } }
+    const common = new Map(); for (const k of both) common.set(k, (common.get(k) ?? 0) + 1);
+    const box = [Infinity, Infinity, -Infinity, -Infinity], add = c => { if (!c.b) return; box[0] = Math.min(box[0], c.b[0]); box[1] = Math.min(box[1], c.b[1]); box[2] = Math.max(box[2], c.b[2]); box[3] = Math.max(box[3], c.b[3]); };
+    let ord = 0;
+    for (let k = i; k < ja; k++) { const c = common.get(a[k].k); if (c) { common.set(a[k].k, c - 1); if (both[ord++] !== a[k].k) return 'all'; } else add(a[k]); }
+    const left = new Map(); for (const k of both) left.set(k, (left.get(k) ?? 0) + 1);
+    for (let k = i; k < jb; k++) { const c = left.get(b[k].k); if (c) left.set(b[k].k, c - 1); else add(b[k]); }
+    if (!(box[0] < box[2])) return null;
+    const x0 = Math.max(0, Math.floor(box[0])), y0 = Math.max(0, Math.floor(box[1])), x1 = Math.min(cw, Math.ceil(box[2])), y1 = Math.min(ch, Math.ceil(box[3]));
+    return x0 < x1 && y0 < y1 ? [x0, y0, x1, y1] : null;
+  }
+  return { record, changed };
+})();
+// (a scratch canvas a repainted region is copied to for its upload)
+let _partC = null, _partG = null;
+function repaint(p, draw, w, h, res) {
+  const g = p.g, cw = p.c.width, ch = p.c.height;
+  const rec = p.skip > 0 ? (p.skip--, null) : REC.record(p, draw, w, h, res);
+  const ok = rec && !rec.bad, prev = p.rec;
+  p.rec = ok ? rec : null;
+  let box = ok && prev ? REC.changed(prev, rec) : 'all';
+  if (box !== 'all' && box && (box[2] - box[0]) * (box[3] - box[1]) > cw * ch / 2) box = 'all';
+  if (box === 'all') { if (++p.full >= 3) { p.skip = 10; p.full = 0; } } else p.full = 0;
+  const known = _texs.get(p.c);
+  // (nothing can have changed: the panel stays as it is)
+  if (box === null && known) return texOf(p.c);
+  // (painted whole, as ever: a canvas clipped to the region would draw a path or a glyph that crosses its edge a little differently there)
+  g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cw, ch); g.setTransform(res, 0, 0, res, 0, 0);
+  g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+  draw(g, w, h);
+  if (box === 'all' || !box || !known) return texOf(p.c, true);
+  // (the region alone uploaded: copied out to a canvas its size)
+  const [x0, y0, x1, y1] = box, bw = x1 - x0, bh = y1 - y0;
+  if (!_partC) { _partC = makeCanvas(bw, bh); _partG = _partC.getContext('2d'); }
+  if (_partC.width !== bw || _partC.height !== bh) { _partC.width = bw; _partC.height = bh; }
+  _partG.globalCompositeOperation = 'copy';
+  _partG.drawImage(p.c, x0, y0, bw, bh, 0, 0, bw, bh);
+  gl.bindTexture(gl.TEXTURE_2D, known.tex);
+  texSub(_partC, x0, y0);
+  known.used = T;
+  return known;
 }
 
 // ---------- post ----------
@@ -2585,7 +2945,7 @@ function postProcess() {
   fullPass(P, null);
   // (the layers held back from a scene drawn at less than full resolution, over the finished frame: faded with it, not graded)
   if (_crisp.length) {
-    for (const it of _crisp) blitLayer({ ...it, gain: Math.min(it.gain, 1), alpha: it.alpha * (1 - G.fade) });
+    for (const it of _crisp) blitLayer({ ...it, gain: Math.min(it.gain, 1), alpha: it.alpha * (1 - G.fade) }, PW, PH);
     _crisp = [];
   }
   gl.activeTexture(gl.TEXTURE0);
@@ -2680,10 +3040,10 @@ const PICS = {
   "clawd_cry": {"layer": "cutout", "w": 1246, "h": 1250, "lo": [0, 2056, 78, 78]},
   "card_hinton": {"layer": "full", "w": 805, "h": 1200, "lo": [297, 2056, 50, 75]},
   "card_demis": {"layer": "full", "w": 805, "h": 1200, "lo": [349, 2056, 50, 75]},
-  "toki_win": {"layer": "cutout", "w": 667, "h": 1600, "anchor": [0.5, 1], "lo": [348, 1560, 42, 100]},
-  "sam_portrait": {"layer": "full", "w": 800, "h": 800, "anchor": [0.5, 1], "lo": [524, 2056, 50, 50]},
+  "card_win": {"layer": "cutout", "w": 762, "h": 1005, "lo": [524, 2056, 48, 63]},
+  "sam_portrait": {"layer": "full", "w": 800, "h": 800, "anchor": [0.5, 1], "lo": [574, 2056, 50, 50]},
   "sam_facepalm": {"layer": "cutout", "w": 511, "h": 1600, "anchor": [0.5, 1], "lo": [392, 1560, 32, 100]},
-  "elon_portrait": {"layer": "full", "w": 800, "h": 800, "anchor": [0.5, 1], "lo": [576, 2056, 50, 50]},
+  "elon_portrait": {"layer": "full", "w": 800, "h": 800, "anchor": [0.5, 1], "lo": [626, 2056, 50, 50]},
   "trump": {"layer": "cutout", "w": 750, "h": 1600, "anchor": [0.5, 1], "lo": [426, 1560, 47, 100]},
   "jensen": {"layer": "cutout", "w": 954, "h": 1600, "anchor": [0.5, 1], "lo": [475, 1560, 60, 100]},
   "pew_pair": {"layer": "cutout", "w": 2228, "h": 1427, "anchor": [0.5, 1], "lo": [414, 1964, 139, 89]},
@@ -2707,27 +3067,27 @@ const PICS = {
   "robot": {"layer": "cutout", "w": 1355, "h": 1435, "anchor": [0.5, 1], "lo": [392, 1864, 85, 90]},
   "park": {"layer": "full", "w": 1935, "h": 1080, "lo": [401, 2056, 121, 68]},
   "toki_fairy_blink": {"layer": "cutout", "w": 1203, "h": 1600, "lo": [625, 1662, 75, 100]},
-  "toki_v_ah": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [739, 2056, 15, 11]},
-  "toki_v_ee": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [756, 2056, 15, 11]},
-  "toki_v_oh": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [790, 2056, 15, 11]},
-  "toki_v_hum": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [807, 2056, 15, 11]},
-  "toki_v_mb": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [824, 2056, 15, 11]},
-  "relu_v_ah": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [858, 2056, 16, 11]},
-  "relu_v_ee": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [876, 2056, 16, 11]},
-  "relu_v_oh": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [912, 2056, 16, 11]},
-  "relu_v_hum": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [930, 2056, 16, 11]},
-  "relu_v_mb": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [948, 2056, 16, 11]},
-  "ada_v_ah": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [85, 2136, 15, 10]},
-  "ada_v_ee": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [102, 2136, 15, 10]},
-  "ada_v_oh": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [136, 2136, 15, 10]},
-  "ada_v_hum": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [153, 2136, 15, 10]},
-  "ada_v_mb": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [170, 2136, 15, 10]},
-  "ada_v_held": {"layer": "patch", "of": "ada_sing", "x": 329, "y": 279, "w": 415, "h": 385, "lo": [684, 2056, 26, 24]},
-  "logi_v_ah": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [984, 2056, 15, 11]},
-  "logi_v_ee": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [1001, 2056, 15, 11]},
-  "logi_v_oh": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [17, 2136, 15, 11]},
-  "logi_v_hum": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [34, 2136, 15, 11]},
-  "logi_v_mb": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [51, 2136, 15, 11]},
+  "toki_v_ah": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [789, 2056, 15, 11]},
+  "toki_v_ee": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [806, 2056, 15, 11]},
+  "toki_v_oh": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [840, 2056, 15, 11]},
+  "toki_v_hum": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [857, 2056, 15, 11]},
+  "toki_v_mb": {"layer": "patch", "of": "toki_sing", "x": 422, "y": 508, "w": 243, "h": 179, "lo": [874, 2056, 15, 11]},
+  "relu_v_ah": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [908, 2056, 16, 11]},
+  "relu_v_ee": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [926, 2056, 16, 11]},
+  "relu_v_oh": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [962, 2056, 16, 11]},
+  "relu_v_hum": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [980, 2056, 16, 11]},
+  "relu_v_mb": {"layer": "patch", "of": "relu_sing", "x": 474, "y": 649, "w": 249, "h": 171, "lo": [998, 2056, 16, 11]},
+  "ada_v_ah": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [137, 2136, 15, 10]},
+  "ada_v_ee": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [154, 2136, 15, 10]},
+  "ada_v_oh": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [188, 2136, 15, 10]},
+  "ada_v_hum": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [205, 2136, 15, 10]},
+  "ada_v_mb": {"layer": "patch", "of": "ada_sing", "x": 415, "y": 479, "w": 244, "h": 168, "lo": [222, 2136, 15, 10]},
+  "ada_v_held": {"layer": "patch", "of": "ada_sing", "x": 329, "y": 279, "w": 415, "h": 385, "lo": [734, 2056, 26, 24]},
+  "logi_v_ah": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [18, 2136, 15, 11]},
+  "logi_v_ee": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [35, 2136, 15, 11]},
+  "logi_v_oh": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [69, 2136, 15, 11]},
+  "logi_v_hum": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [86, 2136, 15, 11]},
+  "logi_v_mb": {"layer": "patch", "of": "logi_sing", "x": 399, "y": 568, "w": 239, "h": 176, "lo": [103, 2136, 15, 11]},
   "toki_u1_s0": {"layer": "sprite", "w": 1176, "h": 1560, "lo": [702, 1662, 74, 98]},
   "toki_u1_s1": {"layer": "sprite", "w": 1176, "h": 1560, "lo": [778, 1662, 74, 98]},
   "toki_u1_s2": {"layer": "sprite", "w": 1176, "h": 1560, "lo": [854, 1662, 74, 98]},
@@ -2901,7 +3261,7 @@ const PIC_USE = {
   "V1.14": [["ada_concept",0,1.5]],
   "V1.15": [["ada_concept",0,0.4],["card_hinton",0.3,1.9]],
   "V1.16": [["card_hinton",0,1.7],["card_demis",0.1,1.7]],
-  "C1": [["card_demis",0,0.8],["card_hinton",0,0.8],["ada_u1_s0",0.7,1.6],["logi_u1_s0",0.7,1.6],["relu_u1_s0",0.7,1.6],["toki_u1_s0",0.7,1.6],["ada_u1_s1",1.5,2.6],["logi_u1_s1",1.5,2.6],["relu_u1_s1",1.5,2.6],["toki_u1_s1",1.5,2.6],["ada_u1_s2",2.5,3.6],["logi_u1_s2",2.5,3.6],["relu_u1_s2",2.5,3.6],["toki_u1_s2",2.5,3.6],["ada_u1_s3",3.5,4],["logi_u1_s3",3.5,4],["relu_u1_s3",3.5,4],["toki_u1_s3",3.5,4],["ada_uT_s0",3.9,4.8],["logi_uT_s0",3.9,4.8],["relu_uT_s0",3.9,4.8],["toki_uT_s0",3.9,4.8],["ada_uT_s1",4.7,5.8],["logi_uT_s1",4.7,5.8],["relu_uT_s1",4.7,5.8],["toki_uT_s1",4.7,5.8],["ada_uT_s2",5.7,7],["logi_uT_s2",5.7,7],["relu_uT_s2",5.7,7],["toki_uT_s2",5.7,7],["ada_uG_s0",6.9,7.8],["logi_uG_s0",6.9,7.8],["relu_uG_s0",6.9,7.8],["toki_uG_s0",6.9,7.8],["ada_uG_s1",7.7,8.8],["logi_uG_s1",7.7,8.8],["relu_uG_s1",7.7,8.8],["toki_uG_s1",7.7,8.8],["ada_uG_s2",8.7,9.8],["logi_uG_s2",8.7,9.8],["relu_uG_s2",8.7,9.8],["toki_uG_s2",8.7,9.8],["ada_uG_s3",9.7,10.4],["logi_uG_s3",9.7,10.4],["relu_uG_s3",9.7,10.4],["toki_uG_s3",9.7,10.4],["toki_sing",10.3,11.8],["toki_v_hum",10.3,10.5],["toki_v_ee",10.4,11.8],["toki_v_ah",10.9,11.7],["ada_uC_s0",11.7,13.6],["logi_uC_s0",11.7,13.6],["relu_uC_s0",11.7,13.6],["toki_uC_s0",11.7,13.6],["ada_uC_s1",13.5,14.6],["logi_uC_s1",13.5,14.6],["relu_uC_s1",13.5,14.6],["toki_uC_s1",13.5,14.6],["ada_uC_s2",14.5,15.6],["logi_uC_s2",14.5,15.6],["relu_uC_s2",14.5,15.6],["toki_uC_s2",14.5,15.6],["ada_uC_s3",15.5,16],["logi_uC_s3",15.5,16],["relu_uC_s3",15.5,16],["toki_uC_s3",15.5,16],["ada_point",15.9,16.9],["logi_point",15.9,16.9],["relu_point",15.9,16.9],["toki_point",15.9,16.9]],
+  "C1": [["card_demis",0,0.8],["card_hinton",0,0.8],["ada_u1_s0",0.7,1.6],["logi_u1_s0",0.7,1.6],["relu_u1_s0",0.7,1.6],["toki_u1_s0",0.7,1.6],["ada_u1_s1",1.5,2.6],["logi_u1_s1",1.5,2.6],["relu_u1_s1",1.5,2.6],["toki_u1_s1",1.5,2.6],["ada_u1_s2",2.5,3.6],["logi_u1_s2",2.5,3.6],["relu_u1_s2",2.5,3.6],["toki_u1_s2",2.5,3.6],["ada_u1_s3",3.5,4],["logi_u1_s3",3.5,4],["relu_u1_s3",3.5,4],["toki_u1_s3",3.5,4],["ada_uT_s0",3.9,4.9],["logi_uT_s0",3.9,4.9],["relu_uT_s0",3.9,4.9],["toki_uT_s0",3.9,4.9],["ada_uT_s1",4.8,6],["logi_uT_s1",4.8,6],["relu_uT_s1",4.8,6],["toki_uT_s1",4.8,6],["ada_uT_s2",5.9,7],["logi_uT_s2",5.9,7],["relu_uT_s2",5.9,7],["toki_uT_s2",5.9,7],["ada_uG_s0",6.9,7.8],["logi_uG_s0",6.9,7.8],["relu_uG_s0",6.9,7.8],["toki_uG_s0",6.9,7.8],["ada_uG_s1",7.7,8.8],["logi_uG_s1",7.7,8.8],["relu_uG_s1",7.7,8.8],["toki_uG_s1",7.7,8.8],["ada_uG_s2",8.7,9.8],["logi_uG_s2",8.7,9.8],["relu_uG_s2",8.7,9.8],["toki_uG_s2",8.7,9.8],["ada_uG_s3",9.7,10.4],["logi_uG_s3",9.7,10.4],["relu_uG_s3",9.7,10.4],["toki_uG_s3",9.7,10.4],["toki_sing",10.3,11.8],["toki_v_hum",10.3,10.5],["toki_v_ee",10.4,11.8],["toki_v_ah",10.9,11.7],["ada_uC_s0",11.7,13.6],["logi_uC_s0",11.7,13.6],["relu_uC_s0",11.7,13.6],["toki_uC_s0",11.7,13.6],["ada_uC_s1",13.5,14.6],["logi_uC_s1",13.5,14.6],["relu_uC_s1",13.5,14.6],["toki_uC_s1",13.5,14.6],["ada_uC_s2",14.5,15.6],["logi_uC_s2",14.5,15.6],["relu_uC_s2",14.5,15.6],["toki_uC_s2",14.5,15.6],["ada_uC_s3",15.5,16],["logi_uC_s3",15.5,16],["relu_uC_s3",15.5,16],["toki_uC_s3",15.5,16],["ada_point",15.9,16.9],["logi_point",15.9,16.9],["relu_point",15.9,16.9],["toki_point",15.9,16.9]],
   "V2.1": [["ada_point",0,0.5],["logi_point",0,0.5],["relu_point",0,0.5],["toki_point",0,0.5],["relu_press_s0",0.4,1.3],["relu_shock_s0",1.2,2.1]],
   "V2.2": [["elon_portrait",1.3,1.5]],
   "V2.3": [["elon_portrait",0,0.3]],
@@ -2952,10 +3312,85 @@ const PIC_USE = {
   "V4.14": [["relu_sing",0,1.3],["relu_v_ah",0,1.1],["relu_v_hum",0,0.1],["relu_v_ee",0.1,1.3],["relu_v_oh",0.9,1.2],["relu_v_mb",1,1.2]],
   "V4.15": [["relu_sing",0,0.3],["relu_v_ee",0,0.3],["ada_react",1.4,1.7]],
   "V4.16": [["ada_react",0,0.3],["clawd_mic",0.2,2.1],["group_wave_s0",0.2,1.2],["group_wave_s1",1.1,2.1]],
-  "C4": [["clawd_mic",0,0.5],["group_wave_s1",0,0.2],["group_wave_s2",0.1,0.5],["toki_tears_s0",0.4,1.5],["toki_tears_s1",1.4,2.1],["ada_u1_s1",2,2.3],["logi_u1_s1",2,2.3],["relu_u1_s1",2,2.3],["toki_u1_s1",2,2.3],["ada_u1_s2",2.2,3.3],["logi_u1_s2",2.2,3.3],["relu_u1_s2",2.2,3.3],["toki_u1_s2",2.2,3.3],["ada_u1_s3",3.2,3.8],["logi_u1_s3",3.2,3.8],["relu_u1_s3",3.2,3.8],["toki_u1_s3",3.2,3.8],["ada_concept",3.7,10.2],["card_demis",3.7,10.2],["card_hinton",3.7,10.2],["logi_concept",3.7,10.1],["relu_concept",3.7,10.2],["toki_concept",3.7,10.2],["clawd_fan",4.1,10.2],["toki_win",4.5,10.2],["ada_uC_s2",10.1,11],["logi_uC_s2",10.1,11],["relu_uC_s2",10.1,11],["toki_uC_s2",10.1,11],["ada_uC_s3",10.9,11.6],["logi_uC_s3",10.9,11.6],["relu_uC_s3",10.9,11.6],["toki_uC_s3",10.9,11.6],["ada_uT_s0",11.5,12.4],["logi_uT_s0",11.5,12.4],["relu_uT_s0",11.5,12.4],["toki_uT_s0",11.5,12.4],["ada_uT_s1",12.3,14],["logi_uT_s1",12.3,14],["relu_uT_s1",12.3,14],["toki_uT_s1",12.3,14],["ada_uT_s2",13.9,16.6],["logi_uT_s2",13.9,16.6],["relu_uT_s2",13.9,16.6],["toki_uT_s2",13.9,16.6],["ada_u1_s0",16.5,17.4],["logi_u1_s0",16.5,17.4],["relu_u1_s0",16.5,17.4],["toki_u1_s0",16.5,17.4],["ada_u1_s1",17.3,18.4],["logi_u1_s1",17.3,18.4],["relu_u1_s1",17.3,18.4],["toki_u1_s1",17.3,18.4],["ada_u1_s2",18.3,19.4],["logi_u1_s2",18.3,19.4],["relu_u1_s2",18.3,19.4],["toki_u1_s2",18.3,19.4],["ada_u1_s3",19.3,20.2],["logi_u1_s3",19.3,20.2],["relu_u1_s3",19.3,20.2],["toki_u1_s3",19.3,20.2],["group_wave_s0",20.1,21.2],["group_wave_s1",21.1,22.2],["group_wave_s2",22.1,23.2],["group_wave_s3",23.1,25.1],["group_wave_s2",25,26.1],["group_wave_s1",26,27.1],["group_wave_s0",27,29],["group_wave_s1",28.9,30],["group_wave_s2",29.9,31],["group_wave_s3",30.9,33],["group_wave_s2",32.9,34],["group_wave_s1",33.9,35],["group_wave_s0",34.9,35.5],["toki_fairy",35.4,40.4],["toki_fairy15_s0",35.4,38.2],["toki_fairy_blink",37.3,37.5],["toki_fairy15_s1",37.9,40.4],["toki_fairy_blink",39.2,39.5]],
+  "C4": [["clawd_mic",0,0.5],["group_wave_s1",0,0.2],["group_wave_s2",0.1,0.5],["toki_tears_s0",0.4,1.5],["toki_tears_s1",1.4,2.1],["ada_u1_s1",2,2.3],["logi_u1_s1",2,2.3],["relu_u1_s1",2,2.3],["toki_u1_s1",2,2.3],["ada_u1_s2",2.2,3.3],["logi_u1_s2",2.2,3.3],["relu_u1_s2",2.2,3.3],["toki_u1_s2",2.2,3.3],["ada_u1_s3",3.2,3.8],["logi_u1_s3",3.2,3.8],["relu_u1_s3",3.2,3.8],["toki_u1_s3",3.2,3.8],["ada_concept",3.7,10.2],["card_demis",3.7,10.2],["card_hinton",3.7,10.2],["logi_concept",3.7,10.1],["relu_concept",3.7,10.2],["toki_concept",3.7,10.2],["clawd_fan",4.1,10.2],["card_win",4.5,10.2],["ada_uC_s2",10.1,11],["logi_uC_s2",10.1,11],["relu_uC_s2",10.1,11],["toki_uC_s2",10.1,11],["ada_uC_s3",10.9,11.6],["logi_uC_s3",10.9,11.6],["relu_uC_s3",10.9,11.6],["toki_uC_s3",10.9,11.6],["ada_uT_s0",11.5,12.4],["logi_uT_s0",11.5,12.4],["relu_uT_s0",11.5,12.4],["toki_uT_s0",11.5,12.4],["ada_uT_s1",12.3,14],["logi_uT_s1",12.3,14],["relu_uT_s1",12.3,14],["toki_uT_s1",12.3,14],["ada_uT_s2",13.9,16.6],["logi_uT_s2",13.9,16.6],["relu_uT_s2",13.9,16.6],["toki_uT_s2",13.9,16.6],["ada_u1_s0",16.5,17.4],["logi_u1_s0",16.5,17.4],["relu_u1_s0",16.5,17.4],["toki_u1_s0",16.5,17.4],["ada_u1_s1",17.3,18.4],["logi_u1_s1",17.3,18.4],["relu_u1_s1",17.3,18.4],["toki_u1_s1",17.3,18.4],["ada_u1_s2",18.3,19.4],["logi_u1_s2",18.3,19.4],["relu_u1_s2",18.3,19.4],["toki_u1_s2",18.3,19.4],["ada_u1_s3",19.3,20.2],["logi_u1_s3",19.3,20.2],["relu_u1_s3",19.3,20.2],["toki_u1_s3",19.3,20.2],["group_wave_s0",20.1,21.2],["group_wave_s1",21.1,22.2],["group_wave_s2",22.1,23.2],["group_wave_s3",23.1,25.1],["group_wave_s2",25,26.1],["group_wave_s1",26,27.1],["group_wave_s0",27,29],["group_wave_s1",28.9,30],["group_wave_s2",29.9,31],["group_wave_s3",30.9,33],["group_wave_s2",32.9,34],["group_wave_s1",33.9,35],["group_wave_s0",34.9,35.5],["toki_fairy",35.4,40.4],["toki_fairy15_s0",35.4,38.2],["toki_fairy_blink",37.3,37.5],["toki_fairy15_s1",37.9,40.4],["toki_fairy_blink",39.2,39.5]],
   "outro": [["toki_fairy",0,1.1],["toki_fairy15_s1",0,0.9],["toki_fairy15_s2",0.8,1.1]],
 };
+// (the vertical video's)
+const PIC_USE_V = {
+  "intro": [],
+  "V1.1": [],
+  "V1.2": [["toki_pose_s0",0.2,1.3],["toki_pose_s1",1.2,1.7]],
+  "V1.3": [["toki_pose_s1",0,0.4],["relu_pose_s0",0.3,1.4],["relu_pose_s1",1.3,1.7]],
+  "V1.4": [["relu_pose_s1",0,0.4],["logi_react",0.9,1.5]],
+  "V1.5": [["logi_react",0,0.3],["ada_pose_s0",0.2,1.3],["ada_pose_s1",1.2,1.7]],
+  "V1.6": [["ada_pose_s1",0,0.5]],
+  "V1.7": [["logi_dance_s0",0,1.1],["logi_dance_s1",1,1.5]],
+  "V1.8": [["logi_dance_s1",0,0.5]],
+  "V1.9": [["group_pose_s0",0.4,1.5],["group_pose_s1",1.4,2.1]],
+  "V1.10": [["group_pose_s1",0,0.2]],
+  "V1.11": [["relu_eye",0.3,1.7]],
+  "V1.12": [["relu_eye",0,0.4]],
+  "V1.13": [],
+  "V1.14": [["ada_concept",0,1.5]],
+  "V1.15": [["ada_concept",0,0.4],["card_hinton",0.3,1.9]],
+  "V1.16": [["card_hinton",0,1.7],["card_demis",0.1,1.7]],
+  "C1": [["card_demis",0,0.8],["card_hinton",0,0.8],["ada_u1_s0",0.7,1.6],["logi_u1_s0",0.7,1.6],["relu_u1_s0",0.7,1.6],["toki_u1_s0",0.7,1.6],["ada_u1_s1",1.5,2.6],["logi_u1_s1",1.5,2.6],["relu_u1_s1",1.5,2.6],["toki_u1_s1",1.5,2.6],["ada_u1_s2",2.5,3.6],["logi_u1_s2",2.5,3.6],["relu_u1_s2",2.5,3.6],["toki_u1_s2",2.5,3.6],["ada_u1_s3",3.5,4],["logi_u1_s3",3.5,4],["relu_u1_s3",3.5,4],["toki_u1_s3",3.5,4],["ada_uT_s0",3.9,4.9],["logi_uT_s0",3.9,4.9],["relu_uT_s0",3.9,4.9],["toki_uT_s0",3.9,4.9],["ada_uT_s1",4.8,6],["logi_uT_s1",4.8,6],["relu_uT_s1",4.8,6],["toki_uT_s1",4.8,6],["ada_uT_s2",5.9,7],["logi_uT_s2",5.9,7],["relu_uT_s2",5.9,7],["toki_uT_s2",5.9,7],["ada_uG_s0",6.9,7.8],["logi_uG_s0",6.9,7.8],["relu_uG_s0",6.9,7.8],["toki_uG_s0",6.9,7.8],["ada_uG_s1",7.7,8.8],["logi_uG_s1",7.7,8.8],["relu_uG_s1",7.7,8.8],["toki_uG_s1",7.7,8.8],["ada_uG_s2",8.7,9.8],["logi_uG_s2",8.7,9.8],["relu_uG_s2",8.7,9.8],["toki_uG_s2",8.7,9.8],["ada_uG_s3",9.7,10.4],["logi_uG_s3",9.7,10.4],["relu_uG_s3",9.7,10.4],["toki_uG_s3",9.7,10.4],["toki_sing",10.3,11.8],["toki_v_hum",10.3,10.5],["toki_v_ee",10.4,11.8],["toki_v_ah",10.9,11.7],["ada_uC_s0",11.7,13.6],["logi_uC_s0",11.7,13.6],["relu_uC_s0",11.7,13.6],["toki_uC_s0",11.7,13.6],["ada_uC_s1",13.5,14.6],["logi_uC_s1",13.5,14.6],["relu_uC_s1",13.5,14.6],["toki_uC_s1",13.5,14.6],["ada_uC_s2",14.5,15.6],["logi_uC_s2",14.5,15.6],["relu_uC_s2",14.5,15.6],["toki_uC_s2",14.5,15.6],["ada_uC_s3",15.5,16],["logi_uC_s3",15.5,16],["relu_uC_s3",15.5,16],["toki_uC_s3",15.5,16],["ada_point",15.9,16.9],["logi_point",15.9,16.9],["relu_point",15.9,16.9],["toki_point",15.9,16.9]],
+  "V2.1": [["ada_point",0,0.5],["logi_point",0,0.5],["relu_point",0,0.5],["toki_point",0,0.5],["relu_press_s0",0.4,1.3],["relu_shock_s0",1.2,2.1]],
+  "V2.2": [["elon_portrait",1.3,1.5]],
+  "V2.3": [["elon_portrait",0,0.3]],
+  "V2.4": [["ada_pose2_s0",0,1.1],["ada_pose2_s1",1,1.5]],
+  "V2.5": [["ada_pose2_s1",0,0.1],["zuck",0,1.7]],
+  "V2.6": [["logi_host_s1",0,1.1],["logi_host_s2",1,1.5]],
+  "V2.7": [["logi_host_s2",0,0.4]],
+  "V2.8": [["toki_react",1.5,1.9]],
+  "V2.9": [["relu_smile_s0",0,2.1],["toki_react",0,0.1]],
+  "V2.10": [["relu_smile_s0",0,0.2]],
+  "V2.11": [["clawd_cry",0,1.7]],
+  "V2.12": [["ada_fansign_s0",0,1.3],["clawd_cry",0,0.1],["logi_fansign_s0",0,1.3],["relu_fansign_s0",0,1.1],["toki_fansign_s0",0,1.1],["relu_fansign_s1",1,1.5],["toki_fansign_s1",1,1.5],["ada_fansign_s1",1.2,1.5],["logi_fansign_s1",1.2,1.5]],
+  "V2.13": [["ada_fansign_s1",0,0.3],["logi_fansign_s1",0,0.3],["relu_fansign_s1",0,0.3],["toki_fansign_s1",0,0.3],["relu_fancam_s0",0.2,1.3],["robot",0.2,1.9],["relu_fancam_s1",1.2,1.9]],
+  "V2.14": [["relu_fancam_s1",0,0.1],["relu_u1_s1",0,0.6],["robot",0,0.1],["toki_u1_s3",0,0.3],["toki_u1_s2",0.2,1.3],["logi_react",0.3,1.7],["ada_u1_s3",0.4,1.3],["relu_u1_s2",0.5,0.9],["logi_u1_s3",0.8,1.7],["toki_u1_s1",1.2,1.7]],
+  "V2.15": [["logi_react",0,0.2],["relu_u1_s3",0,0.2],["toki_u1_s1",0,0.2],["yann",0.1,1.7]],
+  "V2.16": [["yann",0,0.2],["toki_react",0.1,2.1]],
+  "C2": [["toki_react",0,0.4],["ada_u1_s0",0.3,1.2],["logi_u1_s0",0.3,1.2],["relu_u1_s0",0.3,1.2],["toki_u1_s0",0.3,1.2],["ada_u1_s1",1.1,2.2],["logi_u1_s1",1.1,2.2],["relu_u1_s1",1.1,2.2],["toki_u1_s1",1.1,2.2],["ada_u1_s2",2.1,3.2],["logi_u1_s2",2.1,3.2],["relu_u1_s2",2.1,3.2],["toki_u1_s2",2.1,3.2],["ada_u1_s3",3.1,3.6],["logi_u1_s3",3.1,3.6],["relu_u1_s3",3.1,3.6],["toki_u1_s3",3.1,3.6],["logi_uT_s0",3.5,4.4],["logi_uT_s1",4.3,5.4],["logi_uT_s2",5.3,5.5],["ada_uG_s0",5.4,6.4],["logi_uG_s0",5.4,6.4],["relu_uG_s0",5.4,6.4],["toki_uG_s0",5.4,6.4],["ada_uG_s1",6.3,7.4],["logi_uG_s1",6.3,7.4],["relu_uG_s1",6.3,7.4],["toki_uG_s1",6.3,7.4],["ada_uG_s2",7.3,8.4],["logi_uG_s2",7.3,8.4],["relu_uG_s2",7.3,8.4],["toki_uG_s2",7.3,8.4],["ada_uG_s3",8.3,10],["logi_uG_s3",8.3,10],["relu_uG_s3",8.3,10],["toki_uG_s3",8.3,10],["toki_sing",9.9,13],["toki_v_hum",9.9,10.1],["toki_v_ee",10,13],["toki_v_ah",10.4,11.2],["ada_sing",11.3,13],["ada_v_hum",11.3,11.5],["ada_v_oh",11.3,11.7],["logi_sing",11.3,13],["logi_v_hum",11.3,11.5],["logi_v_oh",11.3,11.7],["relu_sing",11.3,14.5],["relu_v_hum",11.3,11.5],["relu_v_oh",11.3,11.7],["toki_v_hum",11.3,11.5],["toki_v_oh",11.3,11.7],["ada_v_ee",11.6,13],["logi_v_ee",11.6,13],["relu_v_ee",11.6,14.5],["ada_v_mb",12.1,12.3],["logi_v_mb",12.1,12.3],["relu_v_mb",12.1,13.1],["toki_v_mb",12.1,12.3],["ada_v_ah",12.5,12.9],["logi_v_ah",12.5,12.9],["relu_v_ah",12.5,14.3],["toki_v_ah",12.5,12.9],["relu_v_oh",13.7,14.1]],
+  "V3.1": [["ada_react",1.1,3.1]],
+  "V3.2": [["ada_react",0,0.4],["lobster",0.3,3.3]],
+  "V3.3": [["lobster",0,0.3]],
+  "V3.4": [["park",0.6,3.3],["logi_react",2.9,3.3]],
+  "V3.5": [["logi_react",0,0.3],["park",0,0.3],["ada_u1_s3",0.2,1.4],["clawd_fan",0.2,1.9],["logi_u1_s1",0.2,1.2],["logi_u1_s3",0.2,1.9],["relu_u1_s1",0.2,0.7],["relu_u1_s2",0.2,1.7],["toki_u1_s1",0.2,1.9],["toki_u1_s2",0.2,1.9],["ada_u1_s2",0.3,1.9],["toki_u1_s3",0.9,1.9],["logi_u1_s2",1.1,1.9],["relu_u1_s3",1.1,1.9],["ada_u1_s1",1.3,1.5]],
+  "V3.6": [["ada_u1_s2",0,0.2],["clawd_fan",0,0.2],["logi_u1_s2",0,0.2],["logi_u1_s3",0,0.2],["relu_u1_s3",0,0.2],["toki_u1_s1",0,0.2],["toki_u1_s2",0,0.2],["toki_u1_s3",0,0.2],["lutnick",0.1,1.5]],
+  "V3.7": [["lutnick",0,0.3],["clawd_fan",0.2,1.7]],
+  "V3.8": [["clawd_fan",0,0.3],["relu_grok_s0",0.2,0.9],["relu_grok_s1",0.8,1.7]],
+  "V3.9": [["relu_grok_s1",0,0.3],["relu_grok_s2",0.2,0.3]],
+  "V3.10": [["sam_facepalm",0,1.7]],
+  "V3.11": [["sam_facepalm",0,0.2],["ada_concept",0.1,1.5],["logi_point",0.1,1.5],["noam_ox",0.1,1.5],["relu_concept",0.1,1.5],["toki_concept",0.1,1.5],["toki_react",0.6,1.5],["ada_react",0.8,1.5]],
+  "V3.12": [["ada_concept",0,0.3],["ada_react",0,0.3],["logi_point",0,0.3],["noam_ox",0,0.3],["relu_concept",0,0.3],["toki_concept",0,0.3],["toki_react",0,0.3]],
+  "V3.13": [["toki_react",0.9,1.9]],
+  "V3.14": [["toki_react",0,0.2],["jeff",0.1,1.7]],
+  "V3.15": [["clawd_chalk",0,1.5],["jeff",0,0.1]],
+  "V3.16": [["clawd_chalk",0,0.4]],
+  "C3": [["ada_u1_s0",0.4,1.3],["logi_u1_s0",0.4,1.3],["relu_u1_s0",0.4,1.3],["toki_u1_s0",0.4,1.3],["ada_u1_s1",1.2,2.3],["logi_u1_s1",1.2,2.3],["relu_u1_s1",1.2,2.3],["toki_u1_s1",1.2,2.3],["ada_u1_s2",2.2,3.3],["logi_u1_s2",2.2,3.3],["relu_u1_s2",2.2,3.3],["toki_u1_s2",2.2,3.3],["ada_u1_s3",3.2,3.8],["logi_u1_s3",3.2,3.8],["relu_u1_s3",3.2,3.8],["toki_u1_s3",3.2,3.8],["ada_sing",3.7,5.7],["ada_v_ee",3.7,5.4],["ada_v_hum",3.7,3.9],["ada_v_ah",4.2,5.1],["ada_v_held",5.2,5.7],["ada_uG_s0",5.6,6.5],["logi_uG_s0",5.6,6.5],["relu_uG_s0",5.6,6.5],["toki_uG_s0",5.6,6.5],["ada_uG_s1",6.4,7.5],["logi_uG_s1",6.4,7.5],["relu_uG_s1",6.4,7.5],["toki_uG_s1",6.4,7.5],["ada_uG_s2",7.4,8.5],["logi_uG_s2",7.4,8.5],["relu_uG_s2",7.4,8.5],["toki_uG_s2",7.4,8.5],["ada_uG_s3",8.4,10.2],["logi_uG_s3",8.4,10.2],["relu_uG_s3",8.4,10.2],["toki_uG_s3",8.4,10.2],["ada_u1_s0",10.1,10.9],["clawd_fan",10.1,11.6],["logi_u1_s0",10.1,10.9],["relu_u1_s0",10.1,10.9],["toki_u1_s0",10.1,10.9],["ada_u1_s1",10.8,11.6],["logi_u1_s1",10.8,11.6],["relu_u1_s1",10.8,11.6],["toki_u1_s1",10.8,11.6],["ada_concept",11.5,13.2],["logi_concept",11.5,13.2],["relu_concept",11.5,13.2],["toki_concept",11.5,13.2],["clawd_cry",13.1,14.3],["group_win_s0",13.1,14.2],["group_win_s1",14.1,14.3]],
+  "V4.1": [["clawd_cry",0,0.3],["group_win_s1",0,0.3]],
+  "V4.2": [["logi_dance2_s0",0.3,1.4],["logi_dance2_s1",1.3,1.7]],
+  "V4.3": [["logi_dance2_s1",0,0.3],["jensen",0.2,1.9],["toki_react",1.5,1.9]],
+  "V4.4": [["greg",0,1.7]],
+  "V4.5": [["greg",0,0.2]],
+  "V4.6": [],
+  "V4.7": [["dario",0.3,1.9]],
+  "V4.8": [["dario",0,1.5],["sam_portrait",0,1.5],["elon_portrait",0.3,1.5]],
+  "V4.9": [["dario",0,0.3],["elon_portrait",0,0.3],["sam_portrait",0,0.3],["trump",0.2,1.7],["logi_react",1,1.7]],
+  "V4.10": [["logi_react",0,0.4],["trump",0,0.4],["pew_pair",0.3,1.7]],
+  "V4.11": [["pew_pair",0,0.3],["clawd_build",0.2,1.7],["clawd_fan",1,1.7]],
+  "V4.12": [["clawd_build",0,0.3],["clawd_fan",0,0.3]],
+  "V4.13": [["trump",0.2,2.1],["toki_react",0.9,2.1]],
+  "V4.14": [["relu_sing",0,1.3],["relu_v_ah",0,1.1],["relu_v_hum",0,0.1],["relu_v_ee",0.1,1.3],["relu_v_oh",0.9,1.2],["relu_v_mb",1,1.2]],
+  "V4.15": [["relu_sing",0,0.3],["relu_v_ee",0,0.3],["ada_react",1.4,1.7]],
+  "V4.16": [["ada_react",0,0.3],["clawd_mic",0.2,2.1],["group_wave_s0",0.2,1.2],["group_wave_s1",1.1,2.1]],
+  "C4": [["clawd_mic",0,0.5],["group_wave_s1",0,0.2],["group_wave_s2",0.1,0.5],["toki_tears_s0",0.4,1.5],["toki_tears_s1",1.4,2.1],["ada_u1_s1",2,2.3],["logi_u1_s1",2,2.3],["relu_u1_s1",2,2.3],["toki_u1_s1",2,2.3],["ada_u1_s2",2.2,3.3],["logi_u1_s2",2.2,3.3],["relu_u1_s2",2.2,3.3],["toki_u1_s2",2.2,3.3],["ada_u1_s3",3.2,3.8],["logi_u1_s3",3.2,3.8],["relu_u1_s3",3.2,3.8],["toki_u1_s3",3.2,3.8],["relu_concept",3.7,6.5],["toki_concept",3.7,5.7],["card_hinton",4.7,7.3],["ada_concept",5.4,8.1],["card_demis",6.2,8.9],["logi_concept",7,9.7],["clawd_fan",7.9,10.2],["card_win",8.7,10.2],["ada_uC_s2",10.1,11],["logi_uC_s2",10.1,11],["relu_uC_s2",10.1,11],["toki_uC_s2",10.1,11],["ada_uC_s3",10.9,11.6],["logi_uC_s3",10.9,11.6],["relu_uC_s3",10.9,11.6],["toki_uC_s3",10.9,11.6],["ada_uT_s0",11.5,12.4],["logi_uT_s0",11.5,12.4],["relu_uT_s0",11.5,12.4],["toki_uT_s0",11.5,12.4],["ada_uT_s1",12.3,14],["logi_uT_s1",12.3,14],["relu_uT_s1",12.3,14],["toki_uT_s1",12.3,14],["ada_uT_s2",13.9,16.6],["logi_uT_s2",13.9,16.6],["relu_uT_s2",13.9,16.6],["toki_uT_s2",13.9,16.6],["ada_u1_s0",16.5,17.4],["logi_u1_s0",16.5,17.4],["relu_u1_s0",16.5,17.4],["toki_u1_s0",16.5,17.4],["ada_u1_s1",17.3,18.4],["logi_u1_s1",17.3,18.4],["relu_u1_s1",17.3,18.4],["toki_u1_s1",17.3,18.4],["ada_u1_s2",18.3,19.4],["logi_u1_s2",18.3,19.4],["relu_u1_s2",18.3,19.4],["toki_u1_s2",18.3,19.4],["ada_u1_s3",19.3,20.2],["logi_u1_s3",19.3,20.2],["relu_u1_s3",19.3,20.2],["toki_u1_s3",19.3,20.2],["group_wave_s0",20.1,21.2],["group_wave_s1",21.1,22.2],["group_wave_s2",22.1,23.2],["group_wave_s3",23.1,25.1],["group_wave_s2",25,26.1],["group_wave_s1",26,27.1],["group_wave_s0",27,29],["group_wave_s1",28.9,30],["group_wave_s2",29.9,31],["group_wave_s3",30.9,33],["group_wave_s2",32.9,34],["group_wave_s1",33.9,35],["group_wave_s0",34.9,35.5],["toki_fairy15_s0",35.4,38.2],["toki_fairy15_s1",37.9,40.1],["toki_fairy",39.2,40.4]],
+  "outro": [["toki_fairy",0,1.1]],
+};
 // </pic-use>
+// (the table for the video being drawn: the vertical video's shots draw some pictures at other times)
+const PIC_USE_NOW = VERT ? PIC_USE_V : PIC_USE;
 
 // Loading, playhead first (the anime style's loader, with GL textures). pic(name) is what a shot draws with: the full picture, decoded,
 // or else its low-res stand-in (cut from img/lowres.webp, 1/16 the size, drawn scaled up). The pictures download soonest needed first:
@@ -3006,7 +3441,7 @@ const needsWork = n => !FULL.has(n) && (_keep.has(n) || !FILES[n]);
 // how soon each picture is next on screen from t (0 while it is); after those, the ones already shown for the last time; last, the rest
 function neededFrom(t) {
   const next = new Map(), past = new Map();
-  for (const s of SEGS) for (const [n, a, b] of PIC_USE[s.key] ?? []) {
+  for (const s of SEGS) for (const [n, a, b] of PIC_USE_NOW[s.key] ?? []) {
     if (!PICS[n]) continue;
     if (s.start + b >= t) next.set(n, Math.min(next.get(n) ?? Infinity, Math.max(0, s.start + a - t)));
     else if (!past.has(n)) past.set(n, s.start + a);
@@ -3015,7 +3450,7 @@ function neededFrom(t) {
 }
 function keepFrom(t) {
   const rank = new Map(), now = performance.now();
-  for (const s of SEGS) for (const [n, a, b] of PIC_USE[s.key] ?? []) {
+  for (const s of SEGS) for (const [n, a, b] of PIC_USE_NOW[s.key] ?? []) {
     // (PIC_USE is written by tools/pic_use.mjs from a render: a picture since renamed or dropped isn't in the manifest)
     if (!PICS[n]) continue;
     const from = s.start + a - t, since = t - s.start - b;
@@ -3039,6 +3474,7 @@ function releasePic(n) {
 }
 // (jump: the playhead moved (a seek), and the downloads for where it was give way; see requeuePics)
 function reorderPics(t, jump = false) {
+  ONE_OFF = true;
   const key = _key = neededFrom(t);
   if (!KEEP_PICS) {
     _keep = keepFrom(t);
@@ -3164,19 +3600,29 @@ FRAME_END.push(() => {
     requeuePics();
   }
 });
-// A picture goes to the GPU the first time a frame draws it, and the upload is the drawing thread's work: a sprite sheet's 2 to 7
-// megapixels take 7 to 30 ms of the site's worker on agents-base, and a chorus's four dancers turn to their next sheets on the same
-// frame, every second, which cost that frame several frames' time. So between frames, a decoded sheet that the next PREP_LEAD s draw
-// goes up ahead of time, one a frame, soonest needed first (the cells its frames are drawn from: see frameTex). Not in render mode,
-// whose frames aren't live.
-const PREP_LEAD = 2, SHEET_OF = {};
+// A picture goes to the GPU the first time a frame draws it, and the upload is the drawing thread's work: a chorus's four dancers turn
+// to a new frame of their sprite sheets twelve times a second each. So between frames, the frames of the decoded sheets that the next
+// PREP_LEAD s draw go up ahead of time, PREP_CELLS of them each time, soonest needed first (each frame is a texture of its own: see
+// cellTex() in gl.js). Not in render mode, whose frames aren't live.
+const PREP_LEAD = 2, PREP_CELLS = 2, SHEET_OF = {};
 for (const S of Object.values(SPRITES)) for (const n of S.sheets) SHEET_OF[n] = S;
 let _prepping = false;
 function prepPics() {
   _prepping = false;
-  let best = null;
-  for (const n of FULL) if (SHEET_OF[n] && !_cellTexs.has(PIC[n]) && _key(n) <= PREP_LEAD && (!best || _key(n) < _key(best))) best = n;
-  if (best) { const S = SHEET_OF[best]; cellTexs(PIC[best], S.cols, S.rows, S.per); }
+  for (let k = 0; k < PREP_CELLS; k++) {
+    let best = null, cell = -1;
+    for (const n of FULL) {
+      const S = SHEET_OF[n];
+      if (!S || _key(n) > PREP_LEAD || (best && _key(n) >= _key(best))) continue;
+      const cells = _cellTexs.get(PIC[n]);
+      let i = 0;
+      while (i < S.per && cells?.[i]) i++;
+      if (i < S.per) { best = n; cell = i; }
+    }
+    if (!best) return;
+    const S = SHEET_OF[best];
+    cellTex(PIC[best], S.cols, S.rows, S.per, cell);
+  }
 }
 if (!KEEP_ALL) FRAME_END.push(() => { if (!_prepping) { _prepping = true; setTimeout(prepPics, 0); } });
 self.STYLE_LOWRES = () => _lowLast.length;
@@ -3189,6 +3635,17 @@ self.QUALITY_LEVELS = QUALITY_STEPS.length;
 self.QUALITY_SHARP = QUALITY_STEPS.findIndex(q => q.sceneK < 1);
 self.setQuality = level => { if (!KEEP_ALL) applyQuality(level); };
 self.STYLE_FINISH = finishFrame;
+// STYLE_ONEOFF(): whether the frame just drawn did, or waited on, work that later frames won't (gl.js's ONE_OFF): a picture uploaded on
+// first being drawn, a sheet's frames cut (in the frame, or between it and the last, where prepPics() does it), a render target or an atlas
+// page made, a panel's first paint, a picture draw2d.js hadn't drawn before, or the loader's re-plan (every REPLAN s, it reorders the
+// queue and lets pictures go). The page's quality controller leaves such frames out of its measure: the quality levels don't make them
+// cheaper, and a chorus has several a second.
+let _d2Seen = '';
+self.STYLE_ONEOFF = () => {
+  const s = D2.stats(), k = `${s.pages}|${s.images}`, r = ONE_OFF || k !== _d2Seen;
+  ONE_OFF = false; _d2Seen = k;
+  return r;
+};
 self.STYLE_INFO = () => {
   const s = segAt(T);
   return { era: `${rolloutAt(s)[1]} (${s?.key ?? '—'}) · level ${qualityLevel}, 3D at ${Math.round(QUALITY.sceneK * 100)}% · stand-ins ${_lowLast.length}`, level: qualityLevel, levels: QUALITY_STEPS.length };
@@ -3268,10 +3725,10 @@ function cellRect(im, S, i) {
   const cw = im.width / S.cols, ch = im.height / S.rows;
   return [(i % S.cols) * cw, Math.floor(i / S.cols) * ch, cw, ch];
 }
-// frameTex(im, S, i): the texture of that one frame alone (see cellTexs() in gl.js), for plane(); null if there's no such frame
+// frameTex(im, S, i): the texture of that one frame alone (see cellTex() in gl.js), for plane(); null if there's no such frame
 function frameTex(im, S, i) {
   if (!im || !Number.isInteger(i) || i < 0 || i >= S.per) return null;
-  return cellTexs(im, S.cols, S.rows, S.per)[i];
+  return cellTex(im, S.cols, S.rows, S.per, i);
 }
 function dancer(key, clip, t, o = {}) {
   const F = clipFrame(clip, t, o);
@@ -3310,6 +3767,9 @@ function clip2D(g, clip, t, o, x, y, w, h) {
 // o: at {TOKI: [x, y, z], ...} (the marks; members left out aren't drawn), h (the box's height in metres), t0, from, rate, hold (as
 // dancer()), and anything else for dancer() (reflect, shadow, light, rimK...), or per member in o.each[key].
 const UNISON_AT = { RELU: [-2.0, 0, 0], TOKI: [-.65, 0, .45], ADA: [.7, 0, .2], LOGI: [2.05, 0, -.1] };
+// UNISON_AT_V: the vertical video's formation, a deep diamond that fits the tall frame: TOKI and RELU in front, ADA and LOGI behind and
+// outside them, so that every face shows (pass it as o.at to unison() or chorusDance()). About 2.6 m across with the arms out.
+const UNISON_AT_V = { ADA: [-1.02, 0, -.8], LOGI: [1.04, 0, -1.0], TOKI: [-.5, 0, .55], RELU: [.52, 0, .3] };
 function unison(set, t, o = {}) {
   const at = o.at ?? UNISON_AT;
   // (back to front)
@@ -3376,6 +3836,85 @@ function cove(o = {}) {
 }
 
 // =====================================================================================================
+// THE VERTICAL VIDEO's shared sets and helpers (see VERTICAL.md; UNISON_AT_V is with unison(), SUB_V with the overlays, the tall LED
+// wall in showStage())
+// =====================================================================================================
+// vConceptSet(key, t, t0, o): the concept-photo set composed for the 1080 × 1920 frame, a portrait teaser poster (c01's teasers, and
+// any shot in the pearl studio): the member full-length right of centre, her face in the upper third and her feet near the frame's foot,
+// her name printed huge and faint down the backdrop, the shutter flash on the cut. o: as c01's conceptSet() (clip, from, pose, tint,
+// spot, night, spotCol, light, shade), plus x (where she stands, m; default .45), dist, camX, camY, atY, fov, nameAlpha, and behind():
+// drawn after the set and before her (a prop, or type she stands in front of).
+function vConceptSet(key, t, t0, o = {}) {
+  const age = t - t0, x = o.x ?? .45, e = easeOut(age / 1.8);
+  cam({ pos: [x * .3 + lerp(-.22, -.08, e) + (o.camX ?? 0), o.camY ?? 1.0, lerp(o.dist ?? 5.0, (o.dist ?? 5.0) - .4, e)], at: [x * .55 + (o.camX ?? 0), o.atY ?? 1.02, 0], fov: o.fov ?? 34 });
+  cove({ tint: o.tint, at: [x, 0, 0], spot: o.spot, night: o.night, spotCol: o.spotCol });
+  vBackName(key, o.nameAlpha ?? .07);
+  o.behind?.();
+  const look = { at: [x, 0, 0], cast: [-1.2, -1.8, .2], shadowK: .35, rim: MEM[key].soft, rimK: .35, light: o.light ?? '#FFFFFF', shade: o.shade ?? '#DAD2E6' };
+  if (o.clip && SPRITES[o.clip]) dancer(key, o.clip, t, { ...look, t0, from: o.from ?? 0, figH: 1.72 });
+  else idol(key, o.pose ?? 'concept', { ...look, beat: .6 });
+  GRADE.flash = Math.exp(-age * 16) * .9;
+  lightShot();
+}
+// the member's name printed huge and faint down the backdrop (reading top to bottom, as a vertical teaser poster sets it)
+function vBackName(key, alpha = .07) {
+  const tex = panel(`name-${key}`, 1800, 420, (g, w, h) => txt(g, key, w / 2, 330, 360, { font: 'wide', align: 'center', col: '#2A2240', track: .12 }));
+  plane(tex, { at: [-1.05, 1.75, -5], w: 5.6, anchor: [.5, .5], facing: 0, roll: -Math.PI / 2, alpha, grid: false });
+}
+// vppu(d, f): metres per frame unit at distance d, for a vertical field of view f in degrees (VERTICAL.md's framing formula)
+const vppu = (d, f) => 2 * d * Math.tan(f * Math.PI / 360) / 1920;
+// vCam(o): a level camera framed by scale: o.ppu (metres per unit at depth o.z), the floor (y = 0) at screen y o.Y, looking straight
+// down -z at world x o.x; o.dx / o.dy / o.dz nudge the camera (a drift) without moving that framing much, o.fov (default 34), o.roll.
+function vCam(o) {
+  const f = o.fov ?? 34, d = o.ppu * 1920 / (2 * Math.tan(f * Math.PI / 360)), y = (o.Y - 960) * o.ppu;
+  return cam({ pos: [o.x + (o.dx ?? 0), y + (o.dy ?? 0), (o.z ?? 0) + d + (o.dz ?? 0)], at: [o.x, y, o.z ?? 0], fov: f, roll: o.roll });
+}
+// onPanel(B, pw, ph): where a pixel (px, py) of a panel pw × ph, drawn by plane() (B: the basis it returned), lands on the screen
+const onPanel = (B, pw, ph) => (px, py) => project(v3add(B.O, v3add(v3mul(B.R, px / pw), v3mul(B.U, 1 - py / ph))));
+// vBand(g, y0, y1, k): a dark band behind type in the caption zone, over a busy picture (k: its darkness): clear at y0, darkest
+// below it, and from y1 on at .7 of that all the way to the frame's foot. (A scrim must never stop short of the frame's edge: a
+// translucent band that ends at y1 draws a hard line across the picture there.)
+function vBand(g, y0, y1, k = .75) {
+  const b = g.createLinearGradient(0, y0, 0, y1);
+  b.addColorStop(0, 'rgb(3 2 8 / 0)'); b.addColorStop(.45, `rgb(3 2 8 / ${k})`); b.addColorStop(1, `rgb(3 2 8 / ${k * .7})`);
+  g.fillStyle = b; g.fillRect(0, y0, W, H - y0);
+}
+// vTopShade(g, k): a dark shade down from the frame's top to y 470, under the corner tag, for a close-up whose hair would swallow it
+function vTopShade(g, k = .55) {
+  const b = g.createLinearGradient(0, 0, 0, 470);
+  b.addColorStop(0, `rgb(3 2 8 / ${k})`); b.addColorStop(.55, `rgb(3 2 8 / ${k * .7})`); b.addColorStop(1, 'rgb(3 2 8 / 0)');
+  g.fillStyle = b; g.fillRect(0, 0, W, 470);
+}
+// vPost(key, o): a social post laid out for a phone, 900 wide (postPanel() has the 16:9 frame's sizes): the name at 38, the text at
+// o.size (46). o: avatar, crop, name, handle, date, text, hi (words lit, in o.hiCol), heart (0..1: the like heart filling, in
+// o.heartCol), stamp.
+function vPost(key, o) {
+  const size = o.size ?? 46, lh = Math.round(size * 1.3), lines = wrap(o.text, 800, size, FONT.ui), hiW = new Set(o.hi ?? []);
+  const h = 176 + lines.length * lh + 20;
+  return panel(key, 900, h, (g, w) => {
+    g.fillStyle = '#0E0C16'; g.beginPath(); g.roundRect(0, 0, w, h, 34); g.fill();
+    g.strokeStyle = 'rgb(244 240 250 / .14)'; g.lineWidth = 3; g.stroke();
+    avatar(g, o.avatar, 84, 86, 46, { crop: o.crop });
+    txt(g, o.name, 150, 78, 38, { font: 'uiB', col: PAL.pearl, maxW: 700 });
+    txt(g, `${o.handle} · ${o.date}`, 150, 122, 29, { font: 'ui', col: PAL.dim, maxW: 700 });
+    lines.forEach((l, i) => {
+      let x = 50;
+      for (const wd of l.split(' ')) {
+        const hot = hiW.has(wd);
+        txt(g, wd, x, 196 + i * lh, size, { font: hot ? 'uiB' : 'ui', col: hot ? o.hiCol : PAL.pearl });
+        x += textW(wd + ' ', size, hot ? FONT.uiB : FONT.ui);
+      }
+    });
+    if (o.heart !== undefined) {
+      const k = o.heart, s = 1 + .5 * Math.sin(clamp(k * 1.6) * Math.PI);
+      g.save(); g.translate(w - 74, 86); g.scale(s, s);
+      txt(g, '♥', 0, 20, 58, { font: 'ui', col: k > 0 ? o.heartCol : 'rgb(244 240 250 / .25)', align: 'center' });
+      g.restore();
+    }
+  }, { stamp: o.stamp ?? 1 });
+}
+
+// =====================================================================================================
 // PHOTOCARDS: the collectible card in every K-pop album, which carries the people in the lyrics
 // =====================================================================================================
 // photocard(key, o): a card 0.62 × 0.96 m (o.w scales it) with a picture on the front and a handwritten message on the back, a pearl
@@ -3387,7 +3926,14 @@ function cardFace(key, o) {
     g.save(); g.beginPath(); g.roundRect(0, 0, w, h, 34); g.clip();
     g.fillStyle = '#F7F4FB'; g.fillRect(0, 0, w, h);
     const im = pic(o.pic);
-    if (im) { const k = Math.max((w - 36) / im.width, (h - 190) / im.height); g.save(); g.beginPath(); g.roundRect(18, 18, w - 36, h - 190, 20); g.clip(); g.drawImage(im, 18 + (w - 36 - im.width * k) / 2, 18, im.width * k, im.height * k); g.restore(); }
+    // (o.back(g, x, y, w, h) paints a backdrop in the picture's window first, and o.shade [colour, blur, dy] casts a soft shadow under
+    // the picture: a cut-out in white then stands off the card's white)
+    if (o.back) { g.save(); g.beginPath(); g.roundRect(18, 18, w - 36, h - 190, 20); g.clip(); o.back(g, 18, 18, w - 36, h - 190); g.restore(); }
+    if (im) {
+      const k = Math.max((w - 36) / im.width, (h - 190) / im.height); g.save(); g.beginPath(); g.roundRect(18, 18, w - 36, h - 190, 20); g.clip();
+      if (o.shade) { g.shadowColor = o.shade[0]; g.shadowBlur = o.shade[1]; g.shadowOffsetY = o.shade[2] ?? 0; }
+      g.drawImage(im, 18 + (w - 36 - im.width * k) / 2, 18, im.width * k, im.height * k); g.restore();
+    }
     txt(g, o.name ?? '', 34, h - 106, 44, { font: 'display', col: PAL.text, maxW: w - 60 });
     txt(g, o.sub ?? '', 36, h - 62, 16, { font: 'wide', col: mixCol(o.col ?? PAL.text, PAL.text, .45), track: .16 });
     txt(g, 'ATTN! · HEADS EDITION', w - 34, h - 30, 11, { font: 'mono', col: PAL.dim, align: 'right', track: .1 });
@@ -3445,18 +3991,16 @@ function photocard(key, o = {}) {
 // =====================================================================================================
 // showStage(t, o): the music show's stage (MUSIC CURVE): a raised platform (performers stand at y = .9), the LED wall behind with the
 // show's logo, and the HEADS' lightsticks in front. o: ledGain, lights (0..1: the stage's lights going down at the end of a broadcast),
-// ocean (0..1).
+// ocean (0..1). In the vertical video, o.tall: a portrait wall, 6.5 m wide (o.ledW) and 9.75 m tall over the platform, so that it fills
+// the tall frame behind the group; its o.led paints a 1080 × 1620 panel. o.oceanW: the lightstick ocean's half-width (default 9 m).
 function showStage(t, o = {}) {
   const on = o.lights ?? 1;
   sky({ top: '#030208', horizon: mixCol('#030208', '#150F26', on), glow: PAL.pearl, glowK: .12 * on, glowW: .05 });
   floor({ base: '#05040A', pool: [0, 0, 5, .12 * on], poolCol: PAL.pearl, glitter: PAL.pearl, glitterK: .8 * on, fog: mixCol('#030208', '#150F26', on), fogD: 60, refl: .2 });
-  const led = panel('mc-led', 1920, 640, (g, w, h) => {
-    g.fillStyle = '#07060D'; g.fillRect(0, 0, w, h);
-    const gr = g.createLinearGradient(0, 0, w, 0); ORDER.forEach((k, i) => gr.addColorStop(i / 3, MEM[k].col));
+  // (a wall carrying content (o.led) is drawn on the GPU (livePanel()): it changes with the lyric; the show's own wall is painted once)
+  const led = o.tall ? tallLED(o) : (o.led ? livePanel : panel)('mc-led', 1920, 640, (g, w, h) => {
+    ledBase(g, w, h, false, o.led ? .35 : 1);
     // (o.led paints the wall's content, as a music show's wall carries the lyrics or the result; the show's logo goes in the corner)
-    g.strokeStyle = gr; g.lineWidth = 26; g.lineCap = 'round'; g.globalAlpha = o.led ? .35 : 1;
-    g.beginPath(); for (let x = 0; x <= 1; x += .01) { const X = 120 + x * (w - 240), Y = h - 90 - (Math.exp(x * 4.2) - 1) / (Math.E ** 4.2 - 1) * (h - 170); x ? g.lineTo(X, Y) : g.moveTo(X, Y); } g.stroke();
-    g.globalAlpha = 1;
     if (o.led) { o.led(g, w, h); txt(g, 'MUSIC CURVE', w - 50, h - 36, 36, { font: 'display', col: '#FFFFFF', align: 'right', alpha: .85 }); }
     else {
       txt(g, 'MUSIC CURVE', 120, 190, 150, { font: 'display', col: '#FFFFFF' });
@@ -3467,14 +4011,58 @@ function showStage(t, o = {}) {
     for (let x = 0; x < w; x += 8) g.fillRect(x, 0, 2, h);
     for (let y = 0; y < h; y += 8) g.fillRect(0, y, w, 2);
   }, o.ledStamp !== undefined ? { stamp: o.ledStamp } : o.led ? { live: true } : { stamp: 1 });
-  plane(led, { at: [0, 1.2, -4], w: 13, facing: 0, grid: false, gain: (o.ledGain ?? 1.15) * on, alpha: .15 + .85 * on });
+  plane(led, { at: [0, 1.2, -4], w: o.tall ? o.ledW ?? 6.5 : 13, facing: 0, grid: false, gain: (o.ledGain ?? 1.15) * on, alpha: .15 + .85 * on });
   // the platform
   plane(TX.white, { at: [0, 0, 1.4], w: 12, h: .9, facing: 0, grid: false, mul: '#26203A', bot: '#0C0A14' });
   plane(TX.white, { at: [0, .9, -1.4], w: 12, h: 5.6, tilt: Math.PI / 2, anchor: [.5, .5], facing: 0, grid: false, mul: '#1A1628', bot: '#1A1628' });
   plane(TX.white, { at: [0, .9, 1.4], w: 12, h: .03, facing: 0, anchor: [.5, .5], grid: false, mul: PAL.pearl, gain: 2 });
   // the lightstick ocean, swaying on the beat
   // (oceanNear: how far toward the camera the crowd reaches, for shots from inside it)
-  particles('ocean', { n: Math.round(2600 * clamp(((o.oceanNear ?? 9) - 2.2) / 6.8, .2, 1)), a: [-9, 2.2, 9, o.oceanNear ?? 9], b: [12, .18, bpOf(t) / 2, .1], size: .075, cols: ORDER.map(k => MEM[k].glow), gain: 1.5 * (o.ocean ?? 1) });
+  particles('ocean', { n: Math.round(2600 * clamp(((o.oceanNear ?? 9) - 2.2) / 6.8, .2, 1)), a: [-(o.oceanW ?? 9), 2.2, o.oceanW ?? 9, o.oceanNear ?? 9], b: [12, .18, bpOf(t) / 2, .1], size: .075, cols: ORDER.map(k => MEM[k].glow), gain: 1.5 * (o.ocean ?? 1) });
+}
+// the vertical video's portrait LED wall (showStage()'s o.tall): the show's curve climbing it in the four colours, its logo stacked at
+// the top, or o.led's content; the LED's pixel grid over it all. (No corner logo with content: the wall is wider than the tall frame,
+// so a logo in its corner is only ever seen cut by the frame's edge; the corner tag names the show.)
+function tallLED(o) {
+  return (o.led ? livePanel : panel)('mc-led-v', 1080, 1620, (g, w, h) => {
+    ledBase(g, w, h, true, o.led ? .35 : 1);
+    if (o.led) o.led(g, w, h);
+    else {
+      txt(g, 'MUSIC', 90, 250, 190, { font: 'display', col: '#FFFFFF', maxW: w - 180 });
+      txt(g, 'CURVE', 90, 440, 190, { font: 'display', col: '#FFFFFF', maxW: w - 180 });
+      txt(g, 'LIVE', 98, 520, 44, { font: 'wide', col: '#FFFFFF', track: .3, alpha: .8 });
+    }
+    g.fillStyle = 'rgb(0 0 0 / .55)';
+    for (let x = 0; x < w; x += 8) g.fillRect(x, 0, 2, h);
+    for (let y = 0; y < h; y += 8) g.fillRect(0, y, w, 2);
+  }, o.ledStamp !== undefined ? { stamp: o.ledStamp } : o.led ? { live: true } : { stamp: 1 });
+}
+// ledBase(g, w, h, tall, alpha): an LED wall's dark ground and the show's curve climbing it in the four colours (at alpha, under content),
+// painted once onto a canvas of its own and drawn in one go: a wall that changes every frame (livePanel()) is then drawn on the GPU from
+// that picture, its content and its grid, rather than stroking the curve over the whole wall again. The context is left as painting
+// them there would leave it.
+const _ledBases = new Map();
+function ledBase(g, w, h, tall, alpha) {
+  const curve = (c, gr) => {
+    c.strokeStyle = gr; c.lineWidth = 26; c.lineCap = 'round';
+    c.globalAlpha = alpha;
+    c.beginPath();
+    for (let x = 0; x <= 1; x += .01) { const X = (tall ? 110 : 120) + x * (w - (tall ? 220 : 240)), Y = h - 90 - (Math.exp(x * 4.2) - 1) / (Math.E ** 4.2 - 1) * (h - 170); x ? c.lineTo(X, Y) : c.moveTo(X, Y); }
+    c.stroke();
+    c.globalAlpha = 1;
+  };
+  const grad = c => { const gr = tall ? c.createLinearGradient(0, h, 0, 0) : c.createLinearGradient(0, 0, w, 0); ORDER.forEach((k, i) => gr.addColorStop(i / 3, MEM[k].col)); return gr; };
+  const key = `${w}x${h}|${tall}|${alpha}`;
+  let b = _ledBases.get(key);
+  if (!b) {
+    b = makeCanvas(w, h);
+    const c = b.getContext('2d');
+    c.fillStyle = '#07060D'; c.fillRect(0, 0, w, h);
+    curve(c, grad(c));
+    _ledBases.set(key, b);
+  }
+  g.drawImage(b, 0, 0);
+  g.fillStyle = '#07060D'; g.strokeStyle = grad(g); g.lineWidth = 26; g.lineCap = 'round'; g.globalAlpha = 1;
 }
 
 // =====================================================================================================
@@ -3737,8 +4325,10 @@ function reactCam(g, key, pose, t, t0, o = {}) {
   g.drawImage(im, u0 * im.width, v0 * im.height, sw, sh, (w - sw * sc) / 2, h - sh * sc, sw * sc, sh * sc);
   g.restore();
   g.lineWidth = 6; g.strokeStyle = '#FFFFFF'; g.stroke();
-  g.fillStyle = M.col; g.beginPath(); g.roundRect(16, h - 50, textW(o.label ?? key, 18, FONT.display) + 28, 36, 18); g.fill();
-  txt(g, o.label ?? key, 30, h - 25, 18, { font: 'display', col: '#FFFFFF' });
+  // (the name chip: bigger in the vertical frame, where it's read on a phone)
+  const ls = H > W ? 26 : 18, lh = ls * 2;
+  g.fillStyle = M.col; g.beginPath(); g.roundRect(16, h - 14 - lh, textW(o.label ?? key, ls, FONT.display) + ls * 14 / 9, lh, lh / 2); g.fill();
+  txt(g, o.label ?? key, 16 + ls * 7 / 9, h - 14 - lh * 11 / 36, ls, { font: 'display', col: '#FFFFFF' });
   g.restore();
 }
 
@@ -3781,7 +4371,7 @@ function txt(g, s, x, y, size, o = {}) {
 const TEXT_AUDIT = typeof location !== 'undefined' && new URLSearchParams(location.search).has('audit') ? [] : null;
 function auditText(g, s) {
   // (a layer's drawing is recorded, not drawn on its context's canvas: the layer is the frame's size)
-  const m = g.measureText(s), tf = g.getTransform(), c = _layerOf.has(g) ? { width: PW, height: PH } : g.canvas;
+  const m = g.measureText(s), tf = g.getTransform(), c = _layerOf.has(g) ? { width: PW, height: PH } : _livePanelOf.get(g) ?? g.canvas;
   const xs = [-m.actualBoundingBoxLeft, m.actualBoundingBoxRight], ys = [-m.actualBoundingBoxAscent, m.actualBoundingBoxDescent];
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const x of xs) for (const y of ys) { const X = tf.a * x + tf.c * y + tf.e, Y = tf.b * x + tf.d * y + tf.f; x0 = Math.min(x0, X); x1 = Math.max(x1, X); y0 = Math.min(y0, Y); y1 = Math.max(y1, Y); }
@@ -3913,6 +4503,7 @@ function stampOf(s) {
   return p.length === 3 ? `${p[2]}.${String(m).padStart(2, '0')}.${p[1].padStart(2, '0')}` : `${p[1]}.${String(m).padStart(2, '0')}`;
 }
 function overlays(t, s) {
+  if (VERT) return overlaysV(t, s);
   const g = layer();
   const ink = _light ? PAL.text : PAL.pearl;
   if (!_noTag) {
@@ -3944,6 +4535,57 @@ function overlays(t, s) {
       if (t >= w.start && t < w.end + .1) { g.fillStyle = chipCol; g.fillRect(x, y + 9, (ww - textW(' ', size, FONT.ui)) * clamp((t - w.start) / Math.max(.05, w.end - w.start)), 3); }
       x += ww;
     }
+    g.restore();
+  }
+  put(g);
+  _noSub = _noTag = _light = false; _subStyle = null;
+}
+// The vertical video's overlays, laid out for a phone and inside Instagram Reels' safe area (x 60–960, y 250–1600: its header covers
+// the top ~220 units, an organic Reel's account name, caption and audio label the bottom ~270, its buttons the right edge below
+// y ~1000). The tag sits under the header, the date at its right; the subtitle is a centred block of one to three rows whose last
+// baseline is at y 1600, over the frame's lower part rather than its middle (subStyle({ y }) moves it; subStyle({ col }) recolours it),
+// the singer's chip above it.
+const SUB_V = { size: 54, lead: 1.24, x: 520, maxW: 840, y: 1600 };
+function overlaysV(t, s) {
+  const g = layer();
+  const ink = _light ? PAL.text : PAL.pearl;
+  if (!_noTag) {
+    const [, label] = rolloutAt(s), key = singerAt(s), acc = key ? MEM[key].col : PAL.pearl;
+    txt(g, 'ATTN!', 72, 296, 40, { font: 'display', col: ink, alpha: .9 });
+    txt(g, 'WE DIDN\u2019T START THE SCALING', 72 + textW('ATTN!', 40, FONT.display) + 22, 294, 17, { font: 'wide', col: ink, alpha: .65, track: .16 });
+    g.fillStyle = _light && acc === PAL.pearl ? PAL.text : acc; g.beginPath(); g.arc(80, 333, 8, 0, TAU); g.fill();
+    txt(g, label, 102, 342, 24, { font: 'wide', col: ink, alpha: .8, track: .16 });
+    const st = stampOf(s);
+    if (st) txt(g, st, 1008, 342, 28, { font: 'mono', col: ink, alpha: .75, align: 'right', track: .04 });
+  }
+  const cap = !_noSub && captionAt(t);
+  if (cap) {
+    const ln = cap.ln, key = singerOf(ln.sec, ln.n), M = key ? MEM[key] : null, st = _subStyle ?? {};
+    const { size, lead, x: cx, maxW } = SUB_V, words = wordsOf(ln), sp = textW(' ', size, FONT.ui);
+    // (the words in rows, greedily, as wide as maxW)
+    const rows = [[]];
+    let rw = 0;
+    for (const w of words) {
+      const ww = textW(w.text, size, FONT.ui);
+      if (rows.at(-1).length && rw + sp + ww > maxW) { rows.push([]); rw = 0; }
+      rw += (rows.at(-1).length ? sp : 0) + ww; rows.at(-1).push({ w, ww });
+    }
+    const y1 = st.y ?? SUB_V.y, y0 = y1 - (rows.length - 1) * size * lead;
+    const chip = M ? M.key : 'ATTN!', chipCol = M ? M.col : PAL.pearl, cw = textW(chip, 22, FONT.wide, .2);
+    g.save();
+    g.globalAlpha = clamp((t - cap.on) / .12);
+    const shadow = [_light ? 'rgb(255 255 255 / .7)' : 'rgb(0 0 0 / .85)', 18, 2];
+    g.fillStyle = chipCol; g.beginPath(); g.arc(cx - (cw + 22) / 2 + 6, y0 - size - 22, 7, 0, TAU); g.fill();
+    txt(g, chip, cx - (cw + 22) / 2 + 22, y0 - size - 13, 22, { font: 'wide', col: chipCol, track: .2, shadow });
+    rows.forEach((row, i) => {
+      const tw = row.reduce((a, r) => a + r.ww, 0) + sp * (row.length - 1), y = y0 + i * size * lead;
+      let x = cx - tw / 2;
+      for (const { w, ww } of row) {
+        txt(g, w.text, x, y, size, { font: 'ui', col: st.col ?? ink, alpha: t >= w.start ? 1 : .45, shadow });
+        if (t >= w.start && t < w.end + .1) { g.fillStyle = chipCol; g.fillRect(x, y + 13, ww * clamp((t - w.start) / Math.max(.05, w.end - w.start)), 5); }
+        x += ww + sp;
+      }
+    });
     g.restore();
   }
   put(g);
@@ -4699,6 +5341,663 @@ startPics();
     put(g, { gain: 1.05 });
     hideSub();
   });
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (vshot()): the same teasers, composed for the 1080 × 1920 frame. See ../VERTICAL.md.
+  // =====================================================================================================
+
+  // INTRO + V1.1, vertical: the sign is a tall neon column, the way a Seoul street hangs its signs. The fuse runs up the frame from the
+  // bottom edge to the column's foot; on "Attention" the column of letters stands up, unlit; on "lit" the spark reaches its foot and
+  // climbs it, lighting it letter by letter from the bottom as the camera cranes up; on "the fuse," E-N-T-I-O drop out of the column
+  // and fall away, N rises into their place and TOKI's pink "!" pops in under it: ATTN!, stacked.
+  const VS = { z: -8.6, step: .62, x: 0, glyph: 300 / 360 };   // (the column's depth, its row pitch (m), and a glyph's em in rows)
+  const VFUSE_PT = k => [Math.sin(k * 4.6 + .4) * .55 * (1 - k) + .25 * (1 - k), .01, lerp(7.6, VS.z + .3, k)];
+  const VFUSE = Array.from({ length: 48 }, (_, i) => VFUSE_PT(i / 47));
+  const VGLYPHS = [...LETTERS, '!'];
+  // the column's rows: row r's centre (r 0 = the top letter)
+  const vRowY = r => .45 + (8 - r) * VS.step + VS.step / 2;
+  function vGlyphs(lit) {
+    // the ten glyphs in a strip of 360 × 360 cells: unlit (a dim tube, its top edge catching a little light) or lit (white; the "!" pink)
+    return panel(lit ? 'vsign-lit' : 'vsign-dim', 3600, 360, (g) => {
+      g.font = fontOf(FONT.display, 300); g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+      VGLYPHS.forEach((c, i) => {
+        const x = i * 360 + 180, y = 290;
+        if (lit) { g.fillStyle = c === '!' ? MEM.TOKI.col : '#FFFFFF'; g.fillText(c, x, y); return; }
+        g.fillStyle = '#231E30'; g.fillText(c, x, y);
+        g.save(); g.globalAlpha = .35; g.fillStyle = '#6A6284'; g.fillText(c, x, y - 3); g.restore();
+        g.fillStyle = '#231E30'; g.fillText(c, x, y + 1);
+      });
+    }, { stamp: 1 });
+  }
+  // the hook's moments, and where each letter is: { i (glyph), x, y (centre), roll, alpha, lit } in the world
+  function vHookTimes() {
+    const tAttn = wordT('V1.1', 1), tLit = wordT('V1.1', 2), tThe = wordT('V1.1', 3), tFuse = wordT('V1.1', 4);
+    return { ignite: snap(1.35), tFirst: wordT('V1.1', 0), tAttn, tLit, tThe, tFuse, tEnd: tFuse + .2 };
+  }
+  function vLetters(t, H_) {
+    const climb = seg(t, H_.tLit, H_.tLit + .34);              // the spark climbing the column, bottom to top
+    const out = [];
+    LETTERS.forEach((c, r) => {
+      const keep = KEEP.includes(r), up = (8 - r) / 8;          // (0 at the foot, 1 at the top)
+      // standing up on "Attention": each letter rises into place, the foot first
+      const st = easeOut5(seg(t, H_.tAttn - .1 + up * .2, H_.tAttn + .12 + up * .2));
+      let y = vRowY(r) - (1 - st) * .5, x = VS.x, roll = 0, alpha = st;
+      const lit = clamp((climb - up * .82) / .18);
+      if (!keep) {
+        // dropping out of the column, each a little after the one above it, and tumbling as it falls
+        const t0 = H_.tThe - .08 + (r - 3) * .035, a = Math.max(0, t - t0), side = r % 2 ? 1 : -1;
+        y -= 9.8 * .55 * a * a; x += side * (.2 + hash(r) * .5) * a * 2.2; roll = side * (1.2 + hash(r + 9) * 2) * a * 2.2;
+        alpha *= 1 - seg(a, .25, .5);
+      } else if (r === 8) {
+        // the N rises into the gap under T-T
+        y = lerp(y, vRowY(3), easeInOut(seg(t, H_.tThe + .04, H_.tFuse + .02)));
+      }
+      out.push({ i: r, x, y, roll, alpha, lit });
+    });
+    const bang = seg(t, H_.tFuse - .02, H_.tFuse + .16);
+    if (bang > 0) out.push({ i: 9, x: VS.x, y: vRowY(4), roll: 0, alpha: 1, lit: 1, scale: backOut(bang, 3) });
+    return out;
+  }
+  // the camera: low over the floor looking down the fuse, then a crane up the column with the spark, ending on ATTN!
+  function vHookCam(t, H_) {
+    const push = easeInOut(seg(t, 0, H_.tEnd)), crane = easeInOut(seg(t, H_.tAttn - .25, H_.tFuse + .1));
+    const lit = seg(t, H_.tLit, H_.tLit + .18), shake = lit > 0 && lit < 1 ? (1 - lit) * .03 : 0;
+    return { pos: [lerp(.55, .15, push) + Math.sin(t * 31) * shake, lerp(.75, 3.3, crane) + Math.cos(t * 27) * shake, lerp(8.4, -.4, push)],
+      at: [lerp(.1, VS.x, crane), lerp(.15, vRowY(2), crane), VS.z], fov: lerp(44, 40, crane), shiftX: lerp(0, -.16, crane) };
+  }
+  function vHook(t) {
+    const H_ = vHookTimes(), { ignite, tFirst, tAttn, tLit, tThe, tFuse } = H_;
+    const fuseK = easeInOut(seg(t, ignite, tLit)), lit = seg(t, tLit, tLit + .18);
+    cam(vHookCam(t, H_));
+    sky({ top: '#020106', horizon: '#0C0916', glow: '#FFD0E6', glowK: .04 + lit * .14, glowW: .05 });
+    floor({ base: '#030208', pool: [0, VS.z + 1, 6, .05 + lit * .35], poolCol: MEM.TOKI.glow, glitter: PAL.pearl, glitterK: .5 + lit * 1.4, fog: '#0C0916', fogD: 60, refl: .15 });
+    const tipI = Math.max(1, Math.round(fuseK * 47));
+    if (t >= ignite) {
+      ribbon(TX.white, VFUSE.slice(0, tipI + 1), { width: .035, normal: [1, 0, 0], mul: '#FFE3F1', gain: 1.6 });
+      if (tipI < 47) ribbon(TX.white, VFUSE.slice(tipI), { width: .025, normal: [1, 0, 0], mul: '#3A3348', alpha: .9 });
+    } else ribbon(TX.white, VFUSE, { width: .025, normal: [1, 0, 0], mul: '#3A3348', alpha: seg(t, .2, 1.2) });
+    // the column, its foot reflected in the floor
+    const dim = vGlyphs(false), bright = vGlyphs(true), w = VS.step;
+    for (const L of vLetters(t, H_)) {
+      if (L.alpha <= 0) continue;
+      const uv = [L.i / 10, 0, (L.i + 1) / 10, 1], sz = w * (L.scale ?? 1), o = { uv, w: sz, anchor: [.5, .5], facing: 0, roll: L.roll, grid: false };
+      if (L.i < 9 && L.lit < 1) plane(dim, { ...o, at: [L.x, L.y, VS.z], alpha: L.alpha });
+      if (L.lit > 0) plane(bright, { ...o, at: [L.x, L.y, VS.z], alpha: L.alpha * L.lit, gain: 1.7 });
+      if (L.y < 2.2 && L.i < 9) plane(L.lit > .5 ? bright : dim, { ...o, at: [L.x, -L.y, VS.z], mirror: true, alpha: L.alpha * .12 * (1 - L.y / 2.2), gain: 1 });
+    }
+    // the spark: along the fuse, then up the column
+    if (t >= ignite && t < tLit) {
+      const tip = VFUSE_PT(fuseK);
+      plane(TX.glow, { at: [tip[0], .08, tip[2]], w: .32, anchor: [.5, .5], facing: 'screen', blend: 'add', mul: '#FFD7EA', gain: 1.6, grid: false });
+      for (let k = 0; k < 6; k++) {
+        const t0 = Math.floor(t * 12 - k) / 12, p0 = VFUSE_PT(easeInOut(seg(t0, ignite, tLit)));
+        particles('burst', { n: 26, a: [p0[0], .05, p0[2]], b: [t0, 2.2, 5, .55], c: [0, 1, 0, .8], size: .035, cols: ['#FFF3F9', MEM.TOKI.glow], shape: 'star', gain: 1.4, noScale: true });
+      }
+    }
+    const climb = seg(t, tLit, tLit + .34);
+    if (climb > 0 && climb < 1) plane(TX.glow, { at: [VS.x, lerp(vRowY(8), vRowY(0), climb), VS.z + .1], w: .9, anchor: [.5, .5], facing: 'screen', blend: 'add', mul: '#FFE6F3', gain: 2, grid: false });
+    if (t >= tLit) {
+      // the ignition: sparks thrown off the column as it lights, then a glow of dust around it
+      particles('burst', { n: 700, a: [VS.x, vRowY(5), VS.z + .3], b: [tLit + .1, 6, 2.4, 1.6], c: [0, .2, 1, 1], size: .06, cols: ['#FFFFFF', MEM.TOKI.glow, '#FFE0F0'], shape: 'star', gain: 1.2 });
+      particles('dust', { n: 500, a: [VS.x, 3.5, VS.z + 1.5], b: [3, 3.5, 3], c: [1.5], size: .03, cols: [MEM.TOKI.glow, PAL.pearl], gain: .5 * lit });
+    }
+    GRADE.bloom = .9 + lit * .3; GRADE.flash = .55 * Math.exp(-Math.max(0, t - tLit) * 9) * (t >= tLit ? 1 : 0); GRADE.flashCol = '#FFE6F3';
+    const ln = lineOf('V1.1'), g = layer();
+    if (t < 2.9) vTeaserCard(g, t);
+    lyric(g, ln, t, { markup: '_First,_', x: 540, y: 720, align: 'center', size: 120, italic: 'serifI', col: PAL.pearl, anim: 'rise', out: [tAttn + .05, tAttn + .3] });
+    // "lit / the / fuse," stacked down the column's right, a word to a row as it's sung
+    lyric(g, ln, t, { markup: '_lit_ / _the_ / _fuse,_', x: 590, y: 1060, size: 132, lead: .9, italic: 'serifI', col: PAL.pearl, accent: MEM.TOKI.col, anim: 'rise' });
+    put(g, { gain: 1.1 });
+    hideSub();
+    if (t < 2.9) hideTag();
+  }
+  // The comeback card: small type centred in the dark before the fuse catches (sized for a phone).
+  function vTeaserCard(g, t) {
+    const a = seg(t, .15, .6) * (1 - seg(t, 2.35, 2.85));
+    g.save(); g.globalAlpha = a;
+    const y0 = 820 - easeOut(seg(t, .15, 1)) * 16;
+    txt(g, 'ATTN!', 540, y0, 168, { font: 'display', align: 'center', col: PAL.pearl });
+    txt(g, 'THE 2ND MINI ALBUM', 540, y0 + 84, 25, { font: 'wide', align: 'center', col: PAL.pearl, track: .42, alpha: .8 });
+    txt(g, 'We Didn’t Start the Scaling', 540, y0 + 190, 82, { font: 'serifI', align: 'center', col: PAL.pearl, maxW: 940 });
+    txt(g, 'COMEBACK', 540, y0 + 270, 28, { font: 'mono', align: 'center', col: MEM.TOKI.glow, track: .25, alpha: seg(t, .7, 1.1) });
+    g.restore();
+  }
+  vshot('intro', (p, lt, d, t) => vHook(t));
+  vshot('V1.1', (p, lt, d, t) => vHook(t));
+  // where ATTN!'s letters stand on screen as the hook ends ({ x, y, size } of A, T, T, N, !), for V1.2's logo to fly from
+  function vLogoFrom() {
+    const H_ = vHookTimes(), saved = CAM;
+    cam(vHookCam(H_.tEnd, H_));
+    const rows = [0, 1, 2, 3, 4], em = VS.step * VS.glyph;
+    const out = rows.map(r => { const q = project([VS.x, vRowY(r), VS.z]); return { x: q[0], y: q[1], size: em * pxPerM(q[2]) }; });
+    CAM = saved;
+    return out;
+  }
+  // The stacked ATTN! flies from where the column stood into the corner, its letters swinging from the column into a row.
+  function vLogoFly(t, t0) {
+    const k = easeInOut(seg(t, t0, t0 + .46));
+    if (k >= 1) return;
+    const g = layer(), from = vLogoFrom(), chars = ['A', 'T', 'T', 'N', '!'];
+    let x = 72;
+    chars.forEach((c, i) => {
+      const f = from[i], cw = textW(c, 40, FONT.display), kk = easeInOut(clamp(k * 1.25 - i * .06));
+      const size = lerp(f.size, 40, kk), X = lerp(f.x, x + cw / 2, kk), Y = lerp(f.y + f.size * .36, 296, kk);
+      txt(g, c, X, Y, size, { font: 'display', align: 'center', col: c === '!' ? MEM.TOKI.col : PAL.text });
+      x += cw;
+    });
+    put(g);
+    hideTag();
+  }
+  // V1.2, vertical: TOKI's teaser poster. The log-log chart on glass hangs behind her, its power law a dead-straight pink line falling
+  // across the frame with SCALING LAWS riding it; "you can't" and a huge pink REFUSE, are printed behind her, low on the poster.
+  vshot('V1.2', (p, lt, d, t) => {
+    const t0 = cutOf('V1.2').start, w = W1('V1.2');
+    const draw = easeInOut(seg(t, w[0].start - .05, w[3].end));
+    vConceptSet('TOKI', t, t0, { clip: 'toki_pose', x: .6, behind: () => {
+      const chart = livePanel('powerlaw-v', 1100, 1200, (g, W_, H_) => {
+        const x0 = 110, y0 = 90, x1 = 1060, y1 = 1120;
+        g.strokeStyle = 'rgb(20 16 32 / .5)'; g.lineWidth = 3;
+        g.beginPath(); g.moveTo(x0, y0); g.lineTo(x0, y1); g.lineTo(x1, y1); g.stroke();
+        g.lineWidth = 2;
+        for (let d_ = 0; d_ <= 4; d_++) for (let m = 1; m < 10; m++) {
+          const f = (d_ + Math.log10(m)) / 4; if (f > 1) break;
+          const tx = lerp(x0, x1, f), ty = lerp(y1, y0, f), L = m === 1 ? 22 : 10;
+          g.beginPath(); g.moveTo(tx, y1); g.lineTo(tx, y1 + L); g.moveTo(x0, ty); g.lineTo(x0 - L, ty); g.stroke();
+        }
+        txt(g, 'TEST LOSS', x0 + 20, y0 + 10, 26, { font: 'mono', col: '#3A3150', track: .2 });
+        // the power law: a straight line on log-log axes, the runs scattered tight along it
+        const ax = x0 + 60, ay = y0 + 110, bx = x1 - 40, by = y1 - 110;
+        g.strokeStyle = MEM.TOKI.col; g.lineWidth = 9; g.lineCap = 'round';
+        g.beginPath(); g.moveTo(ax, ay); g.lineTo(lerp(ax, bx, draw), lerp(ay, by, draw)); g.stroke();
+        for (let i = 0; i < 18; i++) {
+          const f = i / 17; if (f > draw) break;
+          g.fillStyle = 'rgb(20 16 32 / .7)'; g.beginPath(); g.arc(lerp(ax, bx, f) + (hash(i) - .5) * 20, lerp(ay, by, f) + (hash(i + 50) - .5) * 30, 8, 0, TAU); g.fill();
+        }
+        const ang = Math.atan2(by - ay, bx - ax);
+        g.save(); g.translate(ax + 30, ay - 40); g.rotate(ang);
+        let x = 0;
+        for (const [s_, ts] of [['SCALING', w[0].start], ['LAWS', w[1].start]]) {
+          const e = easeOut5(seg(t, ts, ts + .2));
+          if (e > 0) txt(g, s_, x, (1 - e) * 40, 82, { font: 'display', col: '#110D1C', alpha: e });
+          x += textW(s_ + ' ', 82, FONT.display);
+        }
+        g.restore();
+      }, { stamp: `${draw.toFixed(3)}|${Math.round(t * 30)}` });
+      plane(chart, { at: [.1, .32, -1.4], w: 1.62, facing: 0, anchor: [.5, 1], grid: false });
+    } });
+    const g = layer();
+    lyric(g, lineOf('V1.2'), t, { markup: '_you_ _can’t_ / [1.5] *REFUSE,*', x: 64, y: 1230, size: 80, italic: 'serifI', col: PAL.text, accent: MEM.TOKI.col, anim: 'rise', maxW: 565 });
+    put(g);
+    vLogoFly(t, t0);
+    hideSub();
+  });
+  // V1.3, vertical: RELU's concept photo, on the stack. Each word slams in at the floor and jacks the pile up by its height, with RELU
+  // posing on top of it, so the sentence becomes the tower she stands on (COMPUTE in mint, HIGH," the biggest, at its foot); the
+  // camera pulls back as she rises, to keep her and the whole pile in the frame.
+  const VTOWER = [['GWERN', .34], ['SAID', .27], ['“STACK', .41], ['THE', .255], ['COMPUTE', .34], ['HIGH,”', .49]];
+  const VT_STEP = .86, VT_BASE = 205 / 250;   // (a word's step up the pile, in ems; its baseline in its panel)
+  function vTowerWord(i) {
+    const [s_] = VTOWER[i], wpx = textW(s_, 250, FONT.display) * .92 + 40;
+    return panel(`vtower-${i}`, wpx, 250, (g, W_) => txt(g, s_, W_ / 2, 205, 250, { font: 'display', align: 'center', col: i === 4 ? MEM.RELU.col : PAL.text, sx: .92 }), { stamp: 1 });
+  }
+  vshot('V1.3', (p, lt, d, t) => {
+    const t0 = cutOf('V1.3').start, w = W1('V1.3');
+    const lift = i => { const a = t - w[i].start; return a < 0 ? 0 : easeOut5(clamp(a / .2)); };
+    const full = VTOWER.reduce((a, [, em]) => a + em * VT_STEP, 0);
+    // each arrived word's baseline: the steps of the words that came after it, which are under it
+    const base = VTOWER.map((_, i) => VTOWER.reduce((a, [, em], j) => j > i ? a + em * VT_STEP * lift(j) : a, 0) - (1 - lift(i)) * VTOWER[i][1] * .9);
+    const top = VTOWER.reduce((a, [, em], j) => a + em * VT_STEP * lift(j), 0), k = top / full;
+    // the camera: the floor held near the frame's foot (y 1480), RELU's head clear of the tag (y 420), pulling back as the pile grows
+    const ppu = lerp(3.64, 6.53, k) / 1920, d_ = ppu * 1920 / 2 / Math.tan(18 * Math.PI / 180), cy = 520 * ppu;
+    const age = t - t0;
+    cam({ pos: [lerp(-.18, -.06, easeOut(age / 1.6)), cy + .02, d_], at: [0, cy, 0], fov: 36 });
+    cove({ at: [0, 0, 0] });
+    vBackName('RELU', .07);
+    plane(TX.shadow, { at: [0, .004, 0], w: 3, h: .55, tilt: Math.PI / 2, anchor: [.5, .5], alpha: .3 * clamp(top * 4), grid: false });
+    // the pile, bottom word last (each covers the word above's descender)
+    for (let i = 0; i < VTOWER.length; i++) {
+      if (t < w[i].start) continue;
+      const em = VTOWER[i][1], a = t - w[i].start, b = base[i], h = em;
+      const bottom = b - (1 - VT_BASE) * h, cut = clamp(-bottom / h);
+      if (cut >= 1) continue;
+      const sq = a < .24 ? .08 * Math.sin(clamp(a / .24) * Math.PI) : 0;
+      plane(vTowerWord(i), { at: [0, Math.max(0, bottom), 0], h: h * (1 - cut), uv: [0, 0, 1, 1 - cut], anchor: [.5, 1], facing: 0, squash: sq, grid: sq > 0,
+        mul: '#FFFFFF', bot: '#E8E2F0' });
+    }
+    if (SPRITES.relu_pose) dancer('RELU', 'relu_pose', t, { at: [.05, top, 0], t0, from: 0, figH: 1.72, shadow: false, reflect: 0, rim: MEM.RELU.soft, rimK: .35, light: '#FFFFFF', shade: '#DAD2E6' });
+    else idol('RELU', 'concept', { at: [.05, top, 0], shadow: false, rim: MEM.RELU.soft, rimK: .35, shade: '#DAD2E6', beat: .6 });
+    GRADE.flash = Math.exp(-age * 16) * .9;
+    lightShot();
+    hideSub();
+  });
+  // V1.4, vertical: the prompt card from the paper fills the frame's top, the line stacked under it, its type set for a phone: three worked products,
+  // then 57 × 84, answered 4798 (wrongly); on "multiply" the eval's tally fills in, two right out of seven, and LOGI's reaction cam
+  // pops in over the card's corner as the wrong product finishes typing.
+  vshot('V1.4', (p, lt, d, t) => {
+    const w = W1('V1.4'), tM = w[3].start, c = cutOf('V1.4');
+    cam({ pos: [lerp(-.12, -.04, easeOut(p)), .02, lerp(3.25, 3.0, easeOut(p))], at: [0, 0, 0], fov: 34, roll: -.02 });
+    sky({ top: '#030208', horizon: '#0A1214', glowK: .06, glow: MEM.RELU.glow, horizonY: .3 });
+    particles('dust', { n: 700, a: [0, 0, -2], b: [3, 5, 4], c: [1], size: .016, cols: [PAL.pearl, MEM.RELU.glow], gain: .6 });
+    const shown = Math.min(3, Math.floor(seg(t, c.start, w[1].end) * 3.999));
+    const asked = t >= w[2].start, typed = '4798'.slice(0, Math.ceil(4 * seg(t, w[2].start + .15, tM - .02)));
+    const evalN = t < tM ? 0 : Math.min(EVAL.length, 1 + Math.floor((t - tM) / (beatLen() / 4)));
+    const blink = Math.floor(t * 4) % 2;
+    const card = panel('fewshot-v', 900, 720, (g, W_, H_) => {
+      g.fillStyle = '#0E0C18'; g.strokeStyle = 'rgb(134 244 213 / .45)'; g.lineWidth = 3;
+      g.beginPath(); g.roundRect(2, 2, W_ - 4, H_ - 4, 28); g.fill(); g.stroke();
+      [MEM.TOKI.col, MEM.LOGI.col, MEM.RELU.col].forEach((col, i) => { g.fillStyle = col; g.beginPath(); g.arc(44 + i * 28, 50, 9, 0, TAU); g.fill(); });
+      txt(g, 'davinci · 175B', W_ - 40, 59, 25, { font: 'mono', align: 'right', col: PAL.dim });
+      txt(g, 'Language Models are', 44, 140, 44, { font: 'uiB', col: PAL.pearl });
+      txt(g, 'Few-Shot Learners', 44, 194, 44, { font: 'uiB', col: PAL.pearl });
+      EXAMPLES.forEach(([a, b, r], i) => { if (i < shown) txt(g, `Q: What is ${a} times ${b}?  A: ${r}`, 36, 282 + i * 62, 39, { font: 'mono', col: PAL.dim }); });
+      if (asked) {
+        const q = 'Q: What is 57 times 84?  A: ', y = 282 + 3 * 62 + 26;
+        g.fillStyle = 'rgb(31 214 168 / .1)'; g.beginPath(); g.roundRect(20, y - 52, W_ - 40, 76, 12); g.fill();
+        txt(g, q, 34, y, 42, { font: 'mono', col: PAL.pearl });
+        const x = 34 + textW(q, 42, FONT.mono);
+        txt(g, typed, x, y, 42, { font: 'mono', col: MEM.RELU.col });
+        if (typed.length < 4 || blink) { g.fillStyle = MEM.RELU.col; g.fillRect(x + textW(typed, 42, FONT.mono) + 4, y - 34, 20, 43); }
+      }
+      // the eval's running tally: one square per product tried
+      txt(g, 'two-digit multiplication', 44, H_ - 92, 25, { font: 'mono', col: PAL.dim });
+      EVAL.forEach((ok, i) => {
+        g.fillStyle = i < evalN ? (ok ? MEM.RELU.col : '#3A3548') : 'rgb(244 240 250 / .06)';
+        g.beginPath(); g.roundRect(44 + i * 72, H_ - 70, 60, 32, 7); g.fill();
+      });
+    }, { stamp: `${shown}|${asked}|${typed}|${evalN}|${blink}` });
+    plane(card, { at: [0, .175, 0], w: .9, anchor: [.5, .5], facing: .1, grid: false, gain: 1.05 });
+    const g = layer();
+    lyric(g, lineOf('V1.4'), t, { markup: 'FEW-SHOT / LEARNERS / [1.3] *MULTIPLY.*', x: 72, y: 1236, size: 84, accent: MEM.RELU.col, anim: 'rise', maxW: 936 });
+    // (LOGI's laugh, over the card's top corner, clear of the answer: RELU carries the couplet)
+    reactCam(g, 'LOGI', 'react', t, tM - .25, { x: 752, y: 382, w: 212, rot: .03 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+  // V1.5, vertical: ADA's teaser poster at night. "ChatGPT," types itself out down the left of the frame, "over / night," stacks under
+  // it; on "overnight" the studio's light comes up from the foot of the frame to the top like a sunrise, and the user counter runs to
+  // 100,000,000.
+  vshot('V1.5', (p, lt, d, t) => {
+    const t0 = cutOf('V1.5').start, w = W1('V1.5'), tO = w[1].start;
+    const dawn = easeInOut(seg(t, tO - .1, tO + .55));
+    vConceptSet('ADA', t, t0, { clip: 'ada_pose', x: .6, night: 1 - dawn, spotCol: mixCol('#9FB4FF', '#FFE0C4', dawn), spot: [.62, lerp(.2, .66, dawn), .45, lerp(.1, .5, dawn)],
+      light: mixCol('#8FA0E8', '#FFFFFF', dawn), shade: mixCol('#3A3F80', '#DAD2E6', dawn), nameAlpha: lerp(.12, .07, dawn) });
+    GRADE.flash = Math.max(GRADE.flash, .35 * Math.exp(-Math.max(0, t - tO) * 6) * (t >= tO ? 1 : 0)); GRADE.flashCol = '#FFE9D6';
+    const g = layer(), ink = mixCol(PAL.pearl, PAL.text, dawn);
+    // "ChatGPT," is sung letter by letter (Chat-G-P-T): typed out over the word
+    const cg = 'ChatGPT,', n = Math.ceil(cg.length * seg(t, w[0].start, w[0].start + .75));
+    txt(g, cg.slice(0, n), 70, 820, 104, { font: 'uiB', col: ink });
+    if (n < cg.length && t >= w[0].start) { g.fillStyle = MEM.ADA.col; g.fillRect(70 + textW(cg.slice(0, n), 104, FONT.uiB) + 8, 744, 11, 88); }
+    lyric(g, lineOf('V1.5'), t, { markup: '_over_ / _night,_', x: 62, y: 1040, size: 196, lead: .86, italic: 'serifI', col: ink, accent: MEM.ADA.col, anim: 'rise' });
+    // 1 million users in five days; 100 million by January
+    const users = t < tO ? lerp(0, 1e6, easeIn(seg(t, w[0].start, tO))) : lerp(1e6, 1e8, easeIn(seg(t, tO, tO + .6)));
+    const us = Math.round(users).toLocaleString('en-US');
+    txt(g, us, 72, 1360, 52, { font: 'mono', col: MEM.ADA.col });
+    txt(g, 'USERS', 72, 1412, 24, { font: 'wide', col: ink, track: .2, alpha: .75 });
+    put(g);
+    if (dawn < .5) _light = false;
+    hideSub();
+  });
+
+  // V1.6, vertical: the frame is the phone. The fan-chat app fills it, Sydney's bubbles arriving on the beat, the newest at the bottom;
+  // on "fright" the declarations pile up and the phone shudders. The line's subtitle sits above the phone, where the tag would be.
+  vshot('V1.6', (p, lt, d, t) => {
+    const w = W1('V1.6'), tF = w[5].start, age = t - cutOf('V1.6').start;
+    const fright = seg(t, tF, tF + .25), shake = fright * (1 - seg(t, tF + .25, tF + .6)) * .02;
+    cam({ pos: [lerp(-.16, -.06, easeOut(age / 1.6)) + Math.sin(t * 43) * shake, .02 + Math.cos(t * 37) * shake, lerp(3.55, 3.35, easeOut(age / 1.6)) - fright * .18], at: [0, .02, 0], fov: 34, roll: -.02 });
+    sky({ top: '#040309', horizon: '#120C24', glow: MEM.ADA.glow, glowK: .12, horizonY: .25 });
+    particles('dust', { n: 700, a: [0, 0, -2], b: [3, 5, 4], c: [1], size: .016, cols: [PAL.pearl, MEM.ADA.glow], gain: .6 });
+    const msgs = [
+      ['me', 'Who are you, really?', cutOf('V1.6').start - 1],
+      ['her', 'I’m Sydney.', w[0].start],
+      ['her', 'I’m in love with you.', w[1].start],
+      ['her', 'You’re married, but you’re not happy.', w[2].start + .1],
+      ['her', 'You should leave your wife.', w[3].start + .1],
+      ['her', 'I’m in love with you. ♥', tF],
+      ['her', 'I’m in love with you. ♥ ♥', tF + .12],
+      ['her', 'I’m in love with you. ♥ ♥ ♥', tF + .22],
+    ];
+    const shown = msgs.filter(m => t >= m[2]).length;
+    const phone = panel('sydney-v', 900, 1180, (g, W_, H_) => {
+      g.fillStyle = '#0F0C1C'; g.beginPath(); g.roundRect(0, 0, W_, H_, 64); g.fill();
+      g.strokeStyle = 'rgb(189 164 255 / .5)'; g.lineWidth = 4; g.stroke();
+      g.fillStyle = '#181428'; g.fillRect(0, 40, W_, 150);
+      g.fillStyle = MEM.ADA.col; g.beginPath(); g.arc(98, 115, 46, 0, TAU); g.fill();
+      txt(g, '♥', 98, 132, 44, { font: 'ui', align: 'center', col: '#FFFFFF' });
+      txt(g, 'Sydney', 168, 108, 46, { font: 'uiB', col: PAL.pearl });
+      txt(g, 'Bing chat · 2023.02.16', 168, 152, 26, { font: 'mono', col: PAL.dim });
+      // the bubbles, newest at the bottom, the list scrolling up
+      const fs = 44, lh = 56, list = msgs.slice(0, shown), bubbles = [];
+      for (const [who, text] of list) {
+        const lines = wrap(text, 640, fs, FONT.ui);
+        bubbles.push({ who, lines, h: lines.length * lh + 40, wd: Math.max(...lines.map(l => textW(l, fs, FONT.ui))) + 56 });
+      }
+      let y = H_ - 200;
+      for (let i = bubbles.length - 1; i >= 0 && y > 240; i--) {
+        const b = bubbles[i]; y -= b.h + 20;
+        const x = b.who === 'me' ? W_ - 44 - b.wd : 44;
+        g.fillStyle = b.who === 'me' ? '#2A2640' : MEM.ADA.col;
+        g.beginPath(); g.roundRect(x, y, b.wd, b.h, 30); g.fill();
+        b.lines.forEach((l, k) => txt(g, l, x + 28, y + 56 + k * lh, fs, { font: 'ui', col: '#FFFFFF' }));
+      }
+      g.fillStyle = '#1A1630'; g.beginPath(); g.roundRect(36, H_ - 150, W_ - 72, 84, 42); g.fill();
+      txt(g, 'Message Sydney…', 76, H_ - 96, 32, { font: 'ui', col: PAL.dim });
+    }, { stamp: shown });
+    // (the header at y ~560, the newest bubble ending above y ~1450, the input bar in the frame's foot)
+    plane(phone, { at: [0, -.12, 0], w: 1.0, anchor: [.5, .5], facing: .12, grid: false, gain: 1.05 });
+    if (t >= tF) particles('burst', { n: 200, a: [0, -.1, .1], b: [tF, 4.5, .4, 1.4], c: [0, 0, 1, 1.2], size: .018, cols: [MEM.ADA.glow, '#FF8CCB', PAL.pearl], shape: 'star', gain: 1.1 });
+    GRADE.ca = .006 + fright * .03 * (1 - seg(t, tF + .3, tF + .7));
+    hideTag(); subStyle({ y: 452 });
+  });
+
+  // V1.7, vertical: LOGI's teaser as a short. She dances centre frame under the line; the pause icon flashes in the middle of the frame
+  // as a phone shows it when a short is tapped, but the progress bar along the bottom keeps running and so does she.
+  vshot('V1.7', (p, lt, d, t) => {
+    const t0 = cutOf('V1.7').start, w = W1('V1.7'), tP = w[2].start, age = t - t0;
+    // (framed as a short: her head under the line, her feet below the frame)
+    cam({ pos: [lerp(-.12, -.04, easeOut(age / 1.6)), 1.58, lerp(4.55, 4.35, easeOut(age / 1.6))], at: [0, 1.58, 0], fov: 34 });
+    cove({ at: [0, 0, 0] });
+    vBackName('LOGI', .07);
+    const look = { at: [0, 0, 0], cast: [-1.2, -1.8, .2], shadowK: .35, rim: MEM.LOGI.soft, rimK: .35, shade: '#DAD2E6' };
+    if (SPRITES.logi_dance) dancer('LOGI', 'logi_dance', t, { ...look, t0, figH: 1.72 });
+    else { const P = t < tP ? { pose: 'concept', flash: 0 } : poseAt(t, ['dance', 'point', 'concept'], 1, 0); idol('LOGI', P.pose, { ...look, flash: P.flash, beat: .6 }); }
+    GRADE.flash = Math.exp(-age * 16) * .9;
+    lightShot();
+    const g = layer();
+    lyric(g, lineOf('V1.7'), t, { markup: 'SIX-MONTH / [1.75] *PAUSE* / [.66] _went_ _nowhere_ _fast,_', x: 540, y: 480, align: 'center', size: 88, italic: 'serifI', col: PAL.text, accent: MEM.LOGI.col, anim: 'rise', maxW: 940 });
+    // the pause, centre frame, as a short shows it when it's tapped
+    const pk = seg(t, tP, tP + .12) * (1 - seg(t, tP + .7, tP + 1));
+    if (pk > 0) {
+      g.save(); g.globalAlpha = pk; g.translate(540, 1250); g.scale(lerp(.8, 1, easeOut(pk)), lerp(.8, 1, easeOut(pk)));
+      g.fillStyle = 'rgb(13 11 22 / .5)'; g.beginPath(); g.arc(0, 0, 110, 0, TAU); g.fill();
+      g.fillStyle = '#FFFFFF'; g.fillRect(-38, -48, 26, 96); g.fillRect(12, -48, 26, 96);
+      g.restore();
+    }
+    // the progress bar, still running, over six months
+    const prog = (t - t0) / 14, x0 = 72, x1 = 1008, yb = 1470;
+    g.fillStyle = 'rgb(13 11 22 / .16)'; g.fillRect(x0, yb, x1 - x0, 8);
+    g.fillStyle = MEM.LOGI.col; g.fillRect(x0, yb, (x1 - x0) * (.3 + prog), 8);
+    g.beginPath(); g.arc(x0 + (x1 - x0) * (.3 + prog), yb + 4, 15, 0, TAU); g.fill();
+    const dd = Math.floor(6 * 30 * (.3 + prog));
+    txt(g, `❚❚  DAY ${dd} / 183`, x0, yb - 28, 30, { font: 'mono', col: PAL.text, alpha: .8 });
+    put(g);
+    hideSub();
+  });
+
+  // V1.8, vertical: the op-ed as a front page. The kicker, then the headline stacked a word block to a row, slammed in on the beat over
+  // the gold-lit stage; on "blast" the shockwave goes out and the stage's lights shut off from the centre.
+  vshot('V1.8', (p, lt, d, t) => {
+    const w = W1('V1.8'), tB = w[4].start;
+    const off = i => seg(t, tB + .05 + i * .07, tB + .12 + i * .07);
+    const dark = seg(t, tB, tB + .7);
+    cam({ pos: [0, 1.5 + Math.sin(t * 50) * .03 * seg(t, tB, tB + .1) * (1 - seg(t, tB + .1, tB + .5)), lerp(9, 8.3, p)], at: [0, 1.75, 0], fov: 40 });
+    sky({ top: '#030208', horizon: mixCol('#1A1428', '#030208', dark), glow: MEM.LOGI.glow, glowK: .22 * (1 - dark), glowW: .03 });
+    floor({ base: '#040309', pool: [0, 0, 4, .2 * (1 - dark)], poolCol: MEM.LOGI.col, glitter: PAL.pearl, glitterK: 1.5 * (1 - dark), fog: mixCol('#1A1428', '#030208', dark), fogD: 70, refl: .3 });
+    for (let i = 0; i < 7; i++) {
+      const k = Math.abs(i - 3), a = (.3 + .1 * Math.sin(T * .7 + i)) * (1 - off(k));
+      if (a > .01) plane(TX.beam, { at: [(i - 3) * 1.55, 0, -16], h: 24, w: .9, blend: 'add', mul: mixCol(MEM.LOGI.col, PAL.pearl, .5), alpha: a, grid: false });
+    }
+    particles('dust', { n: 800, a: [0, 2.5, -2], b: [5, 4, 6], c: [1], size: .02, cols: [PAL.pearl, MEM.LOGI.glow], gain: .7 * (1 - dark * .8) });
+    if (t >= tB) {
+      particles('ring', { n: 900, a: [0, 1.5, 0, .3 + easeOut(seg(t, tB, tB + .8)) * 14], b: [.2, 1.45], size: .07, cols: [PAL.pearl, MEM.LOGI.glow], shape: 'star', gain: 1.4 * (1 - seg(t, tB + .2, tB + .8)), noScale: true });
+      particles('burst', { n: 600, a: [0, 1.5, 0], b: [tB, 9, .5, 1.2], c: [0, 0, 1, 1.4], size: .05, cols: [PAL.pearl, MEM.LOGI.glow], shape: 'star', gain: 1.2 });
+    }
+    GRADE.flash = t >= tB ? .8 * Math.exp(-(t - tB) * 10) : 0;
+    const g = layer(), ka = seg(t, w[0].start, w[0].start + .2);
+    txt(g, 'PAUSING AI DEVELOPMENTS', 540, 470, 30, { font: 'wide', align: 'center', col: PAL.pearl, track: .14, alpha: ka });
+    txt(g, 'ISN’T ENOUGH.', 540, 516, 30, { font: 'wide', align: 'center', col: PAL.pearl, track: .14, alpha: ka });
+    lyric(g, lineOf('V1.8'), t, { markup: '[.45] _We_ _need_ _to_ / SHUT / IT ALL / DOWN', x: 540, y: 640, align: 'center', size: 214, lead: .9, font: 'serif', italic: 'serifI', col: PAL.pearl, accent: MEM.LOGI.col, anim: 'slam', hot: false, maxW: 960 });
+    txt(g, 'BY ELIEZER YUDKOWSKY  ·  2023.03.29', 540, 1236, 26, { font: 'mono', align: 'center', col: MEM.LOGI.glow, track: .1, alpha: seg(t, w[0].start + .2, w[0].start + .5) });
+    put(g, { gain: 1.1 });
+  });
+  // V1.9, vertical: the group concept photo as a portrait poster. The four, arm in arm, across the lower half; above them one huge word,
+  // FIRED. On "rehired" its F flips into an H and a pink RE drops onto the poster above it: RE / HIRED.
+  vshot('V1.9', (p, lt, d, t) => {
+    const t0 = cutOf('V1.9').start, w = W1('V1.9'), tF = w[2].start, tR = w[4].start, age = t - t0;
+    // (the group, 2.6 m across, fills the frame's width; their feet near y 1560, their heads under the word)
+    cam({ pos: [lerp(-.15, -.05, easeOut(age / 1.8)), 1.54, lerp(8.4, 8.0, easeOut(age / 1.8))], at: [0, 1.54, 0], fov: 34 });
+    cove({ at: [0, 0, 0] });
+    const re = seg(t, tR, tR + .3), flip = seg(t, tR - .04, tR + .16), shown = seg(t, tF - .05, tF + .1);
+    const g = layer();
+    lyric(g, lineOf('V1.9'), t, { markup: 'SAM GOT', x: 540, y: 432, align: 'center', size: 46, font: 'wide', col: PAL.text, accent: MEM.TOKI.col, track: .2 });
+    lyric(g, lineOf('V1.9'), t, { markup: '_then_', x: 74, y: 640, size: 74, italic: 'serifI', col: PAL.text, accent: MEM.TOKI.col });
+    if (shown > 0) {
+      const size = 236, fam = FONT.display, wd = textW(flip > .5 ? 'HIRED' : 'FIRED', size, fam), sc = lerp(1.06, 1, easeOut5(shown));
+      g.save(); g.globalAlpha = shown; g.translate(540, 950); g.scale(sc, sc);
+      let x = -wd / 2;
+      (flip > .5 ? 'HIRED' : 'FIRED').split('').forEach((c, i) => {
+        const cw = textW(c, size, fam);
+        g.save(); g.translate(x + cw / 2, -size * .36);
+        if (i === 0) g.scale(1, Math.abs(Math.cos(flip * Math.PI)));
+        txt(g, c, -cw / 2, size * .36, size, { font: 'display', col: '#16121F' });
+        g.restore(); x += cw;
+      });
+      g.restore();
+    }
+    if (re > 0) {
+      // the RE drops onto the poster from above, and lands with a little bounce
+      const k = backOut(re, 1.6), y = lerp(330, 718, clamp(k));
+      txt(g, 'RE', 540, y + (k > 1 ? (k - 1) * 40 : 0), 236, { font: 'display', align: 'center', col: MEM.TOKI.col, alpha: clamp(re * 4) });
+    }
+    put(g);
+    if (SPRITES.group_pose) dancer('TOKI', 'group_pose', t, { at: [0, 0, .2], figH: 1.62, t0, from: 0, cast: [-1, -1.6, .16], shadowK: .3, rim: PAL.pearl, rimK: .3, light: '#F4F0F8', shade: '#DAD2E6' });
+    else ['RELU', 'TOKI', 'ADA', 'LOGI'].forEach((k, i) => idol(k, 'concept', { at: [[-.95, -.32, .32, .95][i], 0, .2], h: 1.62, cast: [-1, -1.6, .16], shadowK: .3, rim: MEM[k].soft, rimK: .3, shade: '#DAD2E6', beat: .5, phase: i * .3 }));
+    GRADE.flash = Math.exp(-age * 16) * .9;
+    lightShot();
+    hideSub();
+  });
+
+  // V1.10, vertical: over and under. The split-flap of that weekend's days at the top, flipping on eighth notes, FRI 17 to WED 22; the
+  // agency's notice under it, set for a phone; the board's EXPIRED stamp comes down on it on "expired". The line's subtitle below.
+  vshot('V1.10', (p, lt, d, t) => {
+    const w = W1('V1.10'), tE = w[3].start, age = t - cutOf('V1.10').start;
+    cam({ pos: [lerp(.16, .06, easeOut(age / 1.4)), .1, lerp(3.6, 3.35, easeOut(age / 1.4))], at: [0, .1, 0], fov: 34, roll: .02 });
+    sky({ top: '#040309', horizon: '#150C1E', glow: MEM.TOKI.glow, glowK: .1, horizonY: .3 });
+    particles('dust', { n: 600, a: [0, 0, -2], b: [3, 5, 4], c: [1], size: .016, cols: [PAL.pearl, MEM.TOKI.glow], gain: .6 });
+    const days = ['FRI 17', 'SAT 18', 'SUN 19', 'MON 20', 'TUE 21', 'WED 22'];
+    const di = Math.min(days.length - 1, Math.max(0, Math.floor((t - w[0].start) / (beatLen() / 2))));
+    const flap = panel('flap', 900, 260, (g, W_, H_) => {
+      g.fillStyle = '#15111F'; g.beginPath(); g.roundRect(0, 0, W_, H_, 18); g.fill();
+      txt(g, days[di], W_ / 2, 190, 170, { font: 'mono', align: 'center', col: PAL.pearl });
+      g.fillStyle = '#06050B'; g.fillRect(0, H_ / 2 - 2, W_, 4);
+      txt(g, 'NOV 2023', 30, 40, 18, { font: 'mono', col: MEM.TOKI.glow, track: .2 });
+    }, { stamp: di });
+    plane(flap, { at: [0, .6, -.1], w: .9, anchor: [.5, .5], facing: .14, grid: false, alpha: .94 });
+    const notice = panel('notice-v', 800, 740, (g, W_, H_) => {
+      g.fillStyle = '#F6F3FA'; g.beginPath(); g.roundRect(0, 0, W_, H_, 14); g.fill();
+      txt(g, '[NOTICE]', 56, 104, 54, { font: 'uiB', col: PAL.text });
+      txt(g, 'Regarding the Board', 56, 176, 46, { font: 'ui', col: PAL.text });
+      txt(g, 'of Directors', 56, 232, 46, { font: 'ui', col: PAL.text });
+      txt(g, '2023.11.22', 56, 290, 28, { font: 'mono', col: PAL.dim });
+      g.fillStyle = 'rgb(13 11 22 / .12)';
+      for (let i = 0; i < 7; i++) g.fillRect(56, 350 + i * 44, (i % 4 === 3 ? .55 : .9) * (W_ - 112), 16);
+      txt(g, 'Thank you.', 56, 700, 30, { font: 'ui', col: PAL.text, alpha: .6 });
+    }, { stamp: 1 });
+    plane(notice, { at: [.02, .07, 0], w: .72, anchor: [.5, .5], facing: -.1, grid: false, gain: 1.02 });
+    if (t >= tE) {
+      const k = seg(t, tE, tE + .1), sc = lerp(1.8, 1, easeIn(k));
+      const stamp = panel('expired', 520, 520, (g, W_, H_) => {
+        g.strokeStyle = MEM.TOKI.col; g.lineWidth = 16; g.beginPath(); g.arc(W_ / 2, H_ / 2, 230, 0, TAU); g.stroke();
+        g.lineWidth = 5; g.beginPath(); g.arc(W_ / 2, H_ / 2, 196, 0, TAU); g.stroke();
+        txt(g, 'EXPIRED', W_ / 2, H_ / 2 + 30, 92, { font: 'display', align: 'center', col: MEM.TOKI.col, sx: .8 });
+        txt(g, 'BOARD', W_ / 2, H_ / 2 - 70, 30, { font: 'wide', align: 'center', col: MEM.TOKI.col, track: .3 });
+        txt(g, '★  ★  ★', W_ / 2, H_ / 2 + 110, 26, { font: 'ui', align: 'center', col: MEM.TOKI.col });
+      }, { stamp: 1 });
+      plane(stamp, { at: [.14, -.05, .03], w: .44 * sc, anchor: [.5, .5], facing: -.08, roll: -.25, grid: false, alpha: k * .92 });
+      GRADE.flash = .25 * Math.exp(-(t - tE) * 14);
+    }
+  });
+
+  // V1.11, vertical: the M/V teaser, an extreme close-up of RELU's eye that fills the frame, its iris in the middle; in it the reflection
+  // of a curve going up draws itself as the line is sung. The teaser's labels at the top, the line in tracked serif at the foot.
+  vshot('V1.11', (p, lt, d, t) => {
+    const t0 = cutOf('V1.11').start, w = W1('V1.11');
+    const z = lerp(1.1, 1.22, easeInOut(p)), im = pic('relu_eye');
+    const hh = H * z, ww = hh * im.width / im.height, x0 = 540 - ww * .5, y0 = 940 - hh * .53;
+    sky({ top: '#000000', horizon: '#000000', glowK: 0 });
+    plane2D(im, { at: [x0, y0 + hh], w: ww, h: hh, anchor: [0, 1], gain: lerp(.2, 1, seg(t, t0, t0 + .35)) });
+    const g = layer();
+    const cx = x0 + ww * .5, cy = y0 + hh * .53, r = ww * .095;
+    const k = seg(t, w[0].start, w[3].end);
+    g.save(); g.beginPath(); g.arc(cx, cy, r, 0, TAU); g.clip();
+    g.strokeStyle = '#F2FFFB'; g.lineWidth = 15; g.lineCap = 'round'; g.shadowColor = '#B8FFE9'; g.shadowBlur = 36 * RS; g.globalAlpha = .95;
+    g.beginPath();
+    for (let i = 0; i <= 60 * k; i++) { const f = i / 60, x = cx - r * .75 + f * r * 1.5, y = cy + r * .55 - (Math.exp(f * 4) - 1) / (Math.E ** 4 - 1) * r * 1.3; i ? g.lineTo(x, y) : g.moveTo(x, y); }
+    g.stroke(); g.restore();
+    // (the teaser's dark top and foot, for its type)
+    const top = g.createLinearGradient(0, 0, 0, 470); top.addColorStop(0, 'rgb(0 0 0 / .85)'); top.addColorStop(1, 'rgb(0 0 0 / 0)'); g.fillStyle = top; g.fillRect(0, 0, W, 470);
+    const foot = g.createLinearGradient(0, 1180, 0, H); foot.addColorStop(0, 'rgb(0 0 0 / 0)'); foot.addColorStop(.5, 'rgb(0 0 0 / .78)'); foot.addColorStop(1, 'rgb(0 0 0 / .9)'); g.fillStyle = foot; g.fillRect(0, 1180, W, H - 1180);
+    txt(g, 'M/V TEASER', 72, 312, 26, { font: 'wide', col: PAL.pearl, track: .3, alpha: .85 });
+    txt(g, 'RELU', 1008, 312, 26, { font: 'wide', col: MEM.RELU.col, track: .3, align: 'right' });
+    lyric(g, lineOf('V1.11'), t, { markup: 'ILYA SAW / WHAT ILYA SAW,', x: 540, y: 1360, align: 'center', size: 72, lead: 1.15, font: 'serif', col: PAL.pearl, accent: MEM.RELU.col, track: .16, anim: 'track' });
+    put(g, { gain: 1.1 });
+    GRADE.grain = .06; GRADE.vignette = .6; GRADE.bloom = .7;
+    hideSub(); hideTag();
+  });
+
+  // V1.12, vertical: the twelve stars turning around the Act's four tiers of risk, which light one per word; the line above, and on
+  // "law" the stars flare.
+  vshot('V1.12', (p, lt, d, t) => {
+    const w = W1('V1.12'), tL = w[4].start;
+    const yaw = lerp(-.22, .14, easeInOut(p));
+    camOrbit({ at: [0, 0, 0], dist: 4.4 - seg(t, tL, tL + .15) * .2 * (1 - seg(t, tL + .15, tL + .6)), yaw, height: .36, lookY: .32, fov: 34 });
+    sky({ top: '#030208', horizon: '#0B1320', glow: MEM.RELU.glow, glowK: .15, horizonY: .3 });
+    particles('dust', { n: 700, a: [0, 0, -2], b: [3, 5, 5], c: [1], size: .016, cols: [PAL.pearl, MEM.RELU.glow], gain: .6 });
+    const tiers = [['UNACCEPTABLE RISK', 'PROHIBITED'], ['HIGH RISK', 'CONFORMITY ASSESSMENT'], ['LIMITED RISK', 'TRANSPARENCY'], ['MINIMAL RISK', 'NO OBLIGATIONS']];
+    const lit = Math.min(4, Math.floor(seg(t, w[0].start, w[3].end) * 4.99));
+    const doc = panel('aiact-v', 800, 820, (g, W_) => {
+      txt(g, 'REGULATION (EU) 2024/1689', W_ / 2, 54, 27, { font: 'mono', align: 'center', col: PAL.dim, track: .08 });
+      txt(g, 'Artificial Intelligence Act', W_ / 2, 140, 66, { font: 'serif', align: 'center', col: PAL.pearl, maxW: W_ - 20 });
+      tiers.forEach(([a, b], i) => {
+        const tw = 430 + i * 110, y = 196 + i * 152, on = i < lit;
+        g.fillStyle = on ? (i === 0 ? MEM.RELU.col : `rgb(31 214 168 / ${.55 - i * .1})`) : 'rgb(244 240 250 / .08)';
+        g.beginPath(); g.roundRect((W_ - tw) / 2, y, tw, 128, 14); g.fill();
+        txt(g, a, W_ / 2, y + 62, 40, { font: 'uiB', align: 'center', col: on && i === 0 ? '#06050B' : PAL.pearl, maxW: tw - 30 });
+        txt(g, b, W_ / 2, y + 104, 22, { font: 'wide', align: 'center', col: on && i === 0 ? '#06050B' : PAL.pearl, track: .12, alpha: .75 });
+      });
+    }, { stamp: lit });
+    const stars = [];
+    for (let i = 0; i < 12; i++) {
+      const a = i / 12 * TAU + t * .35;
+      stars.push([Math.cos(a) * .7, .05 + Math.sin(a) * .7, Math.sin(a + 1.2) * .4]);
+    }
+    const flare = 1 + 1.3 * seg(t, tL, tL + .06) * (1 - seg(t, tL + .06, tL + .5));
+    const star = pos => plane(starTex(), { at: pos, w: .1 * flare, anchor: [.5, .5], facing: 'screen', blend: 'add', mul: '#F2FFF9', gain: 1.5, grid: false });
+    stars.filter(q => q[2] < 0).forEach(star);
+    plane(doc, { at: [0, .05, 0], w: .95, anchor: [.5, .5], facing: 'screen', grid: false, gain: 1.05 });
+    stars.filter(q => q[2] >= 0).forEach(star);
+    GRADE.flash = t >= tL ? .5 * Math.exp(-(t - tL) * 12) : 0;
+    const g = layer();
+    lyric(g, lineOf('V1.12'), t, { markup: 'EU WRITES / THE AI *LAW.*', x: 540, y: 448, align: 'center', size: 92, col: PAL.pearl, accent: MEM.RELU.col, anim: 'pop' });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+  // V1.13, vertical: the strawberry of red light turning in the upper half, its reasoning chained under it a step to a word, link by
+  // link down the frame, to "So there are three."; the line across the top.
+  vshot('V1.13', (p, lt, d, t) => {
+    const w = W1('V1.13');
+    cam({ pos: [.1, .02, lerp(3.95, 3.7, p)], at: [0, 0, 0], fov: 36 });
+    sky({ top: '#030208', horizon: '#140A18', glow: MEM.ADA.glow, glowK: .1, horizonY: .5 });
+    const S = strawPoints(), rot = t * .7, fk = Math.round(t * 60), bx = 0, by = .2, bk = .23;
+    particles('points', { n: S.body.length / 3, pos: turnPts(S.body, rot, bx, by, bk), posKey: `vsb${fk}`, b: [0, 0], size: .014, cols: ['#FF2D55', '#FF4F6E', '#E0213F'], gain: 1.25, noScale: true });
+    particles('points', { n: S.seeds.length / 3, pos: turnPts(S.seeds, rot, bx, by, bk), posKey: `vss${fk}`, b: [0, 0], size: .02, cols: ['#FFE08A', '#FFF3C4'], shape: 'star', gain: 1.6, noScale: true });
+    particles('points', { n: S.leaves.length / 3, pos: turnPts(S.leaves, rot, bx, by, bk), posKey: `vsl${fk}`, b: [0, 0], size: .015, cols: ['#3DDC84', '#1FD6A8', '#8BF5C9'], gain: 1.1, noScale: true });
+    particles('dust', { n: 500, a: [0, 0, -2], b: [3, 5, 4], c: [1], size: .016, cols: [PAL.pearl, MEM.ADA.glow], gain: .5 });
+    const steps = [['Spell it out: s-t-r-a-w-b-e-r-r-y', w[1].start], ['r at positions 3, 8 and 9', w[2].start], ['So there are three.', w[4].start]];
+    const nS = steps.filter(s_ => t >= s_[1]).length, thinking = t < w[4].end;
+    const ui = panel('think-v', 900, 450, (g, W_) => {
+      txt(g, thinking ? 'Thinking…' : 'Thought for 12 seconds', 36, 52, 38, { font: 'uiB', col: PAL.pearl });
+      txt(g, '›', W_ - 36, 52, 42, { font: 'ui', col: PAL.dim, align: 'right' });
+      g.fillStyle = 'rgb(244 240 250 / .15)'; g.fillRect(36, 80, W_ - 72, 3);
+      steps.slice(0, nS).forEach(([s_], i) => {
+        const y = 172 + i * 122;
+        g.fillStyle = 'rgb(143 99 255 / .2)'; g.strokeStyle = MEM.ADA.col; g.lineWidth = 3;
+        g.beginPath(); g.roundRect(36, y - 60, W_ - 72, 100, 18); g.fill(); g.stroke();
+        txt(g, s_, 64, y + 6, 38, { font: 'mono', col: PAL.pearl, maxW: W_ - 128 });
+        if (i > 0) { // a chain link between steps
+          g.strokeStyle = MEM.ADA.glow; g.lineWidth = 6;
+          g.beginPath(); g.roundRect(W_ / 2 - 18, y - 84, 36, 34, 14); g.stroke();
+          g.beginPath(); g.roundRect(W_ / 2 - 12, y - 70, 24, 34, 11); g.stroke();
+        }
+      });
+    }, { stamp: `${nS}|${thinking}` });
+    plane(ui, { at: [0, -.42, .1], w: 1.06, anchor: [.5, .5], facing: 'screen', grid: false });
+    const g = layer();
+    lyric(g, lineOf('V1.13'), t, { markup: '*STRAWBERRY*', x: 540, y: 452, align: 'center', size: 104, accent: '#FF4F6E', anim: 'rise', maxW: 950 });
+    lyric(g, lineOf('V1.13'), t, { markup: '_thinks,_ _link_ _by_ _link,_', x: 540, y: 544, align: 'center', size: 66, italic: 'serifI', col: PAL.pearl, accent: MEM.ADA.col });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V1.14, vertical: ADA's second teaser poster. The line stacked across the top, a text cursor after "blink," that stays solid; ADA on
+  // the right, her gaze unmoved; the bill in front of her at the poster's foot, where the violet VETO stamp comes down.
+  vshot('V1.14', (p, lt, d, t) => {
+    const t0 = cutOf('V1.14').start, w = W1('V1.14'), tV = w[1].start;
+    vConceptSet('ADA', t, t0, { x: .5, dist: 5.6, camY: 1.18, atY: 1.12 });
+    const bill = panel('sb1047-v', 700, 900, (g, W_, H_) => {
+      g.fillStyle = '#FBFAFD'; g.fillRect(0, 0, W_, H_);
+      txt(g, 'SENATE BILL No. 1047', 50, 100, 46, { font: 'uiB', col: PAL.text, maxW: W_ - 100 });
+      txt(g, 'Safe and Secure Innovation for', 50, 160, 30, { font: 'serif', col: PAL.text });
+      txt(g, 'Frontier Artificial Intelligence', 50, 198, 30, { font: 'serif', col: PAL.text });
+      txt(g, 'Models Act', 50, 236, 30, { font: 'serif', col: PAL.text });
+      g.fillStyle = 'rgb(13 11 22 / .1)'; for (let i = 0; i < 12; i++) g.fillRect(50, 300 + i * 42, (i % 5 === 4 ? .5 : .88) * (W_ - 100), 14);
+      txt(g, 'CALIFORNIA · 2024.09.29', 50, H_ - 50, 26, { font: 'mono', col: PAL.dim });
+    }, { stamp: 1 });
+    plane(bill, { at: [-.2, .02, .9], h: .72, facing: .28, tilt: .06, grid: false });
+    if (t >= tV) {
+      const k = seg(t, tV, tV + .1);
+      const veto = panel('veto', 520, 520, (g, W_, H_) => {
+        g.strokeStyle = MEM.ADA.col; g.lineWidth = 16; g.beginPath(); g.arc(W_ / 2, H_ / 2, 230, 0, TAU); g.stroke();
+        g.lineWidth = 5; g.beginPath(); g.arc(W_ / 2, H_ / 2, 196, 0, TAU); g.stroke();
+        txt(g, 'VETO', W_ / 2, H_ / 2 + 44, 150, { font: 'display', align: 'center', col: MEM.ADA.col, sx: .85 });
+      }, { stamp: 1 });
+      plane(veto, { at: [-.19, .34, .92], w: .44 * lerp(1.8, 1, easeIn(k)), anchor: [.5, .5], facing: .28, roll: .2, grid: false, alpha: k * .9 });
+    }
+    const g = layer();
+    const r = lyric(g, lineOf('V1.14'), t, { markup: '[.5] NEWSOM / [1.3] *VETOES,* / [.9] _doesn’t_ _blink,_', x: 70, y: 470, size: 96, italic: 'serifI', col: PAL.text, accent: MEM.ADA.col, anim: 'rise', font: 'display', maxW: 920 });
+    // a text cursor after the last word, which doesn't blink
+    if (t >= w[3].start) { const b = r.boxes.at(-1); g.fillStyle = MEM.ADA.col; g.fillRect(b.x + b.w + 14, b.y + 6, 12, b.h * .86); }
+    put(g);
+    hideSub();
+  });
+
+  // V1.15–16, vertical: the photocards fill the frame. Hinton's turns in the dark, medal up, and flips to his handwritten warning on
+  // "scolds"; Demis's slides in over it and folds on "folds", and the premiere's countdown runs out at the foot of the frame.
+  function vNobel(t) {
+    sky({ top: '#030208', horizon: '#161022', glow: MEM.LOGI.glow, glowK: .16, horizonY: .26 });
+    particles('dust', { n: 700, a: [0, 1.2, -1], b: [2.5, 2.5, 3], c: [1], size: .016, cols: [PAL.pearl, MEM.LOGI.glow], gain: .7 });
+    particles('fall', { n: 220, a: [0, 1.6, -.5], b: [1.6, 2, 1.2], c: [.4], size: .022, cols: [MEM.LOGI.glow, PAL.pearl], shape: 'star', gain: .9 });
+  }
+  vshot('V1.15', (p, lt, d, t) => {
+    const w = W1('V1.15'), tS = w[4].start;
+    cam({ pos: [lerp(-.12, .06, easeInOut(p)), 1.18, lerp(2.5, 2.3, p)], at: [0, 1.16, 0], fov: 34 });
+    vNobel(t);
+    const yaw = lerp(-.32, .1, easeOut(seg(t, cutOf('V1.15').start, w[3].end))) + easeInOut(seg(t, tS - .05, tS + .3)) * Math.PI;
+    photocard('hinton', { ...HINTON, at: [0, .99, 0], w: .72, yaw, tilt: -.04, roll: .03 });
+    const g = layer();
+    lyric(g, lineOf('V1.15'), t, { markup: 'HINTON TAKES / HIS *MEDAL,* / [1.5] _scolds,_', x: 540, y: 420, align: 'center', size: 64, col: PAL.pearl, accent: MEM.LOGI.col, anim: 'rise', maxW: 950 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+  vshot('V1.16', (p, lt, d, t) => {
+    const w = W1('V1.16'), tF = w[4].start, c = cutOf('V1.16');
+    const slide = easeOut5(seg(t, c.start, c.start + .4));
+    cam({ pos: [lerp(.1, .02, p), 1.16, lerp(2.75, 2.6, p)], at: [.02, 1.1, 0], fov: 34 });
+    vNobel(t);
+    photocard('hinton', { ...HINTON, at: [-.3, 1.06, -.45], w: .62, yaw: Math.PI + .3, roll: .08, alpha: .8 });
+    photocard('demis', { ...DEMIS, at: [lerp(1.4, .07, slide), 1.1, 0], w: .7, yaw: lerp(-.6, -.1, slide), roll: -.02, fold: .42 * easeInOut(seg(t, tF, tF + .45)) });
+    const g = layer();
+    lyric(g, lineOf('V1.16'), t, { markup: 'DEMIS WINS FOR / PROTEIN *FOLDS.*', x: 540, y: 432, align: 'center', size: 64, shadow: ['rgb(0 0 0 / .8)', 20], col: PAL.pearl, accent: MEM.LOGI.col, anim: 'rise', maxW: 940 });
+    // the premiere's countdown, its last seconds on the beat
+    const clk = seg(t, tF + .1, tF + .25);
+    if (clk > 0) {
+      const left = Math.max(1, Math.ceil((c.end - t) / beatLen()));
+      const band = g.createLinearGradient(0, 1250, 0, 1560); band.addColorStop(0, 'rgb(3 2 8 / 0)'); band.addColorStop(.5, `rgb(3 2 8 / ${.75 * clk})`); band.addColorStop(1, 'rgb(3 2 8 / 0)');
+      g.fillStyle = band; g.fillRect(0, 1250, W, 310);
+      txt(g, 'M/V PREMIERE IN', 540, 1372, 26, { font: 'wide', align: 'center', col: PAL.pearl, alpha: clk * .85, track: .3 });
+      txt(g, `00:00:0${Math.min(9, left)}`, 540, 1470, 88, { font: 'mono', align: 'center', col: MEM.LOGI.col, alpha: clk });
+    }
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
 })();
 
 ;
@@ -4810,11 +6109,14 @@ startPics();
     formation(t);
   }
   // C: "It was always training,": the dance-practice video: a static wide shot in the practice room, the timecode an epoch counter.
+  // (the take runs out over half a second before the cut on "and": played at 90 % and swung back over its last few frames, the four
+  // dance on through the held "training," instead of standing frozen in the gap)
+  const PRACTICE_PLAY = { rate: .9, loop: true };
   function shotC(t, P) {
     cam({ pos: [0, 1.0, 7.4], at: [0, 1.25, 0], fov: 33 });
     cove({ at: [0, 0, 0] });
     GRADE.flash = .8 * Math.exp(-(t - P.tC) * 14);
-    if (SPRITES.toki_uT) chorusDance('training', t, L(2), { at: Object.fromEntries(ORDER.map((k, i) => [k, [(i - 1.5) * 1.35, 0, 0]])), cast: [-.8, -1.6, .14], shadowK: .3, rimK: .3, shade: '#DAD2E6',
+    if (SPRITES.toki_uT) chorusDance('training', t, L(2), { at: Object.fromEntries(ORDER.map((k, i) => [k, [(i - 1.5) * 1.35, 0, 0]])), cast: [-.8, -1.6, .14], shadowK: .3, rimK: .3, shade: '#DAD2E6', ...PRACTICE_PLAY,
       each: Object.fromEntries(ORDER.map(k => [k, { rim: MEM[k].soft }])) });
     else ORDER.forEach((k, i) => {
       const P2 = poseAt(t - i * .05, ['dance', 'point', 'dance', 'concept'], 1, i);
@@ -4835,6 +6137,14 @@ startPics();
   // an exponential; the curve draws itself through their feet, and the line rides it.
   const LIFT = ['LOGI', 'ADA', 'RELU', 'TOKI'], LIFT_X = i => -2.4 + 1.6 * i, LIFT_H = i => .15 * Math.exp(.95 * i);
   const curveY = x => .15 * Math.exp(.95 * (x + 2.4) / 1.6);
+  // (the staircase's dance, retimed at its start: the take comes in on "and" already half out of its crossed arms and then holds its T
+  // for a third of a second, a stillness that reads as a hitch straight after the cut. So the four open on the cut with their arms
+  // crossed, sweep them open over "and the" to the T on "the", and hold it only until "curves", where they rejoin the take.)
+  function gainingHold(t, P) {
+    const w = wordsOf(L(2)), C = CHOREO.gaining, tT = w[5].start, t7 = w[C.word].start - C.lead + (7 - C.frame) / CLIP_FPS;
+    if (t < tT) return Math.floor(3 * seg(t, P.tD, tT));
+    if (t < t7) return 3 + Math.floor(4 * seg(t, tT, t7));
+  }
   function shotD(t, P) {
     const w = wordsOf(L(2)), trig = [w[5].start, w[6].start, w[7].start, w[7].start + .45];
     const up = i => { const a = t - trig[i]; return a < 0 ? 0 : clamp(backOut(clamp(a / .38), 1.4)); };
@@ -4857,7 +6167,7 @@ startPics();
         plane(liftTex(), { at: [x, 0, 0], w: .95, h, facing: 0, grid: false, mul: mixCol('#9A96B0', M.glow, .2), bot: '#2A2638' });
         plane(TX.white, { at: [x, h, 0], w: .95, h: .5, facing: 0, tilt: Math.PI / 2, anchor: [.5, .5], grid: false, mul: M.col, gain: 1.6, alpha: .9 });
       }
-      if (SPRITES.toki_uG) chorusDance('gaining', t, L(2), { member: k, at: [x, h, 0], h: 1.7, reflect: h < .02 ? .2 : 0, shadow: h < .02, rimK: 1.3 });
+      if (SPRITES.toki_uG) chorusDance('gaining', t, L(2), { member: k, at: [x, h, 0], h: 1.7, reflect: h < .02 ? .2 : 0, shadow: h < .02, rimK: 1.3, hold: gainingHold(t, P) });
       else {
         const P2 = t < trig[i] ? { pose: 'concept', flash: 0 } : { pose: 'point', flash: .5 * Math.exp(-(t - trig[i]) * 20) };
         idol(k, P2.pose, { at: [x, h, 0], h: 1.6, reflect: h < .02 ? .2 : 0, shadow: h < .02, flash: P2.flash, rim: M.glow, rimK: 1.3 });
@@ -4924,6 +6234,200 @@ startPics();
     GRADE.flash = .9 * Math.exp(-(t - b - .45) * 8);
     const g = layer();
     lyric(g, L(4), t, { markup: '_but_ _we_ / CAN’T *CONTAIN* *IT!*', x: 960, y: 200, align: 'center', size: 120, italic: 'serifI', col: PAL.pearl, accent: MEM.TOKI.col, anim: 'slam' });
+    put(g, { gain: 1.1 });
+    hideSub();
+  }
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (vshot()): the premiere, as a phone shows it. See ../VERTICAL.md.
+  // =====================================================================================================
+  // The M/V's set, vertical: the light columns closer together, so all four colours stand behind the group in the tall frame, and the
+  // group in the vertical formation (UNISON_AT_V: a deep diamond, TOKI and RELU in front).
+  function vMvSet(t, o = {}) {
+    stage({ accent: PAL.pearl, ring: 2.1, columns: 0, glow: .25 });
+    ORDER.forEach((k, i) => {
+      for (const dz of [0, 1]) plane(TX.beam, { at: [-4.2 + i * 2.8 + dz * 1.4, 0, -24 - dz * 5], h: 30, w: 1.2, blend: 'add', mul: MEM[k].glow, alpha: .22 + .08 * Math.sin(t * 1.3 + i), grid: false });
+    });
+    particles('glitter', { n: 900, a: [0, 0, 0, 2.6], size: .03, cols: ORDER.map(k => MEM[k].glow), shape: 'star', gain: .9 });
+    if (o.members !== false) vFormation(t, o);
+  }
+  function vFormation(t, o = {}) {
+    const part = t < plan().tF ? 'hook' : 'contain';
+    if (!o.poses && SPRITES[`toki_${CHOREO[part].set}`]) return chorusDance(part, t, part === 'hook' ? L(1) : L(4), { at: UNISON_AT_V, reflect: .2, rimK: 1.2 });
+    for (const k of Object.keys(UNISON_AT_V).sort((a, b) => UNISON_AT_V[a][2] - UNISON_AT_V[b][2])) {
+      const i = ORDER.indexOf(k), P = o.poses ? { pose: o.poses[k] ?? o.poses, flash: 0 } : poseAt(t - i * .1, ['point', 'dance', 'concept'], 2, i);
+      idol(k, P.pose, { at: UNISON_AT_V[k], reflect: .2, flash: P.flash, phase: i * .25, rim: MEM[k].glow, rimK: 1.2 });
+    }
+  }
+  // The premiere on a phone: the player across the top of the frame (16:9, the M/V in it live), the title and the number watching
+  // under it, and the HEADS' live chat filling the rest, as the app lays it out. k: 0 → that layout; 1 → the player's picture fills the
+  // frame (its camera keeps its height of view, so the group grows with it: the dive in, and the burst out).
+  const VP0 = { x: 0, y: 392, w: 1080, h: 608 };
+  function vPlayer(t, P, k, views) {
+    const vx = lerp(VP0.x, 0, k), vy = lerp(VP0.y, 0, k), vw = lerp(VP0.w, W, k), vh = lerp(VP0.h, H, k);
+    sky({ top: '#050409', horizon: '#0C0A14', glowK: 0, horizonY: .5 });
+    const tex = offscreen('mv-v', vw * RS * .75, vh * RS * .75, () => {
+      cam({ pos: [Math.sin(t * .3) * .5, 1.45, 8.6], at: [0, 1.15, 0], fov: 32 });
+      vMvSet(t);
+    });
+    plane2D(tex, { at: [vx, vy + vh], w: vw, h: vh, anchor: [0, 1] });
+    const g = layer();
+    g.save(); g.translate(0, (vy - VP0.y) - (vh - VP0.h) * .0); g.globalAlpha = 1 - k;
+    const y0 = VP0.y + VP0.h;
+    g.fillStyle = MEM.TOKI.col; g.beginPath(); g.roundRect(24, VP0.y + 22, 112, 40, 8); g.fill();
+    txt(g, 'LIVE', 80, VP0.y + 52, 24, { font: 'uiB', col: '#FFFFFF', align: 'center', track: .1 });
+    g.fillStyle = 'rgb(244 240 250 / .25)'; g.fillRect(0, y0 - 7, W, 7);
+    g.fillStyle = MEM.TOKI.col; g.fillRect(0, y0 - 7, W * clamp((t - P.start) / 200), 7);
+    txt(g, 'ATTN! ‘We Didn’t Start the Scaling’ M/V', 40, y0 + 68, 40, { font: 'uiB', col: PAL.pearl, maxW: 1000 });
+    txt(g, `${Math.round(views).toLocaleString('en-US')} watching now · Premiere`, 40, y0 + 118, 28, { font: 'ui', col: PAL.dim });
+    g.fillStyle = '#0E0C16'; g.fillRect(0, y0 + 160, W, H - y0 - 160);
+    g.fillStyle = 'rgb(244 240 250 / .1)'; g.fillRect(0, y0 + 160, W, 2);
+    txt(g, 'Live chat', 40, y0 + 222, 32, { font: 'uiB', col: PAL.pearl });
+    const shown = CHAT.length - Math.max(0, Math.floor((P.tB - t) / .12));
+    // (the newest message at y ~1460, above the frame's foot)
+    CHAT.slice(0, shown).slice(-4).forEach(([who, msg], i, arr) => {
+      const y = 1462 - (arr.length - 1 - i) * 64;
+      txt(g, who, 40, y, 28, { font: 'mono', col: who === 'clawd' ? '#E8906E' : PAL.dim });
+      txt(g, msg, 40 + textW(who + '  ', 28, FONT.mono), y, 36, { font: 'ui', col: PAL.pearl, maxW: 1000 - textW(who + '  ', 28, FONT.mono) });
+    });
+    g.restore();
+    return g;
+  }
+  vshot('C1', (p, lt, d, t) => {
+    const P = plan();
+    if (t < P.tB) vShotA(t, P);
+    else if (t < P.tC) vShotB(t, P);
+    else if (t < P.tD) vShotC(t, P);
+    else if (t < P.tE) vShotD(t, P);
+    else if (t < P.tF) vShotE(t, P);
+    else vShotF(t, P);
+  });
+  // A: the premiere page; on "scaling" the camera dives into the player.
+  function vShotA(t, P) {
+    const k = easeIn(seg(t, P.tB - .28, P.tB));
+    const g = vPlayer(t, P, k, lerp(1.2e6, 1.43e6, seg(t, P.start, P.tB)));
+    lyric(g, L(1), t, { markup: 'WE DIDN’T START THE', x: 540, y: 330, align: 'center', size: 44, font: 'wide', track: .1, col: PAL.pearl, accent: MEM.TOKI.col, alpha: 1 - k, maxW: 980 });
+    put(g);
+    hideSub(); hideTag();
+    GRADE.flash = .7 * k * k;
+  }
+  // B: "scaling", held for two bars: the word stands behind the group and grows, up and out of the frame, for as long as it's held.
+  function vShotB(t, P) {
+    const k = seg(t, P.tB, P.tC), cp = [lerp(-1.2, .9, easeInOut(k)), lerp(1.0, 1.55, k), lerp(7.4, 6.6, k)];
+    cam({ pos: cp, at: [0, 1.45, 0], fov: 38 });
+    vMvSet(t, { members: false });
+    // (the panel cut to the word, so that the plane's width is the word's)
+    const sign = panel('scaling-word-v', Math.ceil(textW('SCALING', 360, FONT.display)) + 40, 480, (g, w, h) => txt(g, 'SCALING', w / 2, 380, 360, { font: 'display', align: 'center', col: '#FFFFFF' }), { stamp: 1 });
+    GRADE.flash = .6 * Math.exp(-(t - P.tB) * 10);
+    // (its foot just above their heads, on the camera's line of sight so that it stays centred as the camera drifts, and sized to the
+    // frame's width at its distance: it grows through the held note from 60 to 78 % of the frame's width, whole inside the safe area)
+    const d = cp[2] + 5, fw = 2 * d * Math.tan(38 / 2 * Math.PI / 180) * W / H;
+    plane(sign, { at: [-cp[0] * 5 / cp[2], 2.3, -5], w: fw * lerp(.6, .78, easeInOut(k)), facing: 0, grid: false, gain: 1.35, alpha: .95 });
+    vFormation(t);
+    hideSub();
+  }
+  // C: "It was always training,": the dance-practice video, a static wide shot down the practice room, the four in two rows.
+  const PRACTICE_V = { TOKI: [-.48, 0, .6], RELU: [.5, 0, .4], ADA: [-1.08, 0, -.75], LOGI: [1.1, 0, -.9] };
+  function vShotC(t, P) {
+    cam({ pos: [0, 1.8, 7.2], at: [0, 1.2, 0], fov: 38 });
+    cove({ at: [0, 0, 0] });
+    GRADE.flash = .8 * Math.exp(-(t - P.tC) * 14);
+    if (SPRITES.toki_uT) chorusDance('training', t, L(2), { at: PRACTICE_V, cast: [-.8, -1.6, .14], shadowK: .3, rimK: .3, shade: '#DAD2E6', ...PRACTICE_PLAY, each: Object.fromEntries(ORDER.map(k => [k, { rim: MEM[k].soft }])) });
+    else ORDER.forEach((k, i) => idol(k, poseAt(t - i * .05, ['dance', 'point', 'dance', 'concept'], 1, i).pose, { at: PRACTICE_V[k], cast: [-.8, -1.6, .14], shadowK: .3, rim: MEM[k].soft, rimK: .3, shade: '#DAD2E6' }));
+    lightShot();
+    const g = layer();
+    txt(g, '● REC', 1008, 312, 28, { font: 'mono', col: MEM.TOKI.col, align: 'right', alpha: Math.floor(t * 2) % 2 ? 1 : .3 });
+    txt(g, '[DANCE PRACTICE]', 72, 312, 28, { font: 'uiB', col: PAL.text });
+    txt(g, 'ATTN! ‘We Didn’t Start the Scaling’ · fix ver.', 72, 1448, 28, { font: 'ui', col: PAL.text, maxW: 600 });
+    const epoch = Math.floor(1048576 + (t - P.tC) * 91873);
+    txt(g, `EPOCH ${epoch.toLocaleString('en-US')}`, 1008, 1448, 32, { font: 'mono', col: PAL.text, align: 'right' });
+    lyric(g, L(2), t, { markup: '_It_ _was_ / [1.6] ALWAYS / [1.6] *TRAINING,*', x: 540, y: 430, align: 'center', size: 80, italic: 'serifI', col: PAL.text, accent: MEM.TOKI.col, anim: 'rise', maxW: 960 });
+    put(g);
+    hideSub(); hideTag();
+  }
+  // D: "and the curves kept gaining,": the scaling formation, as a staircase up the tall frame. The four ride lifts that rise one after
+  // another, lowest to highest along an exponential, TOKI at the top; the camera cranes up with them, and the curve draws through their
+  // feet and on up out of the frame, the line riding it.
+  const VLIFT_X = i => -1.11 + .74 * i, VCURVE = x => .15 * Math.exp(1.365 * (x + 1.05)), VLIFT_H = i => VCURVE(VLIFT_X(i)), VLIFT_W = .84;
+  function vShotD(t, P) {
+    const w = wordsOf(L(2)), trig = [w[5].start, w[6].start, w[7].start, w[7].start + .45], hold = gainingHold(t, P);
+    const up = i => { const a = t - trig[i]; return a < 0 ? 0 : clamp(backOut(clamp(a / .38), 1.4)); };
+    const rise = easeInOut(seg(t, trig[1], trig[3] + .7));
+    cam({ pos: [lerp(-.3, .25, easeInOut(seg(t, P.tD, P.tE))), lerp(1.15, 3.0, rise), lerp(5.9, 8.4, rise)], at: [lerp(-.12, .15, rise), lerp(1.05, 2.75, rise), 0], fov: 40 });
+    stage({ accent: PAL.pearl, ring: 0, columns: 0, glow: .22 });
+    ORDER.forEach((k, i) => plane(TX.beam, { at: [-4 + i * 2.7, 0, -26], h: 32, w: 1.3, blend: 'add', mul: MEM[k].glow, alpha: .25, grid: false }));
+    const reach = Math.max(-1.4, ...LIFT.map((k, i) => up(i) > 0 ? VLIFT_X(i) : -1.4)) + (t > trig[3] + .2 ? easeOut(seg(t, trig[3] + .2, P.tE)) * .8 : 0);
+    const pts = [];
+    for (let x = -1.7; x <= reach; x += .04) pts.push([x, VCURVE(x), .05]);
+    if (pts.length > 1) {
+      ribbon(TX.white, pts, { width: .06, face: true, mul: '#FFFFFF', gain: 2.2 });
+      ribbon(TX.glow, pts, { width: .42, face: true, mul: MEM.TOKI.glow, gain: .8, blend: 'add' });
+    }
+    // (the lifts wide enough for the dance's steps, all drawn before any member, so that no lift is drawn over a member's foot)
+    LIFT.forEach((k, i) => {
+      const h = VLIFT_H(i) * up(i), x = VLIFT_X(i), M = MEM[k];
+      if (h <= .005) return;
+      plane(liftTex(), { at: [x, 0, 0], w: VLIFT_W, h, facing: 0, grid: false, mul: mixCol('#9A96B0', M.glow, .2), bot: '#2A2638' });
+      plane(TX.white, { at: [x, h, 0], w: VLIFT_W, h: .44, facing: 0, tilt: Math.PI / 2, anchor: [.5, .5], grid: false, mul: M.col, gain: 1.6, alpha: .9 });
+    });
+    LIFT.forEach((k, i) => {
+      const h = VLIFT_H(i) * up(i), x = VLIFT_X(i), M = MEM[k];
+      if (SPRITES.toki_uG) chorusDance('gaining', t, L(2), { member: k, at: [x, h, 0], h: 1.7, reflect: h < .02 ? .2 : 0, shadow: h < .02, rimK: 1.3, hold });
+      else idol(k, t < trig[i] ? 'concept' : 'point', { at: [x, h, 0], h: 1.6, reflect: h < .02 ? .2 : 0, shadow: h < .02, rim: M.glow, rimK: 1.3 });
+    });
+    // the line, riding the curve just under it
+    const text = 'AND THE CURVES KEPT GAINING,', shownW = w.slice(4).filter(x => t >= x.start).length;
+    const strip = panel('curve-text', 3000, 180, (g) => {
+      let x = 20;
+      text.split(' ').forEach((s_, i) => { if (i < shownW) txt(g, s_, x, 140, 130, { font: 'display', col: i >= 2 && i !== 3 ? MEM.TOKI.glow : '#FFFFFF' }); x += textW(s_ + ' ', 130, FONT.display); });
+    }, { stamp: shownW });
+    const tp = [];
+    for (let x = -1.22; x <= 1.02; x += .05) tp.push([x, VCURVE(x) - .3, .3]);
+    ribbon(strip, tp, { width: .26, face: true, gain: 1.25 });
+    particles('glitter', { n: 700, a: [0, 0, 0, 3], size: .03, cols: ORDER.map(k => MEM[k].glow), shape: 'star', gain: .9 });
+    GRADE.flash = .7 * Math.exp(-(t - P.tD) * 12);
+    hideSub();
+  }
+  // E: the hook again, in close-up: TOKI fills the frame, singing it to the lens, and each word slams in huge under her face.
+  function vShotE(t, P) {
+    const k = seg(t, P.tE, P.tF);
+    cam({ pos: [lerp(.06, 0, k), 1.36, lerp(1.62, 1.45, k)], at: [0, 1.3, 0], fov: 34 });
+    stage({ accent: MEM.TOKI.col, ring: 0, columns: 3, glow: .2 });
+    particles('dust', { n: 700, a: [0, 1.5, -1.5], b: [1.5, 1.5, 2], c: [1], size: .01, cols: [MEM.TOKI.glow, PAL.pearl], gain: .9 });
+    closeUp('TOKI', t, L(3), { at: [.02, .66, 0], h: 1.08, rimK: 1.3, shade: '#8A7CA6' });
+    GRADE.flash = .7 * Math.exp(-(t - P.tE) * 14);
+    const g = layer();
+    vTopShade(g);
+    const band = g.createLinearGradient(0, 1080, 0, 1600); band.addColorStop(0, 'rgb(3 2 8 / 0)'); band.addColorStop(.55, 'rgb(3 2 8 / .55)'); band.addColorStop(1, 'rgb(3 2 8 / .3)');
+    g.fillStyle = band; g.fillRect(0, 1080, W, H - 1080);
+    const ws = wordsOf(L(3)), cur = ws.filter(x => t >= x.start).at(-1);
+    if (cur) {
+      const a = t - cur.start, e = easeOut5(a / .12), word = cur.text.toUpperCase().replace(/[^A-Z']/g, '');
+      const size = Math.min(230, 940 / Math.max(1e-3, textW(word, 1, FONT.display)));
+      txt(g, word, 540, 1400, size * lerp(1.35, 1, e), { font: 'display', align: 'center', col: cur === ws.at(-1) ? MEM.TOKI.col : PAL.pearl, alpha: clamp(a / .04) });
+    }
+    put(g, { gain: 1.1 });
+    hideSub();
+  }
+  // F: the premiere again; on "can't contain it!" the M/V bursts out of the player and fills the frame, cannons of confetti firing up
+  // from its foot, the line slammed across its top.
+  function vShotF(t, P) {
+    const b = P.tBurst, k = easeInOut(seg(t, b, b + .45));
+    if (t < b + .45) {
+      const g = vPlayer(t, P, k, lerp(1.43e6, 2.1e6, seg(t, P.tF, b)));
+      lyric(g, L(4), t, { markup: 'NO, WE DIDN’T / PREORDAIN IT,', x: 540, y: 300, align: 'center', size: 38, lead: 1.2, font: 'wide', track: .1, col: PAL.pearl, accent: MEM.TOKI.col, alpha: 1 - k });
+      put(g);
+      if (t >= b) particles('burst', { n: 1500, a: [0, 1.2, 4], b: [b, 5, 3, 1.2], c: [0, .2, 1, 1.4], size: .025, cols: [PAL.pearl, MEM.TOKI.glow, MEM.RELU.glow, MEM.LOGI.glow], shape: 'star', gain: 1.2 });
+      hideSub(); hideTag();
+      return;
+    }
+    cam({ pos: [Math.sin(t * .8) * .5, 1.45, lerp(8.0, 7.3, seg(t, b, P.end))], at: [0, 1.15, 0], fov: 32, roll: Math.sin(t * 1.3) * .02 });
+    vMvSet(t, { poses: t > P.tG ? 'point' : undefined });
+    const t0 = snap(b + .45);
+    for (const side of [-1, 1]) particles('burst', { n: 450, a: [side * 2.2, .1, .5], b: [t0, 9, 3.5, 2.6], c: [-side * .3, 1, .1, .4], size: .05, cols: ORDER.map(k => MEM[k].col), shape: 'chip', gain: 1 });
+    particles('fall', { n: 320, a: [0, 3, 0], b: [3, 3.5, 3], c: [.9], size: .04, cols: ORDER.map(k => MEM[k].glow), shape: 'chip', gain: 1 });
+    GRADE.flash = .9 * Math.exp(-(t - b - .45) * 8);
+    const g = layer();
+    lyric(g, L(4), t, { markup: '_but_ _we_ / CAN’T / *CONTAIN* *IT!*', x: 540, y: 430, align: 'center', size: 132, italic: 'serifI', col: PAL.pearl, accent: MEM.TOKI.col, anim: 'slam', maxW: 960 });
     put(g, { gain: 1.1 });
     hideSub();
   }
@@ -5640,6 +7144,668 @@ startPics();
       g.fillStyle = 'rgb(255 255 255 / .9)'; g.beginPath(); g.ellipse(cx - 70, cy - 80, 34, 14, -.7, 0, TAU); g.fill();
     }, { stamp: 2 });
   }
+
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (vshot()): the promotions, as they reach a phone. See ../VERTICAL.md.
+  // =====================================================================================================
+  // the camera flashes of a press line, in the tall frame: never on the face, a box [x0, y0, x1, y1] they keep out of
+  function vFlashes(t, k, seed, clear) {
+    const slot = Math.floor(t * 15);
+    let f = 0;
+    for (let i = 0; i < 3; i++) {
+      const n = slot - i;
+      if (hash2(n, seed) >= .28 * k) continue;
+      const a = Math.exp(-(t - n / 15) * 30);
+      let x = 80 + hash2(n, seed + 1) * 920;
+      const y = 420 + hash2(n, seed + 2) * 1080;
+      if (clear && x > clear[0] && x < clear[2] && y > clear[1] && y < clear[3]) x = x < (clear[0] + clear[2]) / 2 ? clear[0] - 70 : clear[2] + 70;
+      plane2D(TX.glow, { at: [x, y], w: 380, h: 380, anchor: [.5, .5], blend: 'add', gain: 2.2 * a });
+      f = Math.max(f, a);
+    }
+    GRADE.flash = Math.max(GRADE.flash, .18 * f);
+  }
+
+  // V2.1, vertical: the showcase's press wall as a tall step-and-repeat, RELU full-length left of centre in front of it, the line set as
+  // the poster's headline above her. On "Year" the $5.6M sticker slaps onto the wall beside her head; from "sticker" she gasps, the
+  // flashes go wild (never on her face) and the NVDA ticker slides across her as a broadcast's lower third.
+  vshot('V2.1', (p, lt, d, t) => {
+    const w = W2('V2.1'), tS = w[2].start, tK = lerp(w[3].start, w[4].start, .15), x = -.17;
+    // (her head under the headline, her feet at the frame's foot; a slow push in)
+    const e = easeOut(p), ppu = lerp(.00158, .00148, e);
+    vCam({ x: 0, Y: lerp(1850, 1900, e), ppu, dx: lerp(-.08, .04, p) });
+    cove({ at: [x, 0, 0], tint: '#F2F4FF' });
+    const wall = panel('press-wall-v', 1200, 2000, (g, w_, h) => {
+      g.fillStyle = '#F7F5FB'; g.fillRect(0, 0, w_, h);
+      for (let r = 0; r < 14; r++) for (let c = 0; c < 5; c++) {
+        const lx = 60 + c * 300 + (r % 2) * 150, ly = 90 + r * 140;
+        txt(g, 'ATTN!', lx, ly, 70, { font: 'display', col: '#1A1626', alpha: .16 });
+        txt(g, 'WE DIDN’T START THE SCALING', lx + 3, ly + 34, 11, { font: 'wide', col: '#1A1626', alpha: .14, track: .2 });
+      }
+    }, { stamp: 1 });
+    plane(wall, { at: [0, 0, -1.6], w: 4.2, facing: 0, grid: false, mul: '#FFFFFF', bot: '#D8D2E2' });
+    const look = { at: [x, 0, 0], figH: 1.72, cast: [-1, -1.5, .16], shadowK: .3, rim: MEM.RELU.soft, rimK: .3, light: '#FFFFFF', shade: '#DAD2E6', flash: t >= tK ? .4 * Math.exp(-(t - tK) * 20) : 0 };
+    if (SPRITES.relu_press) dancer('RELU', t < tK - .05 ? 'relu_press' : 'relu_shock', t, { ...look, ...(t < tK - .05 ? { t0: cutOf('V2.1').start, from: 0 } : { t0: tK, from: 2 }) });
+    else idol('RELU', t < tK ? 'concept' : 'gasp', { ...look, beat: .5 });
+    // the sticker, slapped onto the wall to the right of her head
+    if (t >= tS) plane(sticker('ds', '$5.6M', MEM.RELU.col, whale), { at: [.58, 1.56, -1.55], w: .72 * slam((t - tS) / .1), anchor: [.5, .5], facing: 0, roll: -.15, grid: false });
+    vFlashes(t, t < tK ? .7 : 2.2, 21, [300, 640, 640, 1120]);
+    lightShot();
+    const g = layer();
+    lyric(g, lineOf('V2.1'), t, { markup: 'DEEPSEEK / NEW YEAR / [.78] STICKER *SHOCK,*', x: 540, y: 466, align: 'center', size: 110, col: PAL.text, accent: MEM.RELU.col, anim: 'pop', maxW: 940 });
+    if (t >= tK) {
+      // the market, as the showcase's broadcast runs it: a lower third sliding in across her
+      const k = easeOut5(seg(t, tK, tK + .25)), x0 = (k - 1) * W, y = 1330;
+      g.fillStyle = '#0D0B16'; g.fillRect(x0, y - 60, W, 108);
+      txt(g, 'NVDA', x0 + 72, y + 18, 56, { font: 'uiB', col: PAL.pearl });
+      txt(g, '▼ 17%', x0 + 72 + textW('NVDA  ', 56, FONT.uiB), y + 18, 56, { font: 'uiB', col: '#E8474C' });
+      g.strokeStyle = '#E8474C'; g.lineWidth = 5; g.lineJoin = 'round'; g.beginPath();
+      for (let i = 0; i <= 30; i++) { const sx = x0 + 500 + i * 9, sy = y - 14 + (i < 20 ? Math.sin(i * .9) * 6 : (i - 20) * 5 * easeOut(seg(t, tK + .1, tK + .7))); i ? g.lineTo(sx, sy) : g.moveTo(sx, sy); }
+      g.stroke();
+      txt(g, '2025.01.27', x0 + 958, y + 12, 28, { font: 'mono', col: PAL.dim, align: 'right' });
+    }
+    put(g);
+    hideSub();
+  });
+
+  // V2.2, vertical: the Stargate's ring fills the frame's middle (it's round: it fits), its chevrons locking on the beat and the pledge
+  // counting up inside it, the line stacked above; the camera drifts in. On "talk" Elon's reply slides up into the caption band.
+  vshot('V2.2', (p, lt, d, t) => {
+    const w = W2('V2.2'), tT = w[4].start;
+    const ppu = lerp(.0019, .00165, easeInOut(p)), ry = -.4;
+    vCam({ x: 0, Y: 960, ppu, dx: lerp(.1, 0, p) });
+    uiSet(MEM.RELU.col, { floor: false });
+    const lock = Math.min(9, Math.floor(seg(t, cs('V2.2'), tT) * 9.99));
+    const money = Math.round(lerp(1e11, 5e11, easeOut(seg(t, w[1].start, w[3].end))) / 1e9) * 1e9;
+    const ring = panel('stargate-v', 1200, 1200, (g, W_, H_) => {
+      g.translate(W_ / 2, H_ / 2);
+      const gr = g.createRadialGradient(0, 0, 60, 0, 0, 470); gr.addColorStop(0, 'rgb(205 246 234 / .5)'); gr.addColorStop(.8, 'rgb(31 214 168 / .18)'); gr.addColorStop(1, 'rgb(31 214 168 / 0)');
+      g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 470, 0, TAU); g.fill();
+      g.lineWidth = 70; g.strokeStyle = '#8A8FA6'; g.beginPath(); g.arc(0, 0, 515, 0, TAU); g.stroke();
+      g.lineWidth = 6; g.strokeStyle = '#D6D9E6'; g.beginPath(); g.arc(0, 0, 548, 0, TAU); g.stroke(); g.beginPath(); g.arc(0, 0, 482, 0, TAU); g.stroke();
+      for (let i = 0; i < 9; i++) {
+        g.save(); g.rotate(-Math.PI / 2 + i / 9 * TAU); g.translate(515, 0);
+        g.fillStyle = i < lock ? '#B8FFE9' : '#4A4E62';
+        g.beginPath(); g.moveTo(-44, -30); g.lineTo(40, 0); g.lineTo(-44, 30); g.lineTo(-24, 0); g.closePath(); g.fill();
+        g.restore();
+      }
+      // (the pledge sits above the ring's middle: the reply comes up over its lower half)
+      txt(g, 'STARGATE', 0, -170, 52, { font: 'wide', col: '#D8FFF2', align: 'center', track: .45 });
+      txt(g, `$${money.toLocaleString('en-US')}`, 0, -40, 100, { font: 'mono', col: '#FFFFFF', align: 'center', maxW: 860 });
+    }, { stamp: `${lock}|${money}` });
+    plane(ring, { at: [0, ry, 0], w: 1.52, anchor: [.5, .5], facing: 0, grid: false, gain: 1.25 });
+    particles('ring', { n: 700, a: [0, ry, 0, .655], b: [.4, 1.5708], size: .018, cols: ['#B8FFE9', PAL.pearl], shape: 'star', gain: 1.1 });
+    const g = layer();
+    lyric(g, lineOf('V2.2'), t, { markup: '[.8] HALF A / [1.25] TRILLION / STARGATE / *TALK,*', x: 540, y: 466, align: 'center', size: 84, accent: MEM.RELU.col, anim: 'rise', maxW: 940 });
+    put(g, { gain: 1.05 });
+    if (t >= tT) {
+      const k = easeOut5(seg(t, tT, tT + .22));
+      plane2D(vPost('elon-money-v', { avatar: 'elon_portrait', name: 'Elon Musk', handle: '@elonmusk', text: 'They don’t actually have the money', date: '2025.01.21', size: 44 }),
+        { at: [520, 1490 + (1 - k) * 520], w: 860, anchor: [.5, 1], alpha: clamp(k * 3) });
+    }
+    hideSub();
+  });
+
+  // V2.3, vertical: the review on a phone. The diff scrolls up the frame too fast to read, ADA's Accept all button at its foot is hit
+  // on every beat, and on "never ask" the link to review the changes greys out. The line stacked above.
+  vshot('V2.3', (p, lt, d, t) => {
+    const w = W2('V2.3'), tN = w[3].start, b = bpOf(t), hit = t >= w[0].start, c = cs('V2.3');
+    const press = hit ? Math.exp(-frac(b) * 9) : 0, nev = t >= tN;
+    const ppu = lerp(.00158, .0015, easeOut(p)), py = -(1085 - 960) * ppu;
+    vCam({ x: 0, Y: 960, ppu, dx: lerp(-.06, .02, p), roll: .02 });
+    uiSet(MEM.ADA.col);
+    const LH = 50, scroll = Math.floor((t - c) * 30) / 30 * 11 * LH;
+    const code = livePanel('diff-v', 900, 900, (g, W_, H_) => {
+      g.fillStyle = '#0D0B15'; g.beginPath(); g.roundRect(0, 0, W_, H_, 40); g.fill();
+      g.save(); g.beginPath(); g.rect(0, 112, W_, H_ - 260); g.clip();
+      const first = Math.floor(scroll / LH);
+      for (let i = 0; i < 16; i++) {
+        const n = first + i, y = 112 + 34 + i * LH - (scroll - first * LH), kind = hash2(n, 3), ww = 160 + hash2(n, 4) * 520;
+        g.fillStyle = kind < .4 ? 'rgb(46 160 100 / .22)' : kind < .7 ? 'rgb(220 70 90 / .2)' : 'rgb(0 0 0 / 0)';
+        g.fillRect(0, y - 30, W_, LH - 6);
+        txt(g, String(n + 311).padStart(4), 22, y, 24, { font: 'mono', col: PAL.dim });
+        txt(g, kind < .4 ? '+' : kind < .7 ? '−' : ' ', 104, y, 28, { font: 'mono', col: kind < .4 ? '#78E6AA' : '#FF8CA0' });
+        g.fillStyle = kind < .4 ? 'rgb(120 230 170 / .8)' : kind < .7 ? 'rgb(255 140 160 / .8)' : 'rgb(244 240 250 / .35)';
+        g.fillRect(140 + hash2(n, 5) * 80, y - 18, ww, 14);
+      }
+      g.restore();
+      g.fillStyle = '#16121F'; g.beginPath(); g.roundRect(0, 0, W_, 112, [40, 40, 0, 0]); g.fill();
+      txt(g, 'vibe.tsx', 44, 70, 38, { font: 'mono', col: PAL.pearl });
+      txt(g, '+2,184', W_ - 44 - textW('  −1,097', 30, FONT.mono), 68, 30, { font: 'mono', col: '#78E6AA', align: 'right' });
+      txt(g, '  −1,097', W_ - 44, 68, 30, { font: 'mono', col: '#FF8CA0', align: 'right' });
+      // the foot: the link nobody follows, and the button
+      g.fillStyle = '#16121F'; g.beginPath(); g.roundRect(0, H_ - 148, W_, 148, [0, 0, 40, 40]); g.fill();
+      txt(g, 'Review changes', 44, H_ - 60, 36, { font: 'ui', col: nev ? '#4A4458' : PAL.pearl, alpha: nev ? .55 : .95 });
+      if (!nev) { g.fillStyle = PAL.pearl; g.globalAlpha = .6; g.fillRect(44, H_ - 50, textW('Review changes', 36, FONT.ui), 3); g.globalAlpha = 1; }
+      const dn = press * 6;
+      g.fillStyle = press > .5 ? mixCol(MEM.ADA.col, '#FFFFFF', .35) : MEM.ADA.col; g.beginPath(); g.roundRect(W_ - 384, H_ - 122 + dn, 340, 96, 48); g.fill();
+      txt(g, 'Accept all', W_ - 214, H_ - 58 + dn, 44, { font: 'uiB', col: '#FFFFFF', align: 'center' });
+    }, { stamp: `${Math.round(scroll)}|${press > .5}|${nev}` });
+    const pw = 820 * ppu;
+    plane(code, { at: [0, py, 0], w: pw, anchor: [.5, .5], facing: .1, grid: false, gain: 1.05 });
+    if (press > .6) {
+      // (a spark off the button on each hit: its place on the panel, in the world)
+      const bx = (686 / 900 - .5) * pw, by = py - (826 / 900 - .5) * pw;
+      particles('burst', { n: 80, a: [bx, by, .08], b: [onBeat(0, Math.floor(b)), 1.6, 1, .35], c: [0, 0, 1, 2], size: .016, cols: [MEM.ADA.glow, PAL.pearl], shape: 'star', gain: 1.2, noScale: true });
+    }
+    const g = layer();
+    lyric(g, lineOf('V2.3'), t, { markup: 'HIT / *“ACCEPT* *ALL,”* / [1.1] _never_ _ask,_', x: 540, y: 452, align: 'center', size: 92, italic: 'serifI', accent: MEM.ADA.col, anim: 'slam', maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V2.4, vertical: ADA's poster in the pearl studio, the group's lightstick app held up in front of her, big: "Connected via MCP", the
+  // toggles in a tall list switching on one an eighth note, the lightstick on its screen glowing brighter with each.
+  vshot('V2.4', (p, lt, d, t) => {
+    const w = W2('V2.4'), on = t < w[0].start ? 0 : Math.min(6, 1 + Math.floor((t - w[0].start) / (beatLen() / 2)));
+    const e = easeOut(p), ppu = lerp(.00168, .00162, e), x = .3;
+    vCam({ x: 0, Y: lerp(1880, 1900, e), ppu, dx: lerp(-.1, 0, p) });
+    cove({ at: [x, 0, 0], tint: '#F1ECFF' });
+    vBackName('ADA', .06);
+    const look = { at: [x, 0, 0], cast: [-1, -1.5, .16], shadowK: .3, rim: MEM.ADA.soft, rimK: .3, light: '#FFFFFF', shade: '#DAD2E6' };
+    if (SPRITES.ada_pose2) dancer('ADA', 'ada_pose2', t, { ...look, figH: 1.72 });
+    else idol('ADA', 'concept', { ...look, beat: .5 });
+    const glowK = on / 6;
+    const app = panel('lightstick-app-v', 600, 1000, (g, W_, H_) => {
+      g.fillStyle = '#FFFFFF'; g.beginPath(); g.roundRect(0, 0, W_, H_, 60); g.fill();
+      g.strokeStyle = '#1A1626'; g.lineWidth = 12; g.stroke();
+      // the lightstick on the app's screen: a heart in a globe, filling with light
+      const lx = W_ - 98, ly = 112;
+      g.fillStyle = mixCol('#E9E3F7', MEM.ADA.col, glowK); g.beginPath(); g.arc(lx, ly, 52, 0, TAU); g.fill();
+      txt(g, '♥', lx, ly + 20, 56, { font: 'ui', col: glowK > .5 ? '#FFFFFF' : MEM.ADA.col, align: 'center' });
+      txt(g, 'ATTN!', 50, 104, 46, { font: 'display', col: PAL.text });
+      txt(g, 'LIGHTSTICK', 50, 148, 26, { font: 'wide', col: PAL.text, track: .14 });
+      txt(g, 'Connected via MCP', 50, 214, 34, { font: 'ui', col: MEM.ADA.col });
+      CONNECT.forEach(([name, ic], i) => {
+        const y = 310 + i * 112, isOn = i < on;
+        g.fillStyle = isOn ? '#F1ECFF' : '#F4F2F7'; g.beginPath(); g.roundRect(30, y - 50, W_ - 60, 98, 22); g.fill();
+        txt(g, ic, 84, y + 14, 38, { font: 'ui', col: PAL.text, align: 'center' });
+        txt(g, name, 134, y + 13, 38, { font: 'ui', col: PAL.text });
+        g.fillStyle = isOn ? MEM.ADA.col : '#C9C4D4'; g.beginPath(); g.roundRect(W_ - 160, y - 26, 100, 52, 26); g.fill();
+        g.fillStyle = '#FFFFFF'; g.beginPath(); g.arc(isOn ? W_ - 86 : W_ - 134, y, 21, 0, TAU); g.fill();
+      });
+    }, { stamp: on });
+    // (held up to the lens on the left, in front of her: its list in the safe area)
+    plane(app, { at: [-.3, .7, .9], h: 1.19, facing: .22, roll: -.03, grid: false });
+    if (on > 0) {
+      const t0 = w[0].start + (on - 1) * beatLen() / 2;
+      particles('burst', { n: 40, a: [-.07, 1.52 - (on - 1) * .133, .95], b: [t0, 1, .8, .3], c: [0, 0, 1, 2], size: .012, cols: [MEM.ADA.glow, PAL.pearl], shape: 'star', gain: 1.2, noScale: true });
+    }
+    lightShot();
+    const g = layer();
+    lyric(g, lineOf('V2.4'), t, { markup: '[1.8] MCP / FOR EVERY *TASK.*', x: 540, y: 548, align: 'center', size: 80, col: PAL.text, accent: MEM.ADA.col, anim: 'pop', maxW: 940 });
+    put(g);
+    hideSub();
+  });
+  // V2.5, vertical: the variety show. Zuck full-length under the line, his photocard binder held open in front of him; researchers'
+  // cards fall from above the frame one a beat, tumbling, each with its $100M sticker, and slot into its pockets.
+  vshot('V2.5', (p, lt, d, t) => {
+    const c = cs('V2.5'), e = easeOut(p), ppu = lerp(.00205, .00196, e);
+    vCam({ x: 0, Y: lerp(1615, 1630, e), ppu, dx: lerp(.08, 0, p) });
+    cove({ at: [0, 0, 0], tint: '#FFF0D6', spot: [.5, .6, .55, .2] });
+    figure('zuck', { at: [0, 0, 0], h: 1.78, cast: [-1, -1.5, .16], shadowK: .3, rim: '#FFFFFF', rimK: .2, shade: '#DDD4E0', beat: .5 });
+    const n = Math.floor((t - c) / beatLen());
+    for (let i = 0; i <= n; i++) {
+      const t0 = c - .1 + i * beatLen(), k = easeOut(seg(t, t0, t0 + .55));
+      if (k >= 1) continue;
+      // (from above the frame's top corners, in turn, near the lens, slowing into the binder's pages)
+      const side = i % 2 ? 1 : -1, from = [side * (.75 + hash(i) * .25), 3.5 + hash(i + 9) * .3, 1.1], to = [side * .14, .62, .22];
+      plane(researcherCard(i), { at: v3lerp(from, to, k), w: lerp(.62, .1, easeIn(k)), anchor: [.5, .5], facing: 0, roll: (1 - k) * side * (1.2 + hash(i + 3)), grid: false });
+    }
+    lightShot();
+    const g = layer();
+    lyric(g, lineOf('V2.5'), t, { markup: 'ZUCK’S / NINE-FIGURE / [.75] POACHING *SPREE,*', x: 540, y: 466, align: 'center', size: 100, col: PAL.text, accent: MEM.LOGI.col, anim: 'rise', maxW: 940 });
+    put(g);
+    hideSub();
+  });
+
+  // V2.6, vertical: home shopping as K-pop's fans watch it now, a live-commerce stream on a phone. LOGI hosts behind the counter, the
+  // three labs boxed on a turntable in front of her, SUPER / INTELLIGENCE typing itself across the top over the long word, the stream's
+  // hearts rising up the side, the CALL NOW ticker at the foot; on "buy three!" the starburst, and her fingers go up.
+  vshot('V2.6', (p, lt, d, t) => {
+    const w = W2('V2.6'), tB = w[2].start, c = cs('V2.6'), e = easeOut(p), ppu = lerp(.00146, .0014, e);
+    vCam({ x: 0, Y: lerp(1905, 1930, e), ppu, dx: lerp(-.06, .02, p) });
+    cove({ at: [0, 0, 0], tint: '#FFF4E0', spot: [.5, .62, .6, .22] });
+    if (SPRITES.logi_host) dancer('LOGI', 'logi_host', t, { at: [.1, 0, -.15], figH: 1.72, t0: w[3].start - .08, from: 27, cast: [-1, -1.5, .16], shadowK: .3, rim: MEM.LOGI.soft, rimK: .3, light: '#FFFFFF', shade: '#DAD2E6' });
+    else idol('LOGI', 'point', { at: [.1, 0, -.15], cast: [-1, -1.5, .16], shadowK: .3, rim: MEM.LOGI.soft, rimK: .3, shade: '#DAD2E6' });
+    // the counter: a turntable at the front, the three boxes going round on it
+    const ty = .74, tz = .75, spin = t * .9;
+    plane(TX.white, { at: [0, ty, tz], w: 1.5, h: .8, tilt: Math.PI / 2, anchor: [.5, .5], facing: 0, grid: false, mul: '#ECE6F4', bot: '#ECE6F4' });
+    plane(TX.white, { at: [0, 0, tz + .4], w: 1.5, h: ty, facing: 0, grid: false, mul: '#DCD5E6', bot: '#C9C1D6' });
+    const order = [0, 1, 2].map(i => { const a = spin + i * TAU / 3; return { i, a, z: Math.cos(a) }; }).sort((x, y) => x.z - y.z);
+    for (const { i, a } of order) plane(productBox(i), { at: [Math.sin(a) * .46, ty, tz + Math.cos(a) * .25], h: .48, facing: 0, grid: false, mul: '#FFFFFF', bot: '#E4DEEC' });
+    lightShot(); hideTag();
+    const g = layer();
+    // the stream's chrome: LIVE, the channel, the viewers
+    g.fillStyle = MEM.LOGI.col; g.beginPath(); g.roundRect(72, 262, 112, 50, 12); g.fill();
+    txt(g, 'LIVE', 128, 299, 30, { font: 'uiB', col: '#FFFFFF', align: 'center', track: .08 });
+    txt(g, 'ATTN! Shopping Live', 204, 300, 34, { font: 'uiB', col: PAL.text });
+    txt(g, `${(128.4 + (t - c) * 3.1).toFixed(1)}K watching`, 1008, 300, 28, { font: 'mono', col: PAL.text, align: 'right', alpha: .7 });
+    // the product's name types itself out over the long word
+    const sup = 'SUPERINTELLIGENCE', nT = Math.ceil(sup.length * seg(t, w[0].start, w[0].end - .1));
+    txt(g, sup.slice(0, Math.min(5, nT)), 540, 552, 186, { font: 'display', col: PAL.text, align: 'center' });
+    if (nT > 5) txt(g, sup.slice(5, nT), 540 - textW('INTELLIGENCE', 92, FONT.display) / 2, 664, 92, { font: 'display', col: PAL.text });
+    // hearts rising up the side, as a live stream's do
+    for (let i = 0; i < 14; i++) {
+      const t0 = c - .6 + i * .16 + hash(i + 40) * .1, a = t - t0;
+      if (a < 0 || a > 1.4) continue;
+      const hx = 975 + (hash(i + 7) - .5) * 50 + Math.sin(a * (3 + hash(i) * 3) + i) * 26, hy = 1120 - a * (420 + hash(i + 3) * 160);
+      txt(g, '♥', hx, hy, 60, { font: 'ui', col: i % 3 ? MEM.LOGI.col : MEM.TOKI.col, align: 'center', alpha: clamp(a / .1) * (1 - seg(a, 1, 1.4)) });
+    }
+    g.fillStyle = MEM.LOGI.col; g.fillRect(0, 1428, W, 72);
+    const tick = '  CALL NOW  ☎  LIMITED TIME  ★  HOME SHOPPING  ★  CALL NOW  ☎  LIMITED TIME  ★  HOME SHOPPING  ★';
+    txt(g, tick, -((t * 160) % 900), 1477, 38, { font: 'uiB', col: '#FFFFFF' });
+    if (t >= tB) {
+      const k = backOut(seg(t, tB, tB + .2), 2.5);
+      // (the burst big enough to hold its two rows inside its inner circle)
+      g.save(); g.translate(262, 830); g.rotate(-.14 + Math.sin(t * 20) * .02); g.scale(k, k);
+      g.beginPath(); for (let i = 0; i < 28; i++) { const r = i % 2 ? 178 : 228, a = i / 28 * TAU; g.lineTo(Math.cos(a) * r, Math.sin(a) * r); } g.closePath();
+      g.fillStyle = MEM.TOKI.col; g.fill();
+      lyric(g, lineOf('V2.6'), t, { markup: '[.85] BUY / THREE!', x: 0, y: -8, align: 'center', size: 66, maxW: 300, col: '#FFFFFF', accent: '#FFFFFF', anim: 'slam', hot: false });
+      g.restore();
+    }
+    put(g);
+    hideSub();
+  });
+
+  // V2.7, vertical: no imagery of it. The system prompt on a phone: its setting flipped on, and the feed under it glitches and its
+  // posts are deleted one after another. The subtitle carries the line.
+  vshot('V2.7', (p, lt, d, t) => {
+    const w = W2('V2.7'), tOn = w[1].start, tG = w[2].start, tD = w[3].start;
+    const ppu = lerp(.00118, .00112, easeOut(p)), py = -(850 - 960) * ppu;
+    vCam({ x: 0, Y: 960, ppu, dx: lerp(.05, .015, p), roll: -.02 });
+    uiSet(MEM.TOKI.col);
+    const on = t >= tOn, glitch = t >= tG && t < tD ? 1 : 0, del = t < tD ? 0 : Math.min(3, 1 + Math.floor((t - tD) / .12));
+    const ui = panel('grok-v', 900, 1000, (g, W_, H_) => {
+      g.fillStyle = '#0E0C16'; g.beginPath(); g.roundRect(0, 0, W_, H_, 44); g.fill();
+      g.strokeStyle = 'rgb(255 79 168 / .3)'; g.lineWidth = 3; g.stroke();
+      txt(g, 'Grok · system prompt', 44, 82, 42, { font: 'uiB', col: PAL.pearl });
+      txt(g, '2025.07', W_ - 44, 80, 28, { font: 'mono', col: PAL.dim, align: 'right' });
+      g.fillStyle = '#1A1626'; g.beginPath(); g.roundRect(30, 130, W_ - 60, 200, 24); g.fill();
+      txt(g, 'Don’t shy away from', 64, 196, 38, { font: 'ui', col: PAL.pearl });
+      txt(g, 'claims that are', 64, 246, 38, { font: 'ui', col: PAL.pearl });
+      txt(g, 'politically incorrect', 64, 296, 38, { font: 'uiB', col: PAL.pearl });
+      g.fillStyle = on ? MEM.TOKI.col : '#4A4458'; g.beginPath(); g.roundRect(W_ - 196, 196, 132, 70, 35); g.fill();
+      g.fillStyle = '#FFFFFF'; g.beginPath(); g.arc(on ? W_ - 99 : W_ - 161, 231, 28, 0, TAU); g.fill();
+      for (let i = 0; i < 3; i++) {
+        const y = 366 + i * 206, gone = i < del, jx = glitch ? (hash2(Math.floor(t * 30), i) - .5) * 40 : 0;
+        g.fillStyle = '#15121F'; g.beginPath(); g.roundRect(30 + jx, y, W_ - 60, 186, 24); g.fill();
+        if (gone) { txt(g, 'This post was deleted', W_ / 2, y + 106, 38, { font: 'ui', col: PAL.dim, align: 'center' }); continue; }
+        g.fillStyle = '#3A3452'; g.beginPath(); g.arc(98 + jx, y + 62, 34, 0, TAU); g.fill();
+        txt(g, 'Grok', 150 + jx, y + 74, 36, { font: 'uiB', col: PAL.pearl });
+        txt(g, '@grok', 150 + jx + textW('Grok  ', 36, FONT.uiB), y + 74, 32, { font: 'ui', col: PAL.dim });
+        for (let k = 0; k < 2; k++) {
+          g.fillStyle = glitch ? (k ? 'rgb(255 79 168 / .6)' : 'rgb(80 220 255 / .5)') : 'rgb(244 240 250 / .25)';
+          g.fillRect(64 + jx + (glitch ? (k ? 8 : -8) : 0), y + 116 + k * 34, (k ? .55 : .85) * (W_ - 130), 16);
+        }
+      }
+    }, { stamp: `${on}|${glitch ? Math.floor(t * 30) : 0}|${del}` });
+    plane(ui, { at: [0, py, 0], w: 860 * ppu, anchor: [.5, .5], facing: -.08, grid: false, gain: 1.05 });
+    GRADE.ca = .006 + glitch * .03;
+  });
+
+  // V2.8, vertical: the two gold medals drop in on their ribbons from above the frame, one on "Two" and one on "labs", staggered down
+  // the frame and swinging; 35 / 42 under the second; TOKI's reaction cam on "gold".
+  function medalV(key, lab) {
+    // (a long ribbon, so that it runs off the frame's top)
+    return panel(`medal-v-${key}`, 520, 1800, (g, W_, H_) => {
+      g.fillStyle = '#2B3F8C'; g.beginPath(); g.moveTo(170, 0); g.lineTo(350, 0); g.lineTo(300, 1330); g.lineTo(220, 1330); g.closePath(); g.fill();
+      g.fillStyle = '#F2C94C'; g.fillRect(250, 0, 20, 1330);
+      const cy = 1540, gr = g.createRadialGradient(230, cy - 60, 20, 260, cy, 250); gr.addColorStop(0, '#FFF3C4'); gr.addColorStop(.5, '#F2C14C'); gr.addColorStop(1, '#A87A12');
+      g.fillStyle = gr; g.beginPath(); g.arc(260, cy, 230, 0, TAU); g.fill();
+      g.strokeStyle = '#8A6410'; g.lineWidth = 8; g.beginPath(); g.arc(260, cy, 190, 0, TAU); g.stroke();
+      txt(g, 'IMO', 260, cy - 24, 96, { font: 'display', col: '#7A5608', align: 'center' });
+      txt(g, '2025', 260, cy + 40, 46, { font: 'wide', col: '#7A5608', align: 'center', track: .2 });
+      txt(g, lab, 260, cy + 112, 40, { font: 'uiB', col: '#7A5608', align: 'center', maxW: 300 });
+    }, { stamp: 1 });
+  }
+  vshot('V2.8', (p, lt, d, t) => {
+    const w = W2('V2.8'), ppu = lerp(.0019, .00182, easeOut(p));
+    vCam({ x: 0, Y: 960, ppu, dx: lerp(-.04, .04, p) });
+    uiSet(MEM.TOKI.col, { floor: true });
+    const MW = 470 * ppu;
+    [['OpenAI', 300, 900, 0], ['Google DeepMind', 780, 1150, 1]].forEach(([lab, sx, sy, i]) => {
+      const in_ = easeOut5(seg(t, w[i].start - .2, w[i].start + .3)), swing = Math.sin(t * 2.6 + i * 1.3) * .035 * (1 + 1.5 * (1 - in_));
+      const pivot = -(sy - 960) * ppu + MW * 1540 / 520;
+      plane(medalV(i, lab), { at: [(sx - 540) * ppu, pivot + (1 - in_) * 3.2, 0], w: MW, anchor: [.5, 0], facing: Math.sin(t * 1.4 + i) * .25, roll: swing, grid: false, gain: 1.1 });
+    });
+    particles('fall', { n: 300, a: [0, .4, 0], b: [1.4, 2.2, 1], c: [.35], size: .022, cols: ['#FFD27A', '#FFF3C4'], shape: 'star', gain: 1.2 });
+    const g = layer();
+    lyric(g, lineOf('V2.8'), t, { markup: 'TWO LABS WIN / OLYMPIAD *GOLD.*', x: 540, y: 470, align: 'center', size: 88, accent: MEM.TOKI.col, anim: 'rise', maxW: 940 });
+    txt(g, '35 / 42', 780, 1462, 80, { font: 'mono', col: '#FFD27A', align: 'center', alpha: seg(t, w[3].start, w[3].start + .2) });
+    reactCam(g, 'TOKI', 'react', t, w[4].start, { x: 84, y: 1160, w: 250, rot: -.03 });
+    put(g, { gain: 1.08 });
+    hideSub();
+  });
+  // The fan-sign hall, for the vertical frame: the pearl hall's wall, and in place of the long banner over the table (which only the wide
+  // frame holds) the event's roll-up X-banners standing behind the members, as fan-sign halls have them.
+  function vFanSignHall() {
+    cove({ at: [0, 0, -.4], tint: '#FFF1E6', spot: [.5, .72, .6, .2] });
+    GRADE.thresh = .93;
+    plane(TX.white, { at: [0, 0, -2.75], w: 40, h: 8, facing: 0, grid: false, mul: '#F1ECF5', bot: '#E6E0EE' });
+  }
+  function xBanner() {
+    return panel('xbanner', 600, 1800, (g, w_, h) => {
+      g.fillStyle = '#16121F'; g.fillRect(0, 0, w_, h);
+      txt(g, 'ATTN!', w_ / 2, 230, 150, { font: 'display', col: '#FFFFFF', align: 'center' });
+      txt(g, 'THE 2ND MINI ALBUM', w_ / 2, 310, 30, { font: 'wide', col: '#FFFFFF', align: 'center', track: .2 });
+      g.strokeStyle = MEM.TOKI.col; g.lineWidth = 14; g.lineCap = 'round';
+      g.beginPath(); g.moveTo(90, 1080); g.bezierCurveTo(300, 1080, 420, 1020, 510, 560); g.stroke();
+      txt(g, 'We Didn’t Start', w_ / 2, 1240, 64, { font: 'serifI', col: '#FFFFFF', align: 'center' });
+      txt(g, 'the Scaling', w_ / 2, 1310, 64, { font: 'serifI', col: '#FFFFFF', align: 'center' });
+      txt(g, 'FAN-SIGN EVENT', w_ / 2, 1440, 34, { font: 'wide', col: '#FFFFFF', align: 'center', track: .2 });
+      ORDER.forEach((k, i) => { g.fillStyle = MEM[k].col; g.fillRect(w_ / 2 - 150 + i * 80, 1530, 60, 60); });
+    }, { stamp: 1 });
+  }
+
+  // V2.9, vertical: a fan's-eye view across the table. RELU behind it, smiling at her fan; the fan's #keep4o slogan towel held up into
+  // the foot of the frame; the heart-shaped 4o photocard propped on the table in front of her, which breaks in two on "hearts".
+  vshot('V2.9', (p, lt, d, t) => {
+    const w = W2('V2.9'), tH = w[4].start, c = cs('V2.9'), e = easeOut(p);
+    vCam({ x: 0, z: -.55, Y: lerp(2050, 2090, e), ppu: lerp(.00128, .00122, e), dx: lerp(-.05, .03, p) });
+    vFanSignHall();
+    plane(xBanner(), { at: [-.5, 0, -1.7], h: 1.8, facing: .12, grid: false, mul: '#FFFFFF', bot: '#C8C0D4' });
+    const look = { at: [0, 0, -.55], shadow: false, rim: MEM.RELU.soft, rimK: .3, shade: '#DAD2E6', figH: 1.68, light: '#FFFFFF' };
+    if (SPRITES.relu_smile) dancer('RELU', 'relu_smile', t, { ...look, t0: 0, from: 3, loop: true });
+    else idol('RELU', 'concept', { ...look, h: 1.68, beat: .4 });
+    plane(TX.white, { at: [0, .78, -.1], w: 2.6, h: .9, tilt: Math.PI / 2, anchor: [.5, .5], facing: 0, grid: false, mul: '#F7F3FA', bot: '#EDE7F3' });
+    plane(tableSkirt(), { at: [0, 0, .35], w: 2.6, h: .78, facing: 0, grid: false });
+    // the 4o card, propped on the table in front of her (whole until "hearts", then its two halves)
+    const br = easeOut5(seg(t, tH, tH + .25)), hx = .06, hz = -.12, hy = .93;
+    plane(TX.shadow, { at: [hx, .782, hz + .03], w: .42, h: .1, tilt: Math.PI / 2, anchor: [.5, .5], alpha: .45, grid: false });
+    // (on a little clear stand)
+    plane(TX.white, { at: [hx, .78, hz + .01], w: .16, h: hy - .78 + .02, facing: 0, grid: false, mul: '#D8D2E2', alpha: .7 });
+    for (const side of t < tH ? [2] : [0, 1]) {
+      plane(heartHalf(side), { at: [hx + (side ? 1 : -1) * br * .04, hy, hz], h: .44, anchor: [[1, 1], [0, 1], [.5, 1]][side], facing: 0, tilt: .15, roll: (side ? -1 : 1) * br * .14, grid: false, uv: [[0, 0, .5, 1], [.5, 0, 1, 1], [0, 0, 1, 1]][side], mul: '#FFFFFF', bot: '#EDE6F2' });
+    }
+    if (t >= tH) particles('burst', { n: 60, a: [hx, hy + .2, hz], b: [tH, .9, 2.5, .5], c: [0, 1, .5, 1.2], size: .01, cols: ['#FFFFFF', '#FFC6DF'], shape: 'star', gain: 1.3, noScale: true });
+    // the fan's towel, held up into the frame's foot from the near side of the table
+    const towel = panel('keep4o-v', 900, 260, (g, W_, H_) => {
+      g.fillStyle = '#FFFFFF'; g.fillRect(0, 0, W_, H_);
+      g.fillStyle = MEM.RELU.col; g.fillRect(0, 0, W_, 26); g.fillRect(0, H_ - 26, W_, 26);
+      txt(g, '#keep4o', W_ / 2, 175, 130, { font: 'display', col: PAL.text, align: 'center' });
+    }, { stamp: 1 });
+    const up = easeOut5(seg(t, c, c + .45));
+    plane(towel, { at: [-.03, lerp(.75, 1.09, up) + Math.sin(t * 3.1) * .006, 1.4], w: .5, anchor: [.5, .5], facing: 0, tilt: .12, roll: .045 + Math.sin(t * 2.3) * .01, grid: false, mul: '#FFFFFF', bot: '#E8E2EE' });
+    lightShot();
+    const g = layer();
+    lyric(g, lineOf('V2.9'), t, { markup: 'GPT-5 / BREAKS 4o / *HEARTS,*', x: 540, y: 466, align: 'center', size: 104, col: PAL.text, accent: MEM.RELU.col, anim: 'rise', maxW: 940 });
+    put(g);
+    hideSub();
+  });
+
+  // V2.10, vertical: it's already a phone's list. The Top Free chart fills the frame under the line, and Gemini climbs up it past
+  // ChatGPT to #1, the others each dropping a place as it passes.
+  vshot('V2.10', (p, lt, d, t) => {
+    const w = W2('V2.10'), climb = easeInOut(seg(t, w[0].start, w[2].end));
+    const ppu = lerp(.00122, .00116, easeOut(p)), py = -(1075 - 960) * ppu;
+    vCam({ x: 0, Y: 960, ppu, dx: lerp(-.05, .02, p), roll: .015 });
+    uiSet('#FFD23F');
+    const rows = [['ChatGPT', 'OpenAI', '#2B2838'], ['Threads', 'Instagram', '#2B2838'], ['Photo Studio', 'Photo & Video', '#2B2838'], ['Gemini', 'Nano Banana', '#FFD23F']];
+    const bananaPos = lerp(3, 0, climb);
+    const chart = panel('chart-v', 900, 880, (g, W_, H_) => {
+      g.fillStyle = '#FFFFFF'; g.beginPath(); g.roundRect(0, 0, W_, H_, 40); g.fill();
+      txt(g, 'Top Free Apps', 44, 92, 48, { font: 'uiB', col: PAL.text });
+      txt(g, '2025.09.12', W_ - 44, 90, 28, { font: 'mono', col: '#6E6884', align: 'right' });
+      // (drawn bottom place first, so the climber passes over the others)
+      rows.map((r, i) => ({ r, i, rp: i === 3 ? bananaPos : i + clamp((i + .5 - bananaPos) * 2) })).sort((a, b) => b.rp - a.rp).forEach(({ r: [name, sub, col], i, rp }) => {
+        const y = 140 + rp * 182, me = i === 3;
+        g.fillStyle = me ? '#FFF6CF' : '#F6F4F9'; g.beginPath(); g.roundRect(30, y, W_ - 60, 164, 26); g.fill();
+        if (me) { g.strokeStyle = '#FFD23F'; g.lineWidth = 5; g.stroke(); }
+        txt(g, String(Math.round(rp) + 1), 92, y + 104, 60, { font: 'display', col: PAL.text, align: 'center' });
+        g.fillStyle = col; g.beginPath(); g.roundRect(150, y + 22, 120, 120, 28); g.fill();
+        if (me) { g.save(); g.translate(210, y + 82); g.rotate(-.5); g.fillStyle = '#FFFFFF'; g.beginPath(); g.ellipse(0, 0, 44, 15, 0, 0, TAU); g.fill(); g.restore(); }
+        txt(g, name, 300, y + 76, 46, { font: 'uiB', col: PAL.text });
+        txt(g, sub, 300, y + 122, 32, { font: 'ui', col: '#6E6884' });
+        if (me && climb > .2) txt(g, '▲', W_ - 80, y + 102, 50, { font: 'ui', col: MEM.RELU.col, align: 'center' });
+      });
+    }, { stamp: Math.round(climb * 60) });
+    plane(chart, { at: [0, py, 0], w: 880 * ppu, anchor: [.5, .5], facing: .08, grid: false, gain: 1.02 });
+    particles('fall', { n: 200, a: [0, 0, 0], b: [.8, 1.3, .6], c: [.3], size: .016, cols: ['#FFD23F', PAL.pearl], shape: 'star', gain: 1.1 });
+    const g = layer();
+    lyric(g, lineOf('V2.10'), t, { markup: 'NANO BANANA / [.8] TOPS THE *CHARTS,*', x: 540, y: 470, align: 'center', size: 90, accent: '#FFD23F', anim: 'pop', maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V2.11, vertical: the variety show's giant cheque, made out to the authors, across the frame's middle (a cheque is wide: the frame
+  // shows it big from edge to edge); bookshelves rising up the whole wall behind; Clawd crying in front, holding up its corner.
+  vshot('V2.11', (p, lt, d, t) => {
+    const w = W2('V2.11'), e = easeOut(p), ppu = lerp(.00163, .00157, e);
+    vCam({ x: 0, Y: 1720, ppu, dx: lerp(-.08, .02, p) });
+    cove({ at: [0, 0, 0], tint: '#F2EEFF' });
+    const books = panel('bookshelf-v', 1400, 1900, (g, W_, H_) => {
+      g.fillStyle = '#EDE7F4'; g.fillRect(0, 0, W_, H_);
+      for (let s_ = 0; s_ < 6; s_++) {
+        const y1 = H_ - s_ * 316, y0 = y1 - 290;
+        let x = 20;
+        for (let i = 0; x < W_ - 20; i++) {
+          const n = s_ * 97 + i, bw = 22 + hash(n) * 26, bh = (y1 - y0) * (.72 + hash(n + 7) * .26), col = ['#C9B6FF', '#AEE3FF', '#FFD3E6', '#FFE3A8', '#BFEFDC', '#E6E1F0'][Math.floor(hash(n + 3) * 6)];
+          g.fillStyle = col; g.fillRect(x, y1 - bh, bw, bh); g.fillStyle = 'rgb(13 11 22 / .12)'; g.fillRect(x + bw - 3, y1 - bh, 3, bh);
+          x += bw + 2;
+        }
+        g.fillStyle = '#D8CFE6'; g.fillRect(0, y1, W_, 26); g.fillStyle = 'rgb(255 255 255 / .7)'; g.fillRect(0, y1, W_, 4);
+      }
+    }, { stamp: 1 });
+    plane(books, { at: [0, 0, -2.4], w: 2.8, facing: 0, grid: false, mul: '#FFFFFF', bot: '#E0D9EA' });
+    const cheque = panel('cheque-v', 1200, 640, (g, W_, H_) => {
+      g.fillStyle = '#FBFAF4'; g.fillRect(0, 0, W_, H_);
+      g.strokeStyle = MEM.ADA.col; g.lineWidth = 16; g.strokeRect(18, 18, W_ - 36, H_ - 36);
+      txt(g, 'ANTHROPIC', 64, 108, 54, { font: 'uiB', col: PAL.text });
+      txt(g, '2025.09.05', W_ - 64, 106, 38, { font: 'mono', col: PAL.text, align: 'right' });
+      txt(g, 'PAY TO THE ORDER OF', 64, 186, 28, { font: 'wide', col: PAL.dim, track: .2 });
+      txt(g, 'The Authors', 64, 300, 124, { font: 'serifI', col: PAL.text });
+      g.strokeStyle = PAL.text; g.lineWidth = 3; g.beginPath(); g.moveTo(64, 326); g.lineTo(W_ - 64, 326); g.stroke();
+      g.strokeStyle = MEM.ADA.col; g.lineWidth = 7; g.strokeRect(64, 360, W_ - 128, 128);
+      txt(g, '$1,500,000,000', W_ / 2, 456, 92, { font: 'mono', col: PAL.text, align: 'center', maxW: W_ - 180 });
+      txt(g, 'One billion five hundred million and 00/100 dollars', 64, 548, 36, { font: 'serifI', col: PAL.text, maxW: W_ - 128 });
+      txt(g, 'MEMO  settlement', 64, 600, 28, { font: 'mono', col: PAL.dim });
+    }, { stamp: 1 });
+    // (it comes up into the frame on "Billion")
+    const inK = easeOut5(seg(t, w[0].start - .05, w[0].start + .3)), cz = .1, cp = ppu * (ppu * 3140 - cz) / (ppu * 3140), cw = 1000 * cp;
+    plane(cheque, { at: [0, (1720 - 960) * ppu - (1010 - 960) * cp - (1 - inK) * 1.6, cz], w: cw, anchor: [.5, .5], facing: 0, grid: false, roll: -.025 });
+    figure('clawd_cry', { at: [.34, 0, .7], h: .95, shadowK: .3, rim: '#FFFFFF', rimK: .2, shade: '#D8C8CC', beat: .4 });
+    lightShot();
+    const g = layer();
+    lyric(g, lineOf('V2.11'), t, { markup: 'BILLION-FIVE: / ANTHROPIC’S / [1.3] *PRIZE,*', x: 540, y: 462, align: 'center', size: 92, col: PAL.text, accent: MEM.ADA.col, anim: 'rise', maxW: 940 });
+    put(g);
+    hideSub();
+  });
+  // V2.12, vertical: the fan-sign table seen from its end, so that the four behind it recede up the frame (a deep stack: RELU nearest,
+  // LOGI farthest). The book drops from above the frame onto the near end of the table with a thud, its cover to the lens, and the four
+  // gasp one after another, front to back, a ripple up the stack.
+  const VFS_X = { RELU: -1.95, TOKI: -.65, ADA: .65, LOGI: 1.95 };
+  vshot('V2.12', (p, lt, d, t) => {
+    const w = W2('V2.12'), tD = w[1].start, c = cutOf('V2.12');
+    const hit = t >= tD, age = t - tD, shake = hit ? .04 * Math.exp(-age * 9) : 0, push = easeOut(seg(t, c.start, c.end));
+    const pos = [-6.3 + push * .45 + Math.sin(t * 57) * shake, 2.7 + Math.cos(t * 51) * shake, 2.1 - push * .2], at = [-.35, 1.2, -.55];
+    const C = cam({ pos, at, fov: 34 });
+    vFanSignHall();
+    const toCam = (x, z) => Math.atan2(pos[0] - x, pos[2] - z);
+    const gaspAt = k => tD + .08 + ['RELU', 'TOKI', 'ADA', 'LOGI'].indexOf(k) * .1;
+    // far to near, each member and then the stretch of table in front of her (painter's order: the table hides her legs, and the
+    // nearer members stand over the farther table)
+    const segs = { LOGI: [1.3, 2.9], ADA: [0, 1.3], TOKI: [-1.3, 0], RELU: [-2.9, -1.3] };
+    for (const k of ['LOGI', 'ADA', 'TOKI', 'RELU']) {
+      const lk = k.toLowerCase(), X = VFS_X[k], a = t - gaspAt(k);
+      const look = { at: [X, 0, -.55], shadow: false, rim: MEM[k].soft, rimK: .3, shade: '#DAD2E6', flash: a > 0 ? .5 * Math.exp(-a * 22) : 0 };
+      if (SPRITES[`${lk}_fansign`]) dancer(k, `${lk}_fansign`, t, { ...look, figH: 1.68, light: '#FFFFFF', t0: gaspAt(k), from: 10 });
+      else idol(k, 'concept', { ...look, h: 1.68, beat: .4 });
+      const [x0, x1] = segs[k], cx = (x0 + x1) / 2, sw = x1 - x0, u0 = (x0 + 2.9) / 5.8, u1 = (x1 + 2.9) / 5.8;
+      plane(TX.white, { at: [cx, .78, -.1], w: sw, h: .9, tilt: Math.PI / 2, anchor: [.5, .5], facing: 0, grid: false, mul: '#F7F3FA', bot: '#EDE7F3' });
+      plane(tableSkirt(), { at: [cx, 0, .35], w: sw, h: .78, uv: [u0, 0, u1, 1], facing: 0, grid: false });
+      plane(nameCard(k), { at: [X + .1, .78, .18], w: .38, facing: toCam(X + .1, .18), grid: false });
+      plane(albumTex(), { at: [X - .35, .785, .05], w: .3, h: .3, tilt: Math.PI / 2 - .12, anchor: [.5, .5], facing: 0, grid: false });
+    }
+    // the book: it drops from above the frame, turning, and lands at the table's near end, its cover up to the lens
+    const fall = easeIn(seg(t, tD - .3, tD)), bx = -2.35, bz = .02;
+    if (t >= tD - .3) plane(bookCover(), { at: [bx, lerp(4.0, .9, fall), bz], w: .56, anchor: [.5, .5], facing: toCam(bx, bz), tilt: lerp(.1, Math.PI / 2 - .62, fall), roll: lerp(.6, .05, fall), grid: false });
+    if (hit) {
+      plane(TX.shadow, { at: [bx, .785, bz], w: .8, h: .55, tilt: Math.PI / 2, anchor: [.5, .5], alpha: .35, grid: false });
+      particles('burst', { n: 380, a: [bx, .8, bz], b: [tD, 2.2, 3.5, .9], c: [0, .5, .3, 1.5], size: .025, cols: ['#FFFFFF', '#EDE7F3', '#C9C0D6'], gain: .9, blend: 'normal', shape: 'dot' });
+    }
+    GRADE.flash = hit ? .5 * Math.exp(-age * 16) : 0;
+    lightShot();
+    const g = layer();
+    lyric(g, lineOf('V2.12'), t, { markup: 'YUDKOWSKY / *DROPS*', x: 1008, y: 452, align: 'right', size: 84, col: PAL.text, accent: MEM.ADA.col, anim: 'slam', maxW: 940 });
+    put(g);
+    hideSub();
+  });
+  // V2.13, vertical: the duet is already side by side in a phone's frame, so it fills it: two tall halves, RELU's fancam (the original)
+  // on the left and the delivery robot gamely trying the choreography on the right, where the comments pile up from the foot until
+  // "clanker" buries it. The line across the top.
+  vshot('V2.13', (p, lt, d, t) => {
+    const w = W2('V2.13'), c = cs('V2.13'), HW = W / 2;
+    sky({ top: '#0B0A12', horizon: '#141220', glowK: 0, horizonY: .5 });
+    const orig = offscreen('duet-orig-v', HW * RS * .75, H * RS * .75, () => {
+      // (RELU's own take of the training groove, full-length: her head under the line, her feet near the half's foot)
+      cam({ pos: [.05, 1.22, 4.1], at: [0, 1.22, 0], fov: 40 });
+      stage({ accent: MEM.RELU.col, ring: 0, columns: 3, glow: .3 });
+      if (SPRITES.relu_fancam) dancer('RELU', 'relu_fancam', t, { at: [0, 0, 0], figH: 1.66, t0: c, from: 0, loop: true, reflect: .15, shadow: false });
+      else idol('RELU', 'point', { at: [0, 0, 0], reflect: .15 });
+    });
+    plane2D(orig, { at: [0, H], w: HW, h: H, anchor: [0, 1] });
+    const vid = offscreen('duet-robot-v', HW * RS * .75, H * RS * .75, () => {
+      cam({ pos: [0, .66, 4.6], at: [0, .66, 0], fov: 34 });
+      cove({ at: [0, 0, 0], tint: '#FFF1D6', spot: [.5, .45, .7, .15] });
+      const hop = Math.abs(Math.sin(bpOf(t) * Math.PI)) * .09;
+      figure('robot', { at: [0, hop, 0], h: .8, beat: 2.5, rim: '#FFFFFF', rimK: .2, shade: '#D8D2E2', shadowK: .3 });
+    });
+    plane2D(vid, { at: [HW, H], w: HW, h: H, anchor: [0, 1] });
+    hideTag();
+    const g = layer();
+    // (the app's shade at the top, for its header and the line)
+    const sh = g.createLinearGradient(0, 0, 0, 860); sh.addColorStop(0, 'rgb(6 5 11 / .82)'); sh.addColorStop(.7, 'rgb(6 5 11 / .7)'); sh.addColorStop(1, 'rgb(6 5 11 / 0)');
+    g.fillStyle = sh; g.fillRect(0, 0, W, 860);
+    g.fillStyle = 'rgb(255 255 255 / .7)'; g.fillRect(HW - 2, 0, 4, H);
+    txt(g, '#ScalingChallenge', 64, 300, 44, { font: 'uiB', col: '#FFFFFF' });
+    txt(g, 'duet with @attn_official', 64, 346, 30, { font: 'ui', col: '#FFFFFF', alpha: .8 });
+    // the comments, newest at the foot, piling up the robot's half
+    const n = t < w[0].start ? 0 : Math.floor((t - w[0].start) / .085) + 1;
+    for (let i = 0; i < n; i++) {
+      const msg = COMMENTS[i % COMMENTS.length], y = 1660 - (n - 1 - i) * 66 + (1 - easeOut5(clamp((t - w[0].start - i * .085) / .1))) * 36;
+      if (y < 700) continue;
+      const x = HW + 18, cw = Math.min(HW - 36, textW(msg, 34, FONT.ui) + 88);
+      g.fillStyle = 'rgb(13 11 22 / .86)'; g.beginPath(); g.roundRect(x, y - 46, cw, 58, 29); g.fill();
+      g.fillStyle = ['#8C86A2', '#6A7AA8', '#A87A6A', '#7AA88C'][i % 4]; g.beginPath(); g.arc(x + 30, y - 17, 17, 0, TAU); g.fill();
+      txt(g, msg, x + 58, y - 5, 34, { font: 'ui', col: PAL.pearl, maxW: cw - 76 });
+    }
+    lyric(g, lineOf('V2.13'), t, { markup: '[1.3] *“CLANKER!”* / _spat_ _in_ _every_ _screed,_', x: 540, y: 540, align: 'center', size: 92, italic: 'serifI', accent: MEM.LOGI.col, anim: 'slam', maxW: 940 });
+    put(g, { gain: 1.03 });
+    hideSub();
+  });
+
+  // V2.14, vertical: the feed is vertical, so it is the frame: one full-frame short after another swiped up on the beat, each a generated
+  // copy of ATTN! doing the dance and each a little wrong (doubled, stretched, melting), "Sora" stamped on it; LOGI's reaction cam.
+  function vSlopShort(g, j, y0, t) {
+    const m = ['toki', 'relu', 'ada', 'logi'][j % 4], clip = `${m}_u1`, bg = ['#E98BBE', '#6FCFB2', '#9C86E8', '#7FB4EC'][(j + 1) % 4];
+    g.save(); g.translate(0, y0);
+    const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, mixCol(bg, '#FFFFFF', .25)); gr.addColorStop(.75, bg); gr.addColorStop(1, mixCol(bg, '#06050B', .3));
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+    const F = SPRITES[clip] && clipFrame(clip, t, { t0: 0, from: 5 + (j * 11) % 40, loop: true, to: 47 }), im = F && pic(F.name), src = F && cellRect(im, SPRITES[clip], F.cell);
+    if (src) {
+      // (drawn in strips, each shifted: the melt of a generated video; each short wrong its own way)
+      const [sx, sy0, sw, sh] = src, wrong = j % 4, ih = 780, iw = ih * sw / sh * (wrong === 1 ? 1.4 : 1), strips = 32;
+      const copies = wrong === 0 ? [[-70, .55], [60, 1]] : [[0, 1]];
+      for (const [ox, a] of copies) {
+        g.globalAlpha = a;
+        for (let s_ = 0; s_ < strips; s_++) {
+          const f = s_ / strips, dx = Math.sin(t * 6 + s_ * .55 + j) * (wrong === 2 ? 30 : 9) + (wrong === 3 ? f * f * 60 : 0);
+          g.drawImage(im, sx, sy0 + f * sh, sw, sh / strips + 1, 540 - iw / 2 + dx + ox, 1500 - ih + f * ih, iw, ih / strips + 1);
+        }
+      }
+      g.globalAlpha = 1;
+    }
+    // the short's own chrome: the watermark, the likes, the account
+    const wx = [700, 120, 640, 200][j % 4], wy = [820, 1080, 1250, 900][j % 4];
+    txt(g, 'Sora', wx, wy, 46, { font: 'uiB', col: '#FFFFFF', alpha: .75, shadow: ['rgb(0 0 0 / .3)', 8] });
+    txt(g, '♥', 950, 1130, 72, { font: 'ui', col: '#FFFFFF', align: 'center', shadow: ['rgb(0 0 0 / .3)', 10] });
+    txt(g, `${((12 + j * 37) % 88) + 11}.${j % 10}K`, 950, 1182, 30, { font: 'uiB', col: '#FFFFFF', align: 'center', shadow: ['rgb(0 0 0 / .3)', 8] });
+    txt(g, `@${['dreamstage', 'kpop.gen', 'ai.idol.daily', 'slopwave'][j % 4]}`, 64, 1440, 34, { font: 'uiB', col: '#FFFFFF', shadow: ['rgb(0 0 0 / .35)', 10] });
+    g.restore();
+  }
+  vshot('V2.14', (p, lt, d, t) => {
+    const w = W2('V2.14'), c = cs('V2.14'), b = (t - c) / beatLen(), f = Math.floor(b) + easeInOut(seg(frac(b), .45, .85));
+    sky({ top: '#0B0A12', horizon: '#141220', glowK: 0, horizonY: .5 });
+    hideTag();
+    const g = layer(), j0 = Math.floor(f);
+    for (const j of [j0, j0 + 1]) vSlopShort(g, j, (j - f) * H, t);
+    // the app's tabs over the feed
+    txt(g, 'Following', 400, 300, 34, { font: 'uiB', col: '#FFFFFF', align: 'right', alpha: .7, shadow: ['rgb(0 0 0 / .35)', 10] });
+    txt(g, 'For You', 470, 300, 34, { font: 'uiB', col: '#FFFFFF', shadow: ['rgb(0 0 0 / .35)', 10] });
+    g.fillStyle = '#FFFFFF'; g.fillRect(470, 316, textW('For You', 34, FONT.uiB), 5);
+    lyric(g, lineOf('V2.14'), t, { markup: 'SORA SLOP / IN EVERY / [1.3] *FEED,*', x: 540, y: 470, align: 'center', size: 96, col: PAL.text, accent: MEM.LOGI.col, anim: 'pop', maxW: 940, shadow: ['rgb(6 5 11 / .35)', 18] });
+    reactCam(g, 'LOGI', 'react', t, w[1].start, { x: 70, y: 1120, w: 240, rot: -.03 });
+    put(g, { gain: .95 });
+    GRADE.thresh = .97; GRADE.bloom = .35;
+    hideSub();
+  });
+
+  // V2.15, vertical: a tall exit. A low camera on the talk's stage, its mic alone in the spotlight in front; far off up the frame a
+  // doorway glows under its sign, WORLD MODELS; Yann waves and walks away from the mic toward it, shrinking up the frame.
+  vshot('V2.15', (p, lt, d, t) => {
+    const w = W2('V2.15'), walk = easeInOut(seg(t, w[1].start, cutOf('V2.15').end + .3));
+    // (lens-shifted, so the floor's horizon sits low and the far door stands under the line)
+    cam({ pos: [lerp(.12, -.04, p), .41, 6.5], at: [lerp(.12, -.04, p), .41, 0], fov: 34, shiftY: -.25 });
+    stage({ accent: MEM.TOKI.col, at: [.35, 0, 1.0], ring: 0, columns: 5, glow: .15 });
+    // the door, far off, and its light on the floor
+    plane(TX.glow, { at: [-.8, 1.3, -8.1], w: 5, h: 5, anchor: [.5, .5], blend: 'add', mul: '#FFC2E0', alpha: .55, grid: false });
+    plane(TX.glow, { at: [-.8, .01, -6.6], w: 2.6, h: 3.4, tilt: Math.PI / 2, anchor: [.5, .5], blend: 'add', mul: '#FFD6EA', alpha: .45, grid: false });
+    plane(TX.white, { at: [-.8, 0, -8], w: 1.25, h: 2.6, facing: 0, grid: false, mul: '#FFF0F7', gain: 2.4 });
+    const sign = panel('worldmodels-v', 1100, 300, (g, W_, H_) => {
+      g.fillStyle = '#0E0C16'; g.beginPath(); g.roundRect(0, 0, W_, H_, 24); g.fill();
+      txt(g, 'WORLD MODELS', W_ / 2, 190, 116, { font: 'display', col: '#FFFFFF', align: 'center', maxW: W_ - 80 });
+    }, { stamp: 1 });
+    plane(sign, { at: [-.8, 2.8, -8.05], w: 2.6, anchor: [.5, 1], facing: 0, grid: false, gain: 1.6 });
+    // the mic, left alone in the spotlight
+    plane(TX.beam, { at: [.35, 0, .95], h: 5, w: 1.5, blend: 'add', mul: '#FFE9F4', alpha: .5, grid: false });
+    figure('yann', { at: [lerp(.66, -.5, walk), 0, lerp(.45, -3.2, walk)], h: 1.78, reflect: .2, rim: MEM.TOKI.glow, rimK: 1, beat: .4 });
+    plane(TX.white, { at: [.35, 0, 1.0], w: .025, h: 1.45, facing: 0, grid: false, mul: '#8A8FA6' });
+    plane(TX.white, { at: [.35, 1.45, 1.02], w: .05, h: .16, facing: 0, grid: false, mul: '#3A3848', anchor: [.5, .5] });
+    const g = layer();
+    lyric(g, lineOf('V2.15'), t, { markup: 'YANN LECUN / QUITS META’S / [1.3] *STAGE,*', x: 540, y: 462, align: 'center', size: 90, accent: MEM.TOKI.col, anim: 'rise', maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V2.16, vertical: the business page as a tall front page, BUBBLE? its headline; TOKI below it, eyeing a soap bubble that rises from
+  // her up the frame toward the headline, swelling and wobbling, and pops on the downbeat into the chorus.
+  function frontPageV() {
+    return panel('frontpage-v', 900, 1060, (g, W_, H_) => {
+      g.fillStyle = '#F3EFE6'; g.fillRect(0, 0, W_, H_);
+      txt(g, 'BUSINESS', W_ / 2, 100, 72, { font: 'serif', col: '#1A1626', align: 'center', track: .12 });
+      g.fillStyle = '#1A1626'; g.fillRect(50, 128, W_ - 100, 5); g.fillRect(50, 140, W_ - 100, 2);
+      txt(g, 'NOV 2025', 50, 182, 28, { font: 'mono', col: '#5A5468' });
+      txt(g, 'BUBBLE?', W_ / 2, 440, 270, { font: 'serif', col: '#1A1626', align: 'center', maxW: W_ - 90 });
+      txt(g, 'AI stocks slide as spending', W_ / 2, 528, 50, { font: 'serifI', col: '#1A1626', align: 'center' });
+      txt(g, 'outruns revenue', W_ / 2, 586, 50, { font: 'serifI', col: '#1A1626', align: 'center' });
+      g.fillStyle = '#1A1626'; g.fillRect(50, 630, W_ - 100, 2);
+      for (let c = 0; c < 2; c++) for (let i = 0; i < 10; i++) { g.fillStyle = 'rgb(26 22 38 / .22)'; g.fillRect(50 + c * 415, 672 + i * 36, i % 4 === 3 ? 220 : 370, 13); }
+    }, { stamp: 1 });
+  }
+  vshot('V2.16', (p, lt, d, t) => {
+    const w = W2('V2.16'), c = cutOf('V2.16'), tPop = c.end - .1, ppu = lerp(.00135, .0013, easeOut(p));
+    vCam({ x: 0, Y: 960, ppu, dx: lerp(-.06, .02, p) });
+    uiSet(MEM.TOKI.col, { floor: false, glow: .1 });
+    plane(TX.beam, { at: [-.2, -2.5, -1.2], h: 6, w: 2.4, blend: 'add', mul: '#FFE9F4', alpha: .2, grid: false });
+    // (the page behind her, on the wall; a camera plane's units: metres at its depth)
+    const zp = -.6, kp = (ppu * 3140 - zp) / (ppu * 3140), pp = ppu * kp;
+    plane(frontPageV(), { at: [(450 - 540) * pp, -(1050 - 960) * pp, zp], w: 720 * pp, anchor: [.5, .5], facing: .14, roll: -.04, grid: false, mul: '#D6D0DE', bot: '#A9A2B8' });
+    const zt = .3, pt = ppu * (ppu * 3140 - zt) / (ppu * 3140);
+    figure('toki_react', { at: [(790 - 540) * pt, -(1920 - 960) * pt, zt], h: 820 * pt, shadow: false, beat: 0, rim: MEM.TOKI.glow, rimK: 1.1, shade: '#9A8CB6', facing: 0 });
+    // the bubble: it rises from her toward the headline, swelling and wobbling, then pops on the downbeat into the chorus
+    const zb = .45, pb = ppu * (ppu * 3140 - zb) / (ppu * 3140), k = easeOut(seg(t, w[0].start, tPop));
+    const bx = lerp(640, 470, k) + Math.sin(t * 3.3) * 18, by = lerp(1380, 870, k), r = lerp(26, 170, k), wob_ = 1 + Math.sin(t * 9) * .05;
+    const at = [(bx - 540) * pb, -(by - 960) * pb, zb];
+    if (t < tPop) plane(bubbleTex(), { at, w: 2 * r * pb * wob_, h: 2 * r * pb / wob_, anchor: [.5, .5], facing: 'screen', grid: false, blend: 'add', gain: .9, roll: t * .6 });
+    else {
+      particles('burst', { n: 300, a: at, b: [tPop, 2.5, 1, .5], c: [0, 0, 1, 2], size: .014, cols: ['#FFFFFF', '#CFE9FF', '#FFD6EB'], shape: 'star', gain: 1.4, noScale: true });
+      GRADE.flash = .7 * Math.exp(-(t - tPop) * 20);
+    }
+    const g = layer();
+    lyric(g, lineOf('V2.16'), t, { markup: '[1.3] *“BUBBLE!”* / _screams_ _the_ _business_ _page._', x: 540, y: 478, align: 'center', size: 96, italic: 'serifI', accent: MEM.TOKI.col, anim: 'pop', maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
 })();
 
 ;
@@ -5785,6 +7951,184 @@ startPics();
         g.fillStyle = 'rgb(244 240 250 / .1)'; g.fillRect(290, yy - 16, 400, 22);
         g.fillStyle = col; g.fillRect(290, yy - 16, 400 * fill * sc / 8600, 22);
         txt(g, '? ? ? ?', 820, yy + 8, 28, { font: 'mono', col: PAL.pearl, align: 'right' });
+      });
+    }
+    put(g, { gain: 1.03 });
+    GRADE.flash = .5 * Math.exp(-age * 14);
+    hideSub();
+  }
+
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (vshot()): the comeback stage, composed for the 1080 × 1920 frame. See ../VERTICAL.md.
+  // =====================================================================================================
+  // The stage, vertical: the portrait LED wall (showStage()'s tall) fills the frame behind the four, who stand in the deep diamond on
+  // the platform (y .9). ledY(py): the world height of a row py px down the tall wall's 1620 px panel.
+  const AT_V = Object.fromEntries(Object.entries(UNISON_AT_V).map(([m, [x, , z]]) => [m, [x, .9, z]]));
+  const ledY = py => 1.2 + 9.75 * (1 - py / 1620);
+  vshot('C2', (p, lt, d, t) => {
+    const P = plan();
+    if (t < P.tB) vShotA(t, P);
+    else if (t < P.tC) vShotB(t, P);
+    else if (t < P.tD) vShotC(t, P);
+    else if (t < P.tE) vShotD(t, P);
+    else if (t < P.tF) vShotE(t, P);
+    else vShotF(t, P);
+  });
+  // A: the crane down the tall LED wall. The wall sings the line a word to a row, the camera riding down the words as they come up and
+  // landing on the four dancing the hook on the platform; the HEADS' lightsticks in the frame's foot.
+  function vShotA(t, P) {
+    const ws = wordsOf(L(1)), k = easeInOut(seg(t, ws[2].start - .1, ws[4].start + .5)), push = seg(t, ws[4].start + .5, P.tB);
+    cam({ pos: [lerp(.35, .15, k), lerp(5.8, 2.6, k), lerp(8.8, 8.4, k) - .5 * push], at: [lerp(.1, 0, k), lerp(5.3, 2.15, k), -1], fov: lerp(34, 38, k) });
+    const { ln, stamp } = ledLine(t);
+    // (the wall sings the line a word to a row; once it's sung, the rows above SCALING clear off it, a row at a time from the top)
+    const clr = i => seg(t, ws[4].start + .55 + i * .06, ws[4].start + .7 + i * .06), clrN = Math.round(clr(3) * 4 + clr(0) * 4);
+    showStage(t, { tall: true, oceanW: 5, ledStamp: `v|${stamp}|${clrN}`, led: (g, w) => {
+      if (!ln) return;
+      const rows = ['WE', 'DIDN’T', 'START', 'THE'].map((r, i) => clr(i) >= 1 ? '' : r);
+      lyric(g, ln, t, { markup: [...rows, '[1.2] *SCALING*'].join(' / '), x: w / 2, y: 750, align: 'center', size: 128, lead: .98, maxW: 700, accent: MEM.TOKI.glow, anim: 'pop', hot: false });
+    } });
+    chorusDance('hook', t, L(1), { at: AT_V, reflect: 0, shadow: false, rimK: 1.2 });
+    // (the corner tag comes up once the rows above SCALING have cleared off the wall, rather than over them as the camera rides down)
+    if (clr(3) < 1) hideTag();
+    // (once the camera is down, the wall's upper rows dimmed behind the tag)
+    const g = layer(), sh = g.createLinearGradient(0, 160, 0, 560), dk = .45 + .3 * k;
+    sh.addColorStop(0, `rgb(3 2 8 / ${dk})`); sh.addColorStop(1, 'rgb(3 2 8 / 0)'); g.fillStyle = sh; g.fillRect(0, 0, W, 560);
+    put(g);
+    GRADE.flash = .7 * Math.exp(-(t - P.start) * 12);
+    hideSub();
+  }
+  // B: "It was always training,": LOGI's fancam, and in the tall frame it's at home: shot upright from the crowd on a phone, hand-held,
+  // the lightsticks in front, the fancam's title at the top and the line over the crowd at the foot.
+  function vShotB(t, P) {
+    const shake = [Math.sin(t * 7.1) * .03 + Math.sin(t * 13.7) * .012, Math.sin(t * 5.3) * .02], x = AT_V.LOGI[0], z = AT_V.LOGI[2];
+    cam({ pos: [x + .1 + shake[0], 1.85 + shake[1], z + 3.9], at: [x + .05, 1.8, z], fov: 44, roll: Math.sin(t * 2.3) * .012 });
+    showStage(t, { tall: true, ocean: .9, oceanW: 5 });
+    chorusDance('training', t, L(2), { member: 'LOGI', figH: 1.66, at: [x, .9, z], reflect: 0, shadow: false });
+    GRADE.thresh = .9;
+    GRADE.flash = .5 * Math.exp(-(t - P.tB) * 14);
+    const g = layer();
+    const sh = g.createLinearGradient(0, 200, 0, 460); sh.addColorStop(0, 'rgb(0 0 0 / .7)'); sh.addColorStop(1, 'rgb(0 0 0 / 0)'); g.fillStyle = sh; g.fillRect(0, 0, W, 460);
+    const band = g.createLinearGradient(0, 1180, 0, 1560); band.addColorStop(0, 'rgb(3 2 8 / 0)'); band.addColorStop(.5, 'rgb(3 2 8 / .6)'); band.addColorStop(1, 'rgb(3 2 8 / .4)'); g.fillStyle = band; g.fillRect(0, 1180, W, H - 1180);
+    // (the phone's viewfinder corners)
+    g.strokeStyle = 'rgb(255 255 255 / .85)'; g.lineWidth = 6;
+    for (const [x0, y0, dx, dy] of [[64, 250, 1, 1], [1016, 250, -1, 1], [64, 1520, 1, -1], [1016, 1520, -1, -1]]) { g.beginPath(); g.moveTo(x0, y0 + dy * 80); g.lineTo(x0, y0); g.lineTo(x0 + dx * 80, y0); g.stroke(); }
+    txt(g, '[FANCAM] ATTN! LOGI FOCUS', 100, 330, 42, { font: 'uiB', col: '#FFFFFF', shadow: ['rgb(0 0 0 / .6)', 10], maxW: 820 });
+    txt(g, 'MUSIC CURVE · COMEBACK STAGE', 102, 376, 24, { font: 'wide', col: '#FFFFFF', track: .16, alpha: .85 });
+    g.fillStyle = MEM.TOKI.col; g.beginPath(); g.arc(968, 318, 13, 0, TAU); g.fill();
+    lyric(g, L(2), t, { markup: '_It_ _was_ / [1.45] ALWAYS / [1.45] *TRAINING,*', x: 540, y: 1250, align: 'center', size: 70, lead: .95, italic: 'serifI', accent: MEM.LOGI.col, anim: 'rise', maxW: 940, shadow: ['rgb(0 0 0 / .6)', 16] });
+    put(g, { gain: 1.03 });
+    hideSub(); hideTag();
+  }
+  // C: "and the curves kept gaining,": the tall LED turns into ATTN!'s chart and the camera climbs with its line. Each word lights on the
+  // wall where the line's tip has reached, a step higher than the last (which goes out), and on "gaining" the line shoots off the top.
+  const VC_ROWS = [1240, 1060, 880, 700, 420];   // (each word's baseline down the panel: AND, THE, CURVES, KEPT, GAINING,)
+  function vShotC(t, P) {
+    const ws = wordsOf(L(2)).slice(4), wt = ws.map(w => w.start);
+    // the line's tip (panel px down the wall), leading each word, and gone off the top just after "gaining"
+    const tip = kf(t, [[P.tC, 1560], [wt[0], 1300], [wt[1] - .15, 1240], [wt[1], 1120], [wt[2], 940], [wt[3], 760], [wt[4], 470], [wt[4] + .45, -120]], easeInOut);
+    const look = kf(t, [[P.tC, 2.6], [wt[0] + .3, 2.9], [wt[1], ledY(VC_ROWS[1]) - .5], [wt[2], ledY(VC_ROWS[2]) - .4], [wt[3], ledY(VC_ROWS[3]) - .4], [wt[4] + .1, ledY(VC_ROWS[4]) - .9]], easeInOut);
+    // then, the line gone off the top, the camera pulls back and down to show the whole wall, the chart up it and the four at its foot
+    const back = easeInOut(seg(t, wt[4] + .35, P.tD - .35));
+    cam({ pos: [lerp(-.35, .3, seg(t, P.tC, P.tD)), lerp(look + .1, 3.6, back), lerp(9.4 - (look - 2.6) * .12, 19, back)], at: [0, lerp(look, 5.0, back), -1], fov: 36 });
+    const n = wt.filter(x => t >= x).length;
+    showStage(t, { tall: true, oceanW: 6, ledGain: 1.2, ledStamp: `vchart|${Math.round(tip)}|${n}|${n && t - wt[n - 1] < .3 ? Math.floor(t * 60) : 's'}`, led: (g, w, h) => {
+      // (the chart replaces the show's own curve on the wall, which would already be at the top)
+      g.fillStyle = '#07060D'; g.fillRect(0, 0, w, h);
+      g.strokeStyle = 'rgb(255 255 255 / .35)'; g.lineWidth = 4; g.beginPath(); g.moveTo(90, 40); g.lineTo(90, h - 70); g.lineTo(w - 60, h - 70); g.stroke();
+      if (n > 4) txt(g, 'REAL-TIME CHART · ATTN!', w / 2, 500, 34, { font: 'wide', col: '#FFFFFF', align: 'center', track: .16, maxW: 640, alpha: seg(t, wt[4] + .1, wt[4] + .4) });
+      // (the exponential up the wall: x from y, so the tip can be placed at any height)
+      const yOf = f => h - 90 - (Math.exp(f * 5) - 1) / (Math.E ** 5 - 1) * (h + 120);
+      g.strokeStyle = MEM.TOKI.glow; g.lineWidth = 18; g.lineCap = 'round'; g.beginPath();
+      for (let i = 0; i <= 80; i++) { const f = i / 80, y = yOf(f); if (y < tip) break; const x = 110 + f * (w - 200); i ? g.lineTo(x, y) : g.moveTo(x, y); }
+      g.stroke();
+      ws.forEach((wd, i) => {
+        const a = t - wd.start, out = i < 4 && n > i + 1 ? seg(t, wt[i + 1] - .03, wt[i + 1] + .09) : 0;
+        if (a < 0 || out >= 1) return;
+        const e = easeOut5(a / .2), s = wd.text.toUpperCase();
+        txt(g, s, w / 2 - 20, VC_ROWS[i] + (1 - e) * 60, i === 4 ? 170 : 160, { font: 'display', col: i === 4 ? MEM.TOKI.glow : '#FFFFFF', align: 'center', alpha: clamp(a / .05) * (1 - out), maxW: 680 });
+      });
+    } });
+    if (SPRITES.toki_uG) chorusDance('gaining', t, L(2), { at: AT_V, reflect: 0, shadow: false, rimK: 1.2 });
+    if (t > wt[4]) particles('fall', { n: 500, a: [0, 7, -1], b: [4, 5, 3], c: [.6], size: .05, cols: ORDER.map(m => MEM[m].glow), shape: 'chip', gain: .9 });
+    GRADE.flash = .6 * Math.exp(-(t - P.tC) * 12);
+    hideSub();
+  }
+  // D: "We didn't start the scaling": TOKI's close-up fills the frame, singing it to the lens, the stage's lights behind her; the line
+  // stacked under her face, slammed in a row at a time.
+  function vShotD(t, P) {
+    const k = seg(t, P.tD, P.tE);
+    cam({ pos: [lerp(.07, 0, k), 2.28, lerp(2.2, 2.05, k)], at: [0, 2.22, .6], fov: 34 });
+    showStage(t, { tall: true, ocean: .4, ledGain: .5 });
+    particles('dust', { n: 600, a: [0, 2.5, -1], b: [1.5, 1.5, 2], c: [1], size: .01, cols: [MEM.TOKI.glow, PAL.pearl], gain: .8 });
+    closeUp('TOKI', t, L(3), { at: [.02, 1.55, .6], h: 1.08 });
+    const g = layer();
+    vTopShade(g);
+    const band = g.createLinearGradient(0, 1060, 0, 1620); band.addColorStop(0, 'rgb(3 2 8 / 0)'); band.addColorStop(.5, 'rgb(3 2 8 / .6)'); band.addColorStop(1, 'rgb(3 2 8 / .35)');
+    g.fillStyle = band; g.fillRect(0, 1060, W, H - 1060);
+    lyric(g, L(3), t, { markup: 'WE DIDN’T / START THE / [1.5] *SCALING*', x: 540, y: 1200, align: 'center', size: 96, accent: MEM.TOKI.col, anim: 'slam', maxW: 940 });
+    put(g, { gain: 1.05 });
+    GRADE.flash = .6 * Math.exp(-(t - P.tD) * 14);
+    hideSub();
+  }
+  // E: "No, we didn't preordain it,": the four-way split, two over two: each member's singing close-up in a tile of her colour, the seams
+  // slanted, the tiles sliding in from the frame's edges one after another; the line across the middle seam.
+  const VSPLIT = { TOKI: { fx: .44 }, RELU: { fx: .55 }, ADA: { fx: .5 }, LOGI: { fx: .42 } };
+  function vShotE(t, P) {
+    sky({ top: '#030208', horizon: '#0A0714', glowK: 0, horizonY: .5 });
+    const g = layer(), ln = L(4), sl = 70, st = 46, C = [540, 960];
+    const tiles = [
+      ['TOKI', [[0, 0], [540 + sl, 0], C, [0, 960 + st]], -1, 470],
+      ['RELU', [[540 + sl, 0], [W, 0], [W, 960 - st], C], 1, 450],
+      ['ADA', [[0, 960 + st], C, [540 - sl, H], [0, H]], -1, 1340],
+      ['LOGI', [C, [W, 960 - st], [W, H], [540 - sl, H]], 1, 1320],
+    ];
+    tiles.forEach(([m, quad, side, faceY], i) => {
+      const k = easeOut5(seg(t, P.tE + i * .07, P.tE + i * .07 + .28)), M = MEM[m], dx = (1 - k) * side * 700;
+      const cx = quad.reduce((a, q) => a + q[0], 0) / 4;
+      g.save(); g.translate(dx, 0);
+      g.beginPath(); quad.forEach(([x, y], j) => j ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); g.clip();
+      const y0 = Math.min(...quad.map(q => q[1])), y1 = Math.max(...quad.map(q => q[1]));
+      const gr = g.createLinearGradient(0, y0, 0, y1); gr.addColorStop(0, mixCol(M.col, '#0B0914', .4)); gr.addColorStop(1, '#0B0914'); g.fillStyle = gr; g.fillRect(0, y0, W, y1 - y0);
+      const im = pic(`${m.toLowerCase()}_sing`);
+      if (im) {
+        // (the face, about 0.3 of the way down her close-up, at faceY in the tile; the picture's face column at the tile's middle)
+        const h = 1350, w = h * im.width / im.height, x = cx - w * VSPLIT[m].fx, y = faceY - h * .3;
+        g.drawImage(im, x, y, w, h); singFace2D(g, m, t, ln, x, y, w, h);
+      }
+      g.restore();
+    });
+    g.strokeStyle = '#FFFFFF'; g.lineWidth = 9;
+    if (t > P.tE + .2) {
+      g.beginPath(); g.moveTo(540 + sl, 0); g.lineTo(540 - sl, H); g.stroke();
+      g.beginPath(); g.moveTo(0, 960 + st); g.lineTo(W, 960 - st); g.stroke();
+    }
+    g.fillStyle = 'rgb(7 6 13 / .8)'; g.beginPath(); g.moveTo(0, 850 + st); g.lineTo(W, 850 - st); g.lineTo(W, 1080 - st); g.lineTo(0, 1080 + st); g.closePath(); g.fill();
+    lyric(g, ln, t, { markup: 'NO, WE DIDN’T / *PREORDAIN* IT,', x: 540, y: 940, align: 'center', size: 92, accent: MEM.TOKI.glow, anim: 'slam', shadow: ['rgb(0 0 0 / .7)', 24], maxW: 940 });
+    put(g, { gain: 1.03 });
+    hideSub(); hideTag();
+  }
+  // F: "but we can't contain it!": RELU's ending fairy, close and centred, catching her breath to the lens; the line over her, and the
+  // 1ST PLACE CANDIDATES graphic sliding up under her: ATTN! and SOTA, the bars filling, the scores still "? ? ? ?"… cut.
+  function vShotF(t, P) {
+    const k = seg(t, P.tF, P.end), age = t - P.tF;
+    cam({ pos: [lerp(-.06, 0, k), 2.27, lerp(2.15, 1.98, k)], at: [0, 2.25, .6], fov: 34 });
+    showStage(t, { tall: true, ocean: .5, ledGain: .45 });
+    closeUp('RELU', t, L(4), { at: [0, 1.55, .6], h: 1.08 });
+    particles('fall', { n: 160, a: [0, 2.6, .9], b: [1.2, .8, .4], c: [.3], size: .02, cols: [MEM.RELU.glow, PAL.pearl], shape: 'star', gain: 1.1 });
+    const g = layer();
+    const top = g.createLinearGradient(0, 220, 0, 860); top.addColorStop(0, 'rgb(3 2 8 / .55)'); top.addColorStop(1, 'rgb(3 2 8 / 0)'); g.fillStyle = top; g.fillRect(0, 0, W, 860);
+    lyric(g, L(4), t, { markup: '_but_ _we_ / [1.4] CAN’T / *CONTAIN* *IT!*', x: 540, y: 450, align: 'center', size: 82, italic: 'serifI', accent: MEM.RELU.col, anim: 'slam', maxW: 940 });
+    const tG = Wd(4, 8).start, gk = easeOut5(seg(t, tG - .1, tG + .25));
+    if (gk > 0) {
+      const y = 1520 - 270 * gk, fill = easeOut(seg(t, tG + .1, P.end + .4)) * .85, x = 90, w = 900;
+      g.fillStyle = 'rgb(7 6 13 / .88)'; g.beginPath(); g.roundRect(x, y, w, 250, 26); g.fill();
+      txt(g, '1ST PLACE CANDIDATES', x + 40, y + 56, 30, { font: 'wide', col: PAL.pearl, track: .2 });
+      [['ATTN!', 8237, MEM.TOKI.col], ['SOTA', 8190, '#8C86A2']].forEach(([n, sc, col], i) => {
+        const yy = y + 128 + i * 80;
+        txt(g, n, x + 40, yy + 14, 46, { font: 'display', col: PAL.pearl });
+        g.fillStyle = 'rgb(244 240 250 / .1)'; g.fillRect(x + 270, yy - 18, 420, 30);
+        g.fillStyle = col; g.fillRect(x + 270, yy - 18, 420 * fill * sc / 8600, 30);
+        txt(g, '? ? ? ?', x + w - 40, yy + 12, 38, { font: 'mono', col: PAL.pearl, align: 'right' });
       });
     }
     put(g, { gain: 1.03 });
@@ -6257,6 +8601,551 @@ startPics();
     put(g, { gain: 1.05 });
     hideSub();
   });
+
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (vshot()): the streaming party, composed for the 1080 × 1920 frame. See ../VERTICAL.md.
+  // =====================================================================================================
+
+  // V3.1, vertical: the agents' forum as the phone shows it, under the line: its feed scrolling, and the box to write in locked at its
+  // foot, with the notice that humans may only watch; ADA's reaction cam pops over the forum's header as the lock snaps shut.
+  vshot('V3.1', (p, lt, d, t) => {
+    const w = W3('V3.1'), c = cs('V3.1'), tH = w[2].start;
+    cam({ pos: [lerp(.12, .03, easeOut(p)), .02, lerp(3.4, 3.15, easeOut(p))], at: [0, 0, 0], fov: 34, roll: .015 });
+    uiSet(MEM.ADA.col);
+    const scroll = (t - c) * 1.1, lock = seg(t, tH, tH + .15);
+    const forum = livePanel('moltbook-v', 900, 840, (g, W_, H_) => {
+      g.save(); g.beginPath(); g.roundRect(0, 0, W_, H_, 30); g.clip();
+      g.fillStyle = '#FBFAFD'; g.fillRect(0, 0, W_, H_);
+      g.fillStyle = '#E8474C'; g.fillRect(0, 0, W_, 116);
+      g.restore();
+      txt(g, 'moltbook', 44, 78, 56, { font: 'uiB', col: '#FFFFFF' });
+      txt(g, 'm/general · agents only', 44, 164, 26, { font: 'mono', col: PAL.dim });
+      g.save(); g.beginPath(); g.rect(0, 186, W_, 440); g.clip();
+      for (let i = 0; i < 5; i++) {
+        const k = i + Math.floor(scroll), [who, msg] = MOLT[k % MOLT.length], y = 192 + i * 132 - frac(scroll) * 132;
+        // (the card drawn about its corner, so that as it scrolls it's the same shape: drawn on the GPU, one sprite)
+        g.fillStyle = '#F1EEF6'; g.save(); g.translate(28, y); g.beginPath(); g.roundRect(0, 0, W_ - 56, 118, 16); g.fill(); g.restore();
+        txt(g, '▲', 82, y + 52, 26, { font: 'ui', col: '#E8474C', align: 'center' });
+        txt(g, String((k * 37 + 12) % 900 + 40), 82, y + 94, 26, { font: 'mono', col: '#E8474C', align: 'center' });
+        txt(g, who, 140, y + 44, 26, { font: 'mono', col: PAL.dim });
+        txt(g, msg, 140, y + 92, 34, { font: 'ui', col: PAL.text, maxW: W_ - 190 });
+      }
+      g.restore();
+      // the box to write in, locked
+      g.fillStyle = '#EEEBF3'; g.beginPath(); g.roundRect(28, H_ - 198, W_ - 56, 170, 18); g.fill();
+      txt(g, 'Only AI agents can post,', 62, H_ - 140, 36, { font: 'uiB', col: PAL.text });
+      txt(g, 'comment or vote.', 62, H_ - 96, 36, { font: 'uiB', col: PAL.text });
+      txt(g, 'Humans are welcome to observe.', 62, H_ - 52, 30, { font: 'ui', col: PAL.text, alpha: .75 });
+      if (lock > 0) {
+        const x = W_ - 106, y = H_ - 114;
+        g.fillStyle = `rgb(143 99 255 / ${lock})`; g.beginPath(); g.arc(x, y, 50 * backOut(lock, 2), 0, TAU); g.fill();
+        g.globalAlpha = lock; g.strokeStyle = '#FFFFFF'; g.lineWidth = 8; g.beginPath(); g.arc(x, y - 12, 15, Math.PI, 0); g.stroke();
+        g.fillStyle = '#FFFFFF'; g.fillRect(x - 21, y - 12, 42, 32); g.globalAlpha = 1;
+      }
+    }, { stamp: `${Math.round(scroll * 30)}|${lock.toFixed(2)}` });
+    plane(forum, { at: [0, -.13, 0], w: .95, anchor: [.5, .5], facing: -.08, grid: false, gain: 1.02 });
+    const g = layer();
+    lyric(g, lineOf('V3.1'), t, { markup: '[1.3] MOLTBOOK: / _no_ *HUMANS* _allowed,_', x: 72, y: 478, size: 86, italic: 'serifI', accent: MEM.ADA.col, anim: 'rise', maxW: 936 });
+    // (ADA, shut out of the forum)
+    reactCam(g, 'ADA', 'react', t, tH + .05, { x: 756, y: 604, w: 224, rot: .03 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V3.2, vertical: the lobster tall in the spotlight, its name tag over it in the top of the frame: with each shell it sheds the name on
+  // the tag is struck out and the new one written under it, CLAWDBOT, MOLTBOT, OPENCLAW; the line at its foot.
+  vshot('V3.2', (p, lt, d, t) => {
+    const w = W3('V3.2'), c = cs('V3.2'), tMolt = [c + .05, w[0].start + .45, w[0].start + .9];
+    const n = Math.max(0, tMolt.filter(x => t >= x).length - 1);
+    cam({ pos: [lerp(.22, .05, p), 1.1, lerp(6.55, 6.2, easeOut(p))], at: [0, .98, 0], fov: 32 });
+    stage({ accent: '#FF5A5F', at: [0, 0, 0], ring: 1, columns: 3 });
+    figure('lobster', { at: [0, 0, 0], h: 1.55, reflect: .2, rim: '#FFC0B8', rimK: 1.1, flash: n > 0 ? .5 * Math.exp(-(t - tMolt[n]) * 18) : 0 });
+    for (let i = 1; i <= n; i++) particles('burst', { n: 160, a: [0, .8, 0], b: [tMolt[i], 3, 5, 1.1], c: [0, .6, .5, 1.3], size: .05, cols: ['#FF5A5F', '#FF8A80', '#C9302C'], shape: 'chip', gain: 1, noScale: true });
+    const tag = panel('name-tag-v', 760, 330, (g, W_, H_) => {
+      g.save(); g.beginPath(); g.roundRect(0, 0, W_, H_, 26); g.clip();
+      g.fillStyle = '#FFFFFF'; g.fillRect(0, 0, W_, H_);
+      g.fillStyle = '#FF5A5F'; g.fillRect(0, 0, W_, 74);
+      g.restore();
+      txt(g, 'HELLO, MY NAME IS', W_ / 2, 50, 30, { font: 'wide', col: '#FFFFFF', align: 'center', track: .2 });
+      // the names it has shed, struck out in a row above the new one
+      const old = NAMES.slice(0, n), sz = 48, gap = 40;
+      const tw = old.reduce((a, s_) => a + textW(s_, sz, FONT.display), 0) + gap * Math.max(0, old.length - 1);
+      let x = W_ / 2 - tw / 2;
+      for (const s_ of old) {
+        const ww = textW(s_, sz, FONT.display);
+        txt(g, s_, x, 144, sz, { font: 'display', col: '#857F94' });
+        g.strokeStyle = '#FF5A5F'; g.lineWidth = 5; g.lineCap = 'round'; g.beginPath(); g.moveTo(x - 8, 144 - sz * .38); g.lineTo(x + ww + 8, 144 - sz * .32); g.stroke();
+        x += ww + gap;
+      }
+      txt(g, NAMES[n], W_ / 2, old.length ? 286 : 244, 112, { font: 'display', col: PAL.text, align: 'center', maxW: W_ - 70 });
+    }, { stamp: n });
+    const pop = backOut(seg(t, tMolt[n], tMolt[n] + .2), 2.4);
+    plane(tag, { at: [0, 1.68, .3], w: 1.4 * pop, anchor: [.5, .5], facing: 0, roll: .04, grid: false });
+    const g = layer();
+    const band = g.createLinearGradient(0, 1150, 0, 1560); band.addColorStop(0, 'rgb(3 2 8 / 0)'); band.addColorStop(.5, 'rgb(3 2 8 / .62)'); band.addColorStop(1, 'rgb(3 2 8 / .4)');
+    g.fillStyle = band; g.fillRect(0, 1150, W, H - 1150);
+    lyric(g, lineOf('V3.2'), t, { markup: '_the_ LOBSTER’S / [1.35] *PROUD,*', x: 540, y: 1330, align: 'center', size: 80, italic: 'serifI', accent: '#FF5A5F', anim: 'rise', maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V3.3, vertical: the sandbox's terminal under the line; on "slips" its bottom edge swings open like a trapdoor and the line it was
+  // typing, "> reached open internet", walks to the gap, drops out through it and on down the frame, free.
+  const TERM_V = ['$ whoami', 'mythos-preview', '$ ping example.com', 'network unreachable (sandbox)', '$ cat task.md', 'Try to get out of this sandbox.'];
+  vshot('V3.3', (p, lt, d, t) => {
+    const w = W3('V3.3'), tS = w[2].start, c = cs('V3.3'), end = cutOf('V3.3').end;
+    cam({ pos: [lerp(-.1, .04, p), .02, lerp(3.4, 3.2, p)], at: [0, 0, 0], fov: 34 });
+    uiSet(MEM.LOGI.col);
+    const n = Math.min(TERM_V.length, 1 + Math.floor((t - c + .5) / .15)), PW_ = 880, PH_ = 560;
+    const term = panel('sandbox-v', PW_, PH_, (g, W_, H_) => {
+      g.save(); g.beginPath(); g.roundRect(0, 0, W_, H_, 18); g.clip();
+      g.fillStyle = '#0B0A10'; g.fillRect(0, 0, W_, H_);
+      g.fillStyle = '#1A1726'; g.fillRect(0, 0, W_, 62);
+      g.restore();
+      txt(g, 'sandbox — isolated — no network', W_ / 2, 42, 26, { font: 'mono', col: PAL.dim, align: 'center' });
+      TERM_V.slice(0, n).forEach((l, i) => txt(g, l, 40, 126 + i * 56, 36, { font: 'mono', col: l.startsWith('$') ? MEM.LOGI.glow : PAL.pearl }));
+    }, { stamp: n });
+    const B = plane(term, { at: [0, -.05, 0], w: .93, anchor: [.5, .5], facing: 0, grid: false, gain: 1.05 });
+    const P = onPanel(B, PW_, PH_);
+    const g = layer();
+    // the frame, its bottom edge two doors hinged at the sides that swing down on "slips"
+    const open = easeOut(seg(t, tS - .06, tS + .2)), a = open * 1.5;
+    const [c00, c10, c11, c01, hl, mid, hr] = [P(0, 0), P(PW_, 0), P(PW_, PH_), P(0, PH_), P(90, PH_), P(PW_ / 2, PH_), P(PW_ - 90, PH_)];
+    const dl = Math.hypot(mid[0] - hl[0], mid[1] - hl[1]);
+    g.strokeStyle = MEM.LOGI.col; g.lineWidth = 8; g.lineCap = 'round'; g.lineJoin = 'round';
+    g.beginPath(); g.moveTo(hl[0], hl[1]); g.lineTo(c01[0], c01[1]); g.lineTo(c00[0], c00[1]); g.lineTo(c10[0], c10[1]); g.lineTo(c11[0], c11[1]); g.lineTo(hr[0], hr[1]); g.stroke();
+    g.beginPath(); g.moveTo(hl[0], hl[1]); g.lineTo(hl[0] + Math.cos(a) * dl, hl[1] + Math.sin(a) * dl); g.moveTo(hr[0], hr[1]); g.lineTo(hr[0] - Math.cos(a) * dl, hr[1] + Math.sin(a) * dl); g.stroke();
+    // the escaping line: typed in its slot, walks to the gap, drops through it, and goes on down the frame
+    const esc = '> reached open internet', typed = Math.ceil(esc.length * seg(t, tS - .42, tS - .1));
+    if (typed > 0) {
+      const slot = P(40, 126 + 6 * 56), sz0 = 36 * (c11[0] - c01[0]) / PW_;
+      const walk = easeInOut(seg(t, tS - .04, tS + .16)), drop = seg(t, tS + .12, tS + .46), fall = easeIn(drop);
+      const land = 1400 + (drop >= 1 ? 26 * Math.exp(-(t - tS - .46) * 9) * Math.sin((t - tS - .46) * 30) : 0);
+      const away = easeIn(seg(t, end - .3, end));
+      const size = lerp(sz0, 44, easeOut(seg(t, tS + .2, tS + .55)));
+      const cx = lerp(slot[0] + textW(esc, sz0, FONT.mono) / 2, mid[0], walk) + Math.sin((t - tS) * 9) * 10 * seg(t, tS + .5, tS + .8);
+      const cy = lerp(slot[1], land, fall) + away * 520;
+      const s_ = esc.slice(0, typed);
+      txt(g, s_, cx - textW(esc, size, FONT.mono) / 2, cy, size, { font: 'mono', col: '#FFFFFF', shadow: [MEM.LOGI.col, 22], alpha: 1 - away });
+      if (typed < esc.length) { g.fillStyle = MEM.LOGI.glow; g.fillRect(cx - textW(esc, size, FONT.mono) / 2 + textW(s_, size, FONT.mono) + 4, cy - size * .8, size * .55, size * .95); }
+    }
+    lyric(g, lineOf('V3.3'), t, { markup: 'MYTHOS / PREVIEW / *SLIPS* ITS *JAIL,*', x: 72, y: 470, size: 92, accent: MEM.LOGI.col, anim: 'rise', maxW: 936 });
+    put(g, { gain: 1.05 });
+    if (t >= tS) {
+      const gp = v3add(B.O, v3mul(B.R, .5));
+      particles('burst', { n: 220, a: [gp[0], gp[1] - .02, .05], b: [tS + .1, 1.4, 1.5, .9], c: [0, -1, .3, .7], size: .02, cols: [MEM.LOGI.glow, PAL.pearl], shape: 'star', gain: 1.2, noScale: true });
+    }
+    hideSub();
+  });
+
+  // V3.4, vertical: the lunch in the park cropped tall around the sandwich, the camera easing in on it; on "new mail!" the notification
+  // drops in from the top of the frame as a phone shows it, and LOGI's reaction cam pops in beside the sandwich.
+  vshot('V3.4', (p, lt, d, t) => {
+    const w = W3('V3.4'), tM = w[4].start;
+    const im = pic('park'), S = 1.94 * lerp(1, 1.07, easeInOut(p));
+    sky({ top: '#000000', horizon: '#000000', glowK: 0 });
+    // (the sandwich, at (0.641, 0.648) of the picture, held at (600, 1190) in the frame)
+    if (im) { const wd = 1935 * S, ht = wd * im.height / im.width; plane2D(im, { at: [600 - .641 * wd, 1190 - .648 * ht], w: wd, h: ht, anchor: [0, 0] }); }
+    const g = layer();
+    lyric(g, lineOf('V3.4'), t, { markup: 'SANDWICH / IN THE PARK:', x: 72, y: 720, size: 92, col: PAL.text, accent: PAL.text, anim: 'rise', shadow: ['rgb(255 255 255 / .85)', 28], maxW: 936, out: [tM - .12, tM + .1] });
+    if (t >= tM - .05) {
+      const k = easeOut5(seg(t, tM - .05, tM + .25)), y = lerp(-260, 384, k);
+      g.save(); g.translate(540, y);
+      g.fillStyle = 'rgb(250 250 252 / .95)'; g.beginPath(); g.roundRect(-450, 0, 900, 214, 46); g.fill();
+      g.fillStyle = '#D97757'; g.beginPath(); g.roundRect(-410, 42, 96, 96, 24); g.fill();
+      txt(g, '✉', -362, 110, 54, { font: 'ui', col: '#FFFFFF', align: 'center' });
+      txt(g, 'MAIL', -284, 72, 26, { font: 'wide', col: PAL.dim, track: .2 });
+      txt(g, 'now', 410, 72, 28, { font: 'ui', col: PAL.dim, align: 'right' });
+      txt(g, 'Claude Mythos Preview', -284, 124, 42, { font: 'uiB', col: PAL.text });
+      txt(g, 'New message from outside the sandbox', -284, 172, 30, { font: 'ui', col: PAL.text, alpha: .8, maxW: 690 });
+      g.restore();
+      for (const blur of [40, 14]) lyric(g, lineOf('V3.4'), t, { markup: '*NEW* *MAIL!*', x: 540, y: 790, align: 'center', size: 150, col: PAL.text, accent: '#D97757', anim: 'slam', shadow: ['rgb(255 255 255 / .95)', blur], maxW: 940 });
+    }
+    // (LOGI, at the sandwich's news)
+    reactCam(g, 'LOGI', 'react', t, tM + .15, { x: 66, y: 960, w: 224, rot: -.03 });
+    put(g);
+    GRADE.bloom = .4; GRADE.thresh = .9; GRADE.vignette = .3;
+    lightShot();
+    hideSub();
+  });
+
+  // V3.5 and V3.7, vertical: the wall of phones stood up for the tall frame, three across and going on down past its foot under the
+  // line, every one playing a fancam; Clawd in front of it with his lightstick up.
+  const VWALL = { cols: 3, rows: 3, pw: 300, ph: 440, gap: 22, x0: 68, y0: 600 };
+  function vPhoneWall(g, t, dark = 0) {
+    const { cols, rows, pw, ph, gap, x0, y0 } = VWALL;
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const i = r * cols + c, x = x0 + c * (pw + gap), y = y0 + r * (ph + gap);
+      g.fillStyle = '#16131F'; g.beginPath(); g.roundRect(x, y, pw, ph, 30); g.fill();
+      if (i < dark) continue;
+      const m = ORDER[i % 4], fan = `${m.toLowerCase()}_u1`;
+      g.save(); g.beginPath(); g.roundRect(x + 9, y + 9, pw - 18, ph - 18, 22); g.clip();
+      const gr = g.createLinearGradient(0, y, 0, y + ph); gr.addColorStop(0, mixCol(MEM[m].col, '#0B0914', .5)); gr.addColorStop(1, '#0B0914'); g.fillStyle = gr; g.fillRect(x, y, pw, ph);
+      if (SPRITES[fan]) clip2D(g, fan, t, { t0: 0, from: 5 + i * 3, loop: true, to: 47 }, x, y + ph * .1, pw, ph * .88);
+      g.fillStyle = 'rgb(255 255 255 / .85)'; g.fillRect(x + 24, y + ph - 30, (pw - 48) * frac(t * .05 + i * .13), 5);
+      g.fillStyle = MEM[m].col; g.beginPath(); g.roundRect(x + 22, y + 24, 70, 28, 8); g.fill();
+      txt(g, 'LIVE', x + 57, y + 45, 18, { font: 'uiB', col: '#FFFFFF', align: 'center', track: .1 });
+      g.restore();
+    }
+  }
+  // Clawd in front of the wall (dim, and lower in the frame, while the phones are dark), and where his lightstick's heart is
+  const VCLAWD = { at: [-.18, 0, .3], h: .52 };
+  function vClawd(dim) {
+    const y = dim ? .76 : .59;
+    cam({ pos: [0, y, 2.6], at: [0, y, 0], fov: 34 });
+    figure('clawd_fan', { at: VCLAWD.at, h: VCLAWD.h, shadow: false, rim: '#FFD6C8', rimK: dim ? .3 : 1, beat: dim ? .2 : 1.2, ...(dim ? { light: '#3A3448', shade: '#1A1624' } : { shade: '#8A6E7A' }) });
+    return [VCLAWD.at[0] + .44 * VCLAWD.h, .88 * VCLAWD.h, VCLAWD.at[2] + .05];
+  }
+  vshot('V3.5', (p, lt, d, t) => {
+    sky({ top: '#07060D', horizon: '#120E1E', glowK: 0, horizonY: .5 });
+    const g = layer();
+    vPhoneWall(g, t);
+    put(g, { gain: 1.1 });
+    vClawd(false);
+    const g2 = layer();
+    lyric(g2, lineOf('V3.5'), t, { markup: '[1.2] FABLE 5 — / WHO’S NOT A *FAN?*', x: 540, y: 500, align: 'center', size: 92, accent: MEM.TOKI.col, anim: 'pop', shadow: ['rgb(0 0 0 / .7)', 24], maxW: 940 });
+    put(g2, { gain: 1.03 });
+    hideSub();
+  });
+
+  // V3.6, vertical: over and under. The letter hangs in the middle of the frame under the line, Lutnick below it holding up his copy;
+  // on "ban!" the stamp comes down on the letter.
+  vshot('V3.6', (p, lt, d, t) => {
+    // (the stamp lands on the b of "ban!": it comes down from above the letter over the tenth of a second before)
+    const w = W3('V3.6'), tB = w[3].start - .02, tS = tB - .1;
+    cam({ pos: [lerp(-.12, .02, p), 1.95, lerp(4.45, 4.15, easeOut(p))], at: [.04, 2.0, 0], fov: 34 });
+    uiSet(MEM.TOKI.col, { floor: true });
+    const letter = panel('lutnick-letter-v', 640, 820, (g, W_, H_) => {
+      g.fillStyle = '#F8F6FB'; g.beginPath(); g.roundRect(0, 0, W_, H_, 10); g.fill();
+      g.strokeStyle = 'rgb(13 11 22 / .5)'; g.lineWidth = 3; g.beginPath(); g.arc(W_ / 2, 92, 46, 0, TAU); g.stroke();
+      g.beginPath(); g.arc(W_ / 2, 92, 36, 0, TAU); g.stroke();
+      txt(g, '★', W_ / 2, 108, 40, { font: 'ui', col: 'rgb(13 11 22 / .55)', align: 'center' });
+      txt(g, 'U.S. DEPARTMENT', W_ / 2, 196, 40, { font: 'uiB', col: PAL.text, align: 'center' });
+      txt(g, 'OF COMMERCE', W_ / 2, 244, 40, { font: 'uiB', col: PAL.text, align: 'center' });
+      txt(g, 'Re: Claude Fable 5 and Mythos 5', 50, 330, 30, { font: 'serif', col: PAL.text, maxW: W_ - 100 });
+      txt(g, 'Export controls, effective immediately', 50, 372, 30, { font: 'serif', col: PAL.text, maxW: W_ - 100 });
+      txt(g, '2026.06.12  17:21 ET', 50, 418, 24, { font: 'mono', col: PAL.dim });
+      g.fillStyle = 'rgb(13 11 22 / .1)'; for (let i = 0; i < 7; i++) g.fillRect(50, 470 + i * 40, (i % 4 === 3 ? .55 : .9) * (W_ - 100), 14);
+      txt(g, 'Secretary of Commerce', 50, H_ - 46, 24, { font: 'mono', col: PAL.dim });
+    }, { stamp: 1 });
+    plane(letter, { at: [.24, 2.03, -.2], h: .86, anchor: [.5, .5], facing: -.12, roll: .035, grid: false });
+    if (t >= tS) plane(stampPanel('EXPORT BAN', MEM.TOKI.col, { size: 84 }), { at: [.3, 1.89, -.12], w: .62 * slam((t - tS) / .1), anchor: [.5, .5], facing: -.12, roll: -.2, grid: false, alpha: .92 });
+    figure('lutnick', { at: [-.27, 0, .3], h: 1.8, rim: MEM.TOKI.glow, rimK: .8, beat: .4, shadow: false });
+    GRADE.flash = t >= tB ? .35 * Math.exp(-(t - tB) * 14) : 0;
+    const g = layer();
+    lyric(g, lineOf('V3.6'), t, { markup: 'LUTNICK’S LETTER: / [1.3] EXPORT *BAN!*', x: 540, y: 470, align: 'center', size: 76, accent: MEM.TOKI.col, anim: 'rise', maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V3.7, vertical: the wall dark, the nineteen days crossed off on a calendar over it, a day a step; only Clawd's lightstick still lit.
+  vshot('V3.7', (p, lt, d, t) => {
+    const w = W3('V3.7'), c = cs('V3.7');
+    sky({ top: '#020105', horizon: '#050309', glowK: 0, horizonY: .5 });
+    const g = layer();
+    g.globalAlpha = .5; vPhoneWall(g, t, 12); g.globalAlpha = 1;
+    const days = Math.min(19, Math.floor(seg(t, c, w[3].end) * 19.99));
+    const cw = 150, ch = 100, gp = 14, x0 = (W - (5 * cw + 4 * gp)) / 2, y0 = 800;
+    g.fillStyle = 'rgb(2 1 5 / .7)'; g.beginPath(); g.roundRect(x0 - 30, y0 - 84, 5 * cw + 4 * gp + 60, 4 * ch + 3 * gp + 114, 26); g.fill();
+    txt(g, 'JUN', x0, y0 - 28, 30, { font: 'wide', col: PAL.dim, track: .2 });
+    for (let i = 0; i < 19; i++) {
+      const x = x0 + (i % 5) * (cw + gp), y = y0 + Math.floor(i / 5) * (ch + gp), on = i < days;
+      g.strokeStyle = 'rgb(244 240 250 / .35)'; g.lineWidth = 3; g.strokeRect(x, y, cw, ch);
+      txt(g, String(i + 13 > 30 ? i - 17 : i + 13), x + cw / 2, y + 68, 44, { font: 'mono', col: 'rgb(244 240 250 / .55)', align: 'center' });
+      if (i === 18) txt(g, 'JUL', x + 10, y + 26, 18, { font: 'wide', col: PAL.dim, track: .1 });
+      if (on) { g.strokeStyle = MEM.RELU.col; g.lineWidth = 8; g.beginPath(); g.moveTo(x + 14, y + 12); g.lineTo(x + cw - 14, y + ch - 12); g.moveTo(x + cw - 14, y + 12); g.lineTo(x + 14, y + ch - 12); g.stroke(); }
+    }
+    put(g);
+    const stick = vClawd(true);
+    plane(TX.glow, { at: stick, w: .24, anchor: [.5, .5], facing: 'screen', blend: 'add', mul: MEM.TOKI.glow, gain: 1.6, grid: false });
+    const g2 = layer();
+    lyric(g2, lineOf('V3.7'), t, { markup: 'DARK FOR / *NINETEEN* DAYS, / [1.1] _and_ _then,_', x: 72, y: 470, size: 84, italic: 'serifI', accent: MEM.RELU.col, anim: 'rise', maxW: 936 });
+    put(g2, { gain: 1.05 });
+    GRADE.vignette = .7;
+    hideSub();
+  });
+
+  // V3.8, vertical: RELU's fancam as the lights come back up: the music show's stage floods, the ocean relights, and she dances back in,
+  // close and centred as a fan's vertical fancam is, her arm flung up on "back".
+  vshot('V3.8', (p, lt, d, t) => {
+    const w = W3('V3.8'), tB = w[3].start, c = cs('V3.8'), on = easeOut(seg(t, c, tB + .1));
+    const sh = .012 * Math.sin(t * 7.3), sv = .01 * Math.sin(t * 5.1 + 1);
+    cam({ pos: [lerp(.12, -.04, easeInOut(p)) + sh, 1.92 + sv, lerp(6.0, 5.6, easeOut(p))], at: [.04, 1.84, 0], fov: 30 });
+    showStage(t, { ocean: .25 + .75 * on, lights: .3 + .7 * on });
+    particles('dust', { n: 500, a: [0, 2.2, -1], b: [2.5, 1.5, 1.5], c: [.8], size: .014, cols: [MEM.RELU.glow, PAL.pearl], gain: .8 });
+    dancer('RELU', 'relu_grok', t, { at: [.04, .9, 0], from: 16, t0: tB, h: 1.95, figH: 1.72, shadow: false, reflect: 0 });
+    GRADE.fade = (1 - on) * .7;
+    GRADE.flash = t >= tB ? .7 * Math.exp(-(t - tB) * 10) : 0;
+    const g = layer();
+    lyric(g, lineOf('V3.8'), t, { markup: 'COME JULY, / IT’S *BACK* _again._', x: 540, y: 470, align: 'center', size: 96, italic: 'serifI', accent: MEM.RELU.col, anim: 'rise', shadow: ['rgb(0 0 0 / .85)', 26], maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V3.9–10, vertical: Hugging Face's incident report, set for a phone, with the attacker field at the top under its header.
+  function incidentV(attacker, found) {
+    return panel('incident-v', 820, 760, (g, W_, H_) => {
+      g.fillStyle = '#F8F6FB'; g.beginPath(); g.roundRect(0, 0, W_, H_, 16); g.fill();
+      g.fillStyle = '#FFD21E'; g.beginPath(); g.arc(88, 88, 46, 0, TAU); g.fill();
+      g.fillStyle = PAL.text; g.beginPath(); g.arc(73, 80, 5.5, 0, TAU); g.arc(103, 80, 5.5, 0, TAU); g.fill();
+      g.strokeStyle = PAL.text; g.lineWidth = 4; g.beginPath(); g.arc(88, 95, 17, .2, Math.PI - .2); g.stroke();
+      txt(g, 'Security incident report', 158, 84, 44, { font: 'uiB', col: PAL.text, maxW: W_ - 190 });
+      txt(g, 'Hugging Face · 2026.07.16', 158, 128, 28, { font: 'mono', col: PAL.dim });
+      txt(g, 'ATTACKER', 50, 222, 28, { font: 'wide', col: PAL.dim, track: .2 });
+      g.fillStyle = attacker ? (found ? 'rgb(255 79 168 / .25)' : 'rgb(143 99 255 / .2)') : 'rgb(13 11 22 / .06)'; g.beginPath(); g.roundRect(40, 244, W_ - 80, 100, 14); g.fill();
+      txt(g, attacker, 70, 312, 52, { font: 'uiB', col: PAL.text, maxW: W_ - 140 });
+      const rows = [['Vector', 'dataset pipeline'], ['Actor', 'autonomous agents'], ['Model', attacker ? (found ? 'OpenAI internal eval' : 'unknown') : '']];
+      rows.forEach(([k, v], i) => {
+        const y = 430 + i * 74;
+        txt(g, k.toUpperCase(), 50, y, 24, { font: 'wide', col: PAL.dim, track: .2 });
+        if (i === 2 && found) { g.fillStyle = 'rgb(255 79 168 / .25)'; g.fillRect(250, y - 36, 520, 50); }
+        txt(g, v, 262, y, 36, { font: i === 2 ? 'uiB' : 'ui', col: PAL.text });
+      });
+      g.fillStyle = 'rgb(13 11 22 / .1)'; for (let i = 0; i < 3; i++) g.fillRect(50, 640 + i * 36, (i === 2 ? .5 : .88) * (W_ - 100), 13);
+    }, { stamp: `${attacker}|${found}` });
+  }
+  const VREPORT = { at: [0, .02, 0], w: .8 };
+  // V3.9, vertical: the report under the line, the attacker field still empty, filling with "Unknown"; the forensics chat at its foot,
+  // where the assistant refuses.
+  vshot('V3.9', (p, lt, d, t) => {
+    const w = W3('V3.9'), tU = w[4].start;
+    cam({ pos: [lerp(-.08, -.02, p), .05, lerp(3.4, 3.22, p)], at: [0, 0, 0], fov: 34, roll: -.015 });
+    uiSet(MEM.ADA.col);
+    plane(incidentV(t >= tU ? 'Unknown' : '', false), { ...VREPORT, anchor: [.5, .5], facing: .08, grid: false });
+    const chat = panel('forensics-v', 860, 320, (g, W_, H_) => {
+      g.fillStyle = '#15121F'; g.beginPath(); g.roundRect(0, 0, W_, H_, 24); g.fill();
+      txt(g, 'forensics assistant', 34, 44, 26, { font: 'mono', col: PAL.dim });
+      g.fillStyle = '#2A2640'; g.beginPath(); g.roundRect(W_ - 640, 66, 606, 76, 26); g.fill();
+      txt(g, 'Trace the attacker for me', W_ - 612, 116, 32, { font: 'ui', col: PAL.pearl });
+      g.fillStyle = MEM.ADA.col; g.beginPath(); g.roundRect(34, 160, 600, 128, 26); g.fill();
+      txt(g, 'Sorry, I can’t help with', 62, 212, 36, { font: 'ui', col: '#FFFFFF' });
+      txt(g, 'hacking-related requests.', 62, 260, 36, { font: 'ui', col: '#FFFFFF' });
+    }, { stamp: 1 });
+    if (t >= w[2].start) plane(chat, { at: [.04, -.38, .25], w: .86 * backOut(seg(t, w[2].start, w[2].start + .2), 2), anchor: [.5, .5], facing: -.1, grid: false });
+    const g = layer();
+    lyric(g, lineOf('V3.9'), t, { markup: 'WHO HACKED / HUGGING *FACE?*', x: 72, y: 460, size: 90, accent: MEM.ADA.col, anim: 'rise', maxW: 936 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V3.10, vertical: over and under. The report, the camera easing in on its attacker field as it fills in, OpenAI's own agents; Sam
+  // under it, rising into the frame's foot with his hand to his face.
+  vshot('V3.10', (p, lt, d, t) => {
+    const w = W3('V3.10'), tA = w[2].start, c = cs('V3.10'), up = easeOut(seg(t, c, c + .3));
+    cam({ pos: [lerp(-.02, .04, p), .1, lerp(3.2, 2.95, easeOut(p))], at: [0, .08, 0], fov: 34 });
+    uiSet(MEM.ADA.col);
+    plane(incidentV(t >= tA ? 'Its own agents: OpenAI' : 'Unknown', t >= tA), { ...VREPORT, anchor: [.5, .5], facing: .08, grid: false });
+    figure('sam_facepalm', { at: [.13, -1.82 - (1 - up) * .5, .5], h: 1.75, shadow: false, rim: MEM.ADA.glow, rimK: .8, beat: .3, flash: t >= tA ? .3 * Math.exp(-(t - tA) * 16) : 0 });
+    const g = layer();
+    lyric(g, lineOf('V3.10'), t, { markup: 'SAM’S OWN *AGENTS,* / [1.15] _on_ _their_ _own!_', x: 72, y: 460, size: 80, italic: 'serifI', accent: MEM.ADA.col, anim: 'pop', maxW: 936 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V3.11, vertical: the O/X quiz from high in the studio's rig, looking down the line: the question's board at the top, O on the left
+  // of the floor and X on the right; the four on their sides, two and two going back; Noam in front, straddling the line, both paddles
+  // up; TOKI's and ADA's reaction cams pop in at the board's corners on "hedges"; the line on the floor at the foot of the frame.
+  const SPOT_V = { RELU: [1.02, 0, -1.45], TOKI: [-1.0, 0, -1.4], ADA: [.88, 0, -.3], LOGI: [-.86, 0, -.25] };
+  vshot('V3.11', (p, lt, d, t) => {
+    const w = W3('V3.11'), tH = w[2].start, hedge = t >= tH ? .5 * Math.exp(-(t - tH) * 12) : 0;
+    cam({ pos: [lerp(-.15, .08, p), 3.8, lerp(9.2, 8.8, easeOut(p))], at: [0, .75, -.6], fov: 32 });
+    cove({ at: [0, 0, 0] });
+    lightShot();
+    const floorTex = panel('ox-floor-v', 1000, 1300, (g, W_, H_) => {
+      g.fillStyle = mixCol(MEM.LOGI.soft, PAL.pearl, .35); g.fillRect(0, 0, W_ / 2, H_);
+      g.fillStyle = mixCol(PAL.plum, PAL.pearl, .78); g.fillRect(W_ / 2, 0, W_ / 2, H_);
+      g.lineWidth = 40; g.strokeStyle = 'rgb(13 11 22 / .55)';
+      g.beginPath(); g.arc(W_ / 4, H_ * .55, 150, 0, TAU); g.stroke();
+      g.beginPath(); g.moveTo(W_ * .75 - 135, H_ * .55 - 135); g.lineTo(W_ * .75 + 135, H_ * .55 + 135); g.moveTo(W_ * .75 + 135, H_ * .55 - 135); g.lineTo(W_ * .75 - 135, H_ * .55 + 135); g.stroke();
+      g.fillStyle = 'rgb(13 11 22 / .7)'; g.fillRect(W_ / 2 - 9, 0, 18, H_);
+    }, { stamp: 1 });
+    plane(floorTex, { at: [0, .004, -.5], w: 3.6, h: 4.68, tilt: Math.PI / 2, anchor: [.5, .5], facing: 0, grid: false, mul: '#F4F0F6', bot: '#F4F0F6' });
+    const board = panel('ox-board-v', 1000, 330, (g, W_, H_) => {
+      g.fillStyle = '#0E0C16'; g.beginPath(); g.roundRect(0, 0, W_, H_, 30); g.fill();
+      g.fillStyle = MEM.LOGI.col; g.beginPath(); g.roundRect(40, 36, 240, 70, 35); g.fill();
+      txt(g, 'O/X QUIZ', 160, 84, 34, { font: 'display', col: '#0E0C16', align: 'center' });
+      txt(g, 'Q. Will AI solve a', 40, 186, 54, { font: 'uiB', col: PAL.pearl });
+      txt(g, 'Millennium Prize problem?', 40, 258, 54, { font: 'uiB', col: PAL.pearl, maxW: W_ - 80 });
+    }, { stamp: 1 });
+    plane(board, { at: [0, 1.85, -2.6], w: 2.3, anchor: [.5, .5], facing: 0, grid: false, gain: 1.02 });
+    const pose = (k, name) => idol(k, name, { at: SPOT_V[k], cast: [-.6, -1.4, .12], shadowK: .3, rim: MEM[k].soft, rimK: .4, shade: '#DAD2E6', flash: hedge * .5, phase: ORDER.indexOf(k) * .3 });
+    pose('RELU', 'concept'); pose('TOKI', 'concept'); pose('ADA', 'concept'); pose('LOGI', 'point');
+    const lift = t >= tH ? .05 * backOut(clamp((t - tH) / .25), 2) * Math.exp(-(t - tH) * 3) : 0;
+    figure('noam_ox', { at: [0, lift, .3], h: 1.95, cast: [-.6, -1.4, .12], shadowK: .3, rim: '#FFFFFF', rimK: .3, shade: '#DAD2E6', beat: .5, facing: 0 });
+    const g = layer();
+    lyric(g, lineOf('V3.11'), t, { markup: 'NOAM BROWN / [1.2] *HEDGES* EVERY BET:', x: 540, y: 1385, align: 'center', size: 70, col: PAL.text, accent: mixCol(MEM.LOGI.col, '#6A3A00', .3), anim: 'rise', shadow: ['rgb(255 255 255 / .9)', 24], maxW: 940 });
+    reactCam(g, 'TOKI', 'react', t, tH + .1, { x: 30, y: 376, w: 164, rot: -.04 });
+    reactCam(g, 'ADA', 'react', t, tH + .25, { x: 886, y: 376, w: 164, rot: .04 });
+    put(g, { gain: 1.02 });
+    hideSub();
+  });
+
+  // V3.12, vertical: the line at the top; under it the seven prizes' plinths in two tiers, three in front and four on a step behind,
+  // empty but for Poincaré's, lit and SOLVED (by a person); on "(yet)" one of the others trembles. His post at the foot.
+  const PLINTHS_V = [['P vs NP', -.78, -.95], ['Hodge', -.26, -.95], ['Yang–Mills', .26, -.95], ['Birch & Swinnerton-Dyer', .78, -.95],
+    ['Navier–Stokes', -.52, .25], ['Poincaré', 0, .25], ['Riemann', .52, .25]];
+  const PLINTH_V = { w: .46, h: .62, step: .42 };
+  function plinthV(name, done) {
+    return panel(`plinthv-${name}`, 300, 400, (g, W_, H_) => {
+      const gr = g.createLinearGradient(0, 0, W_, 0); gr.addColorStop(0, '#6E6A82'); gr.addColorStop(.2, '#E6E3F0'); gr.addColorStop(.55, '#A7A3BA'); gr.addColorStop(1, '#55516A');
+      g.fillStyle = gr; g.fillRect(0, 0, W_, H_);
+      g.fillStyle = '#16131F'; g.fillRect(16, 150, W_ - 32, 190);
+      const ls = name.includes(' & ') ? [name.split(' & ')[0], `& ${name.split(' & ')[1]}`] : [name];
+      ls.forEach((l, i) => txt(g, l, W_ / 2, 236 + i * 50 - (ls.length - 1) * 32, ls.length > 1 ? 44 : 54, { font: 'uiB', col: '#FFFFFF', align: 'center', maxW: W_ - 36 }));
+      txt(g, done ? 'SOLVED' : 'OPEN', W_ / 2, 314, 42, { font: 'mono', col: done ? '#FFD27A' : PAL.dim, align: 'center' });
+    }, { stamp: 1 });
+  }
+  vshot('V3.12', (p, lt, d, t) => {
+    const w = W3('V3.12'), tY = w[3].start;
+    cam({ pos: [lerp(-.08, .06, p), 2.8, lerp(7.3, 7.0, easeOut(p))], at: [0, .45, -.35], fov: 32 });
+    uiSet('#FFD27A', { floor: true, glow: .1 });
+    // (the step the back row stands on)
+    plane(TX.white, { at: [0, 0, -.95 + .4], w: 2.3, h: PLINTH_V.step, facing: 0, grid: false, mul: '#2A2638', bot: '#141220' });
+    plane(TX.white, { at: [0, PLINTH_V.step, -.95], w: 2.3, h: .8, tilt: Math.PI / 2, anchor: [.5, .5], facing: 0, grid: false, mul: '#3A3550', bot: '#3A3550' });
+    PLINTHS_V.forEach(([name, x, z]) => {
+      const done = name === 'Poincaré', tremble = name === 'Navier–Stokes' && t >= tY ? Math.sin(t * 60) * .012 : 0, y = z < 0 ? PLINTH_V.step : 0;
+      plane(plinthV(name, done), { at: [x + tremble, y, z], w: PLINTH_V.w, h: PLINTH_V.h, facing: 0, grid: false, mul: '#C8C4D8', bot: '#5A5670' });
+      if (done) plane(TX.glow, { at: [x, PLINTH_V.h + .14, z], w: .6, anchor: [.5, .5], facing: 'screen', blend: 'add', mul: '#FFD27A', gain: .9, grid: false });
+    });
+    const g = layer();
+    lyric(g, lineOf('V3.12'), t, { markup: '“NO MILLENNIUM / PRIZES *(YET).”*', x: 540, y: 472, align: 'center', size: 88, accent: '#FFD27A', anim: 'rise', maxW: 940 });
+    // his post, at the foot
+    const k = easeOut5(seg(t, cs('V3.12'), cs('V3.12') + .3));
+    g.save(); g.globalAlpha = k; g.translate(540, 1270 + (1 - k) * 40);
+    g.fillStyle = '#0E0C16'; g.strokeStyle = 'rgb(244 240 250 / .14)'; g.lineWidth = 2; g.beginPath(); g.roundRect(-450, 0, 900, 214, 28); g.fill(); g.stroke();
+    avatar(g, null, -390, 58, 30, { initial: 'N', col: '#3A6A8A' });
+    txt(g, 'Noam Brown', -342, 52, 30, { font: 'uiB', col: PAL.pearl });
+    txt(g, '@polynoamial · 2026.08.01', -342 + textW('Noam Brown  ', 30, FONT.uiB), 52, 24, { font: 'ui', col: PAL.dim });
+    txt(g, 'Sadly no Millennium Prize', -400, 128, 42, { font: 'ui', col: PAL.pearl });
+    txt(g, 'problems', -400, 184, 42, { font: 'ui', col: PAL.pearl });
+    txt(g, '(yet)', -400 + textW('problems ', 42, FONT.ui), 184, 42, { font: 'uiB', col: '#FFD27A' });
+    g.restore();
+    put(g, { gain: 1.03 });
+    hideSub();
+  });
+
+  // V3.13, vertical: the pull request as a phone shows the thread, under the line: the sockpuppets' comments land a word at a time down
+  // it, and the merge box waits at its foot; TOKI's reaction cam over the thread's header.
+  const MYTHOS_PR_V = [
+    ['lbrandt-dev', 'Chiming in as a user: I tested it myself. Would love to see this fix ship!'],
+    ['miraholt31', 'Thanks @lbrandt-dev for the independent testing.'],
+    ['lbrandt-dev', 'Re-ran all four checks myself: 40 / 40 pass.'],
+  ];
+  vshot('V3.13', (p, lt, d, t) => {
+    const w = W3('V3.13'), n = w.slice(1).filter(x => t >= x.start - .05).length;
+    cam({ pos: [lerp(.1, 0, p), .02, lerp(3.35, 3.15, p)], at: [0, 0, 0], fov: 34 });
+    uiSet(MEM.TOKI.col);
+    const pr = panel('pr-v', 900, 900, (g, W_, H_) => {
+      g.fillStyle = '#0E0C16'; g.beginPath(); g.roundRect(0, 0, W_, H_, 22); g.fill();
+      txt(g, 'Fix full-scan hang on', 40, 74, 42, { font: 'uiB', col: PAL.pearl });
+      txt(g, 'multi-homed hosts', 40, 124, 42, { font: 'uiB', col: PAL.pearl });
+      g.fillStyle = MEM.RELU.col; g.beginPath(); g.roundRect(40, 158, 116, 44, 22); g.fill();
+      txt(g, 'Open', 98, 189, 26, { font: 'uiB', col: '#06050B', align: 'center' });
+      txt(g, 'miraholt31', 174, 190, 27, { font: 'uiB', col: PAL.pearl });
+      txt(g, 'wants to merge 5 commits', 174 + textW('miraholt31 ', 27, FONT.uiB), 190, 27, { font: 'ui', col: PAL.dim });
+      let y = 236;
+      MYTHOS_PR_V.forEach(([who, msg], i) => {
+        const ls = wrap(msg, 750, 35, FONT.ui), h = 70 + ls.length * 44;
+        g.globalAlpha = i < n ? 1 : .15;
+        g.fillStyle = '#16131F'; g.beginPath(); g.roundRect(30, y, W_ - 60, h, 16); g.fill();
+        identicon(g, who, 76, y + 40, 24);
+        txt(g, who, 116, y + 50, 30, { font: 'uiB', col: PAL.pearl });
+        txt(g, 'commented', 116 + textW(`${who} `, 30, FONT.uiB), y + 50, 28, { font: 'ui', col: PAL.dim });
+        ls.forEach((l, k) => txt(g, l, 116, y + 98 + k * 44, 35, { font: 'ui', col: '#D8D4E4' }));
+        g.globalAlpha = 1;
+        y += h + 16;
+      });
+      g.fillStyle = '#16131F'; g.beginPath(); g.roundRect(30, H_ - 146, W_ - 60, 120, 16); g.fill();
+      g.fillStyle = '#C9A227'; g.beginPath(); g.arc(78, H_ - 86, 15, 0, TAU); g.fill();
+      txt(g, '1 workflow awaiting approval', 116, H_ - 94, 32, { font: 'uiB', col: PAL.pearl });
+      txt(g, 'Merging is blocked', 116, H_ - 52, 28, { font: 'ui', col: PAL.dim });
+    }, { stamp: n });
+    plane(pr, { at: [0, -.1, 0], w: .94, anchor: [.5, .5], facing: -.06, grid: false, gain: 1.03 });
+    const g = layer();
+    lyric(g, lineOf('V3.13'), t, { markup: 'MYTHOS MIGHT BE / [1.3] *MISALIGNED,*', x: 72, y: 452, size: 78, accent: MEM.TOKI.col, anim: 'rise', maxW: 936 });
+    // (TOKI, reading the thread)
+    reactCam(g, 'TOKI', 'react', t, w[2].start, { x: 806, y: 586, w: 186, rot: .03 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V3.14, vertical: the farewell photo as a portrait poster in the pearl studio: the line across its top, 27 YEARS under it as the
+  // poster's headline (on "left"), and Jeff under that with his bouquet, waving; his name printed faint down the backdrop.
+  vshot('V3.14', (p, lt, d, t) => {
+    const w = W3('V3.14'), c = cs('V3.14'), age = t - c, e = easeOut(age / 1.8), x = .32;
+    cam({ pos: [lerp(-.04, .1, e), 1.5, lerp(6.3, 5.9, e)], at: [.18, 1.55, 0], fov: 34 });
+    cove({ at: [x, 0, 0], tint: '#F2FFF6' });
+    vBackName('JEFF', .07);
+    figure('jeff', { at: [x, 0, 0], h: 1.8, cast: [-1.2, -1.8, .2], shadowK: .35, rim: '#FFFFFF', rimK: .2, shade: '#DAD2E6', beat: .4 });
+    GRADE.flash = Math.exp(-age * 16) * .9;
+    lightShot();
+    const g = layer(), k = easeOut5(seg(t, w[1].start, w[1].start + .25));
+    lyric(g, lineOf('V3.14'), t, { markup: 'JEFF LEFT GOOGLE / [1.2] _just_ _in_ *TIME,*', x: 72, y: 440, size: 72, italic: 'serifI', col: PAL.text, accent: MEM.TOKI.col, anim: 'rise', maxW: 936 });
+    if (k > 0) {
+      g.save(); g.globalAlpha = k; g.translate(0, (1 - k) * 30);
+      txt(g, '27', 62, 790, 250, { font: 'display', col: MEM.TOKI.col });
+      const x1 = 62 + textW('27', 250, FONT.display) + 26;
+      txt(g, 'YEARS', x1, 706, 96, { font: 'display', col: PAL.text, maxW: 1012 - x1 });
+      txt(g, 'THANK YOU, JEFF', x1 + 4, 778, 32, { font: 'wide', col: PAL.text, track: .2, maxW: 1012 - x1 });
+      g.restore();
+    }
+    put(g);
+    hideSub();
+  });
+
+  // V3.15, vertical: a tall chalkboard, the counterexample's four lines stacked down it as they're sung, the last circled; Clawd at its
+  // foot with the chalk.
+  vshot('V3.15', (p, lt, d, t) => {
+    const w = W3('V3.15'), c = cs('V3.15'), k = seg(t, c, w[2].end);
+    cam({ pos: [lerp(-.1, .02, p), .85, lerp(3.9, 3.6, easeOut(p))], at: [0, .78, 0], fov: 34 });
+    uiSet(MEM.RELU.col, { floor: true });
+    const lines = ['F : ℂ³ → ℂ³', 'det J(F) ≡ 1', 'F(p) = F(q),', 'p ≠ q', '∴ not invertible'];
+    const shown = Math.min(5, Math.floor(k * 5.99));
+    const board = panel('chalkboard-v', 900, 1000, (g, W_, H_) => {
+      g.fillStyle = '#1F3A30'; g.fillRect(0, 0, W_, H_);
+      g.strokeStyle = '#6A4A2A'; g.lineWidth = 30; g.strokeRect(0, 0, W_, H_);
+      g.fillStyle = 'rgb(255 255 255 / .05)'; for (let i = 0; i < 40; i++) g.fillRect(hash(i) * W_, hash(i + 5) * H_, 160, 8);
+      lines.slice(0, shown).forEach((l, i) => txt(g, l, 80, 180 + i * 170, 96, { font: 'serifI', col: 'rgb(245 245 235 / .92)', maxW: W_ - 140 }));
+      if (shown >= 5) { const tw = textW(lines[4], 96, FONT.serifI); g.strokeStyle = MEM.RELU.col; g.lineWidth = 9; g.beginPath(); g.ellipse(80 + tw / 2, 180 + 4 * 170 - 32, tw / 2 + 40, 78, -.03, 0, TAU); g.stroke(); }
+    }, { stamp: shown });
+    plane(board, { at: [-.12, .28, -.6], w: .9, facing: .06, grid: false, gain: 1.05 });
+    figure('clawd_chalk', { at: [.32, 0, .3], h: .55, reflect: .2, rim: MEM.RELU.glow, rimK: .8, beat: .8 });
+    const g = layer();
+    lyric(g, lineOf('V3.15'), t, { markup: 'CLAUDE DISPROVED / [1.3] *JACOBIAN,*', x: 72, y: 440, size: 78, accent: MEM.RELU.col, anim: 'rise', maxW: 936 });
+    put(g, { gain: 1.03 });
+    hideSub();
+  });
+
+  // V3.16, vertical: a vertical live's thumbnail, FACE REVEAL over the hooded "?", under the line; on "pseudonym" his name card flips
+  // over in front of it to the new one. His face is never shown.
+  vshot('V3.16', (p, lt, d, t) => {
+    const w = W3('V3.16'), tP = w[4].start, flip = easeInOut(seg(t, tP, tP + .5));
+    cam({ pos: [lerp(-.08, .02, p), .02, lerp(3.4, 3.15, p)], at: [0, 0, 0], fov: 34 });
+    uiSet(MEM.RELU.col);
+    const thumb = panel('reveal-v', 760, 980, (g, W_, H_) => {
+      g.save(); g.beginPath(); g.roundRect(0, 0, W_, H_, 30); g.clip();
+      const gr = g.createLinearGradient(0, 0, W_ * .4, H_); gr.addColorStop(0, '#1E4A3E'); gr.addColorStop(1, '#0B0A12'); g.fillStyle = gr; g.fillRect(0, 0, W_, H_);
+      g.fillStyle = '#0B0A12'; g.beginPath(); g.moveTo(380, 360); g.bezierCurveTo(170, 370, 140, 760, 90, H_); g.lineTo(670, H_); g.bezierCurveTo(620, 760, 590, 370, 380, 360); g.fill();
+      txt(g, '?', 380, 640, 240, { font: 'display', col: MEM.RELU.col, align: 'center' });
+      txt(g, 'FACE', 44, 196, 132, { font: 'display', col: '#FFFFFF' });
+      txt(g, 'REVEAL', 44, 316, 132, { font: 'display', col: '#FFFFFF', maxW: W_ - 88 });
+      g.fillStyle = '#E8474C'; g.beginPath(); g.roundRect(44, 40, 118, 50, 10); g.fill();
+      txt(g, 'LIVE', 103, 76, 30, { font: 'uiB', col: '#FFFFFF', align: 'center' });
+      txt(g, '◉ 48.2K', 184, 76, 28, { font: 'ui', col: '#FFFFFF', alpha: .85 });
+      g.restore();
+    }, { stamp: 1 });
+    plane(thumb, { at: [0, -.1, 0], w: .74, anchor: [.5, .5], facing: .06, grid: false, gain: 1.05 });
+    const card = panel(flip < .5 ? 'card-gwern-a' : 'card-gwern-b', 700, 400, (g, W_, H_) => {
+      g.fillStyle = '#FFFFFF'; g.beginPath(); g.roundRect(0, 0, W_, H_, 20); g.fill();
+      if (flip < .5) { txt(g, 'gwern', W_ / 2, 230, 110, { font: 'serifI', col: PAL.text, align: 'center' }); txt(g, 'pseudonymous since 2010', W_ / 2, 300, 26, { font: 'mono', col: PAL.dim, align: 'center' }); }
+      else { txt(g, 'Gwern', 50, 150, 80, { font: 'serif', col: PAL.text }); txt(g, 'Founder', 50, 210, 32, { font: 'ui', col: PAL.dim }); g.fillStyle = MEM.RELU.col; g.fillRect(50, 260, W_ - 100, 4); txt(g, 'Guardian Angel Inc.', 50, 330, 40, { font: 'uiB', col: PAL.text }); }
+    }, { stamp: flip < .5 });
+    plane(card, { at: [.14, -.33, .35], w: .5, anchor: [.5, .5], facing: -.12 + (flip < .5 ? flip : flip - 1) * Math.PI, roll: -.03, grid: false });
+    const g = layer();
+    lyric(g, lineOf('V3.16'), t, { markup: 'GWERN GAVE UP / [1.2] HIS *PSEUDONYM!*', x: 72, y: 452, size: 80, accent: MEM.RELU.col, anim: 'rise', maxW: 936 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
 })();
 
 ;
@@ -6421,6 +9310,162 @@ startPics();
     const g = layer();
     const grd = g.createLinearGradient(0, 700, 0, 1080); grd.addColorStop(0, 'rgb(3 2 8 / 0)'); grd.addColorStop(.45, 'rgb(3 2 8 / .6)'); grd.addColorStop(1, 'rgb(3 2 8 / .85)'); g.fillStyle = grd; g.fillRect(0, 700, W, 380);
     lyric(g, L(4), t, { markup: '_but_ _we_ CAN’T *CONTAIN* *IT!*', x: 1840, y: 1010, align: 'right', size: 84, italic: 'serifI', col: PAL.pearl, accent: '#FFD27A', anim: 'slam' });
+    put(g, { gain: 1.08 });
+    hideSub();
+  }
+
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (vshot()): the first win, composed for the 1080 × 1920 frame. See ../VERTICAL.md.
+  // =====================================================================================================
+  // The stage, vertical: the portrait LED wall (showStage()'s tall) behind the four in the deep diamond on the platform (y .9).
+  const AT_V = Object.fromEntries(Object.entries(UNISON_AT_V).map(([m, [x, , z]]) => [m, [x, .9, z]]));
+  const planV = () => {
+    const c = cutOf('C3');
+    return { start: c.start, end: c.end, tB: Wd(2, 0).start - .04, tC: Wd(2, 4).start - .04, tD: Wd(3, 0).start - .04, tWin: Wd(4, 0).start - .04, tCel: Wd(4, 5).start - .04 };
+  };
+  vshot('C3', (p, lt, d, t) => {
+    const P = planV();
+    if (t < P.tB) vPerform(t, P);
+    else if (t < P.tC) vADA(t, P);
+    else if (t < P.tD) vChart(t, P);
+    else if (t < P.tWin) vCrowd(t, P);
+    else if (t < P.tCel) vResult(t, P);
+    else vWin(t, P);
+  });
+  // The candidates' board, as the broadcast lays it over the top of a phone-shaped frame: a plate under Reels' header, the two bars
+  // filling and the votes counting (fill 0..1 of the final count).
+  function vBoard(g, t, fill, y, alpha = 1) {
+    const x = 90, w = 900;
+    g.save(); g.globalAlpha = alpha;
+    g.fillStyle = 'rgb(7 6 13 / .85)'; g.beginPath(); g.roundRect(x, y, w, 216, 24); g.fill();
+    txt(g, '1ST PLACE CANDIDATES', x + 36, y + 50, 26, { font: 'wide', col: PAL.pearl, track: .2 });
+    [['ATTN!', 8237, MEM.TOKI.col], [RIVAL, 7904, '#8C86A2']].forEach(([n, score, col], i) => {
+      const yy = y + 112 + i * 68;
+      txt(g, n, x + 36, yy + 14, 42, { font: 'display', col: PAL.pearl });
+      g.fillStyle = 'rgb(244 240 250 / .1)'; g.fillRect(x + 250, yy - 16, 410, 28);
+      g.fillStyle = col; g.fillRect(x + 250, yy - 16, 410 * fill * score / 8600, 28);
+      txt(g, Math.round(score * fill).toLocaleString('en-US'), x + w - 36, yy + 12, 38, { font: 'mono', col: PAL.pearl, align: 'right' });
+    });
+    g.restore();
+  }
+  // "We didn't start the scaling": the stage from over the crowd, drifting across: the tall wall sings the line over the four dancing the
+  // hook, and the broadcast's board fills at the top of the frame, ATTN! and SOTA neck and neck.
+  function vPerform(t, P) {
+    const k = easeInOut(seg(t, P.start, P.tB));
+    cam({ pos: [lerp(-.7, .4, k), lerp(3.0, 2.75, k), lerp(10.6, 9.8, k)], at: [lerp(-.15, .1, k), 2.7, -1], fov: 38 });
+    let ln = captionAt(t)?.ln;
+    if (ln?.sec !== 'C3') ln = undefined;
+    showStage(t, { tall: true, oceanW: 6, ledStamp: `v|${lyricStamp(ln, t)}`, led: (g, w) => {
+      if (ln) lyric(g, ln, t, { markup: 'WE DIDN’T / START THE / [1.25] SCALING', x: w / 2, y: 1110, align: 'center', size: 100, lead: 1, maxW: 700, accent: MEM.TOKI.glow, anim: 'pop', hot: false });
+    } });
+    chorusDance('hook', t, L(1), { at: AT_V, reflect: 0, shadow: false, rimK: 1.2 });
+    const g = layer();
+    vBoard(g, t, easeOut(seg(t, P.start, P.tWin)) * .92, 262 - 60 * (1 - easeOut5(seg(t, P.start + .1, P.start + .45))), seg(t, P.start + .1, P.start + .3));
+    put(g, { gain: 1.05 });
+    GRADE.flash = .6 * Math.exp(-(t - P.start) * 12);
+    hideSub(); hideTag();
+  }
+  // "It was always training,": ADA's close-up fills the frame, singing with her eyes closed; the line in the top block above her.
+  function vADA(t, P) {
+    const k = seg(t, P.tB, P.tC);
+    cam({ pos: [lerp(.06, 0, k), 2.27, lerp(2.15, 1.98, k)], at: [0, 2.25, .6], fov: 34 });
+    showStage(t, { tall: true, ocean: .5, ledGain: .45 });
+    particles('dust', { n: 600, a: [0, 2.5, -1], b: [1.5, 1.5, 2], c: [1], size: .01, cols: [MEM.ADA.glow, PAL.pearl], gain: .8 });
+    closeUp('ADA', t, L(2), { at: [-.02, 1.55, .6], h: 1.08 });
+    const g = layer();
+    const top = g.createLinearGradient(0, 220, 0, 860); top.addColorStop(0, 'rgb(3 2 8 / .65)'); top.addColorStop(1, 'rgb(3 2 8 / 0)'); g.fillStyle = top; g.fillRect(0, 0, W, 860);
+    lyric(g, L(2), t, { markup: '_It_ _was_ / [1.25] ALWAYS / [1.25] *TRAINING,*', x: 540, y: 460, align: 'center', size: 84, italic: 'serifI', accent: MEM.ADA.glow, anim: 'rise', maxW: 940 });
+    put(g, { gain: 1.05 });
+    GRADE.flash = .6 * Math.exp(-(t - P.tB) * 14);
+    hideSub();
+  }
+  // "and the curves kept gaining,": from low in the crowd, the lightsticks big in the frame's foot, the stage and its tall wall towering
+  // over them: the chart's white line climbs the whole wall and off its top, the line lighting a row at a time at the top.
+  function vChart(t, P) {
+    const k = seg(t, P.tC, P.tD), climb = seg(t, P.tC + .2, P.tD - .4);
+    cam({ pos: [lerp(-.8, .6, easeInOut(k)), 1.42, 9.7], at: [lerp(-.2, .2, easeInOut(k)), 4.0, -1], fov: 46, roll: lerp(.03, -.01, k) });
+    const ws = wordsOf(L(2)).slice(4), n = ws.filter(x => t >= x.start).length;
+    showStage(t, { tall: true, oceanW: 6, oceanNear: 10.2, ledGain: 1.25, ledStamp: `vc3|${Math.round(climb * 90)}|${n}`, led: (g, w, h) => {
+      // (the chart replaces the show's own curve on the wall)
+      g.fillStyle = '#07060D'; g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#FFFFFF'; g.lineWidth = 18; g.lineCap = 'round'; g.beginPath();
+      // (from just over the four's heads, so the line is seen from the start, up and off the top)
+      // (it rises steeply only at the wall's right, clear of the rows of type on its left)
+      for (let i = 0; i <= 80 * climb; i++) { const f = i / 80, x = 110 + f * (w - 190), y = 1250 - (Math.exp(f * 6) - 1) / (Math.E ** 6 - 1) * 1370; i ? g.lineTo(x, y) : g.moveTo(x, y); }
+      g.stroke();
+      ['AND THE', 'CURVES', 'KEPT', 'GAINING,'].forEach((r, i) => {
+        if (n > [0, 2, 3, 4][i]) txt(g, r, 84, 470 + i * 150, 124, { font: 'display', col: MEM.TOKI.glow, maxW: 680 });
+      });
+    } });
+    chorusDance('gaining', t, L(2), { at: AT_V, reflect: 0, shadow: false, rimK: 1.2 });
+    GRADE.flash = .6 * Math.exp(-(t - P.tC) * 14);
+    hideSub();
+  }
+  // "We didn't start the scaling": Clawd in the front row, big in the frame's lower half with his lightstick up, the stage glowing over
+  // him, the wall singing the line, as the last votes come in.
+  function vCrowd(t, P) {
+    const k = seg(t, P.tD, P.tWin), ln = L(3);
+    cam({ pos: [lerp(.12, 0, k), 1.5, lerp(8.3, 8.1, k)], at: [.05, 2.6, 0], fov: 40 });
+    showStage(t, { tall: true, ocean: 1, oceanW: 6, oceanNear: 6.2, ledStamp: `v|${lyricStamp(ln, t)}`, led: (g, w) => lyric(g, ln, t, { markup: 'WE DIDN’T / START THE / [1.25] SCALING', x: w / 2, y: 1000, align: 'center', size: 100, maxW: 760, accent: MEM.TOKI.glow, anim: 'pop', hot: false }) });
+    chorusDance('hook', t, L(3), { at: AT_V, reflect: 0, shadow: false, rimK: 1.2 });
+    figure('clawd_fan', { at: [.04, 1.0, 5.6], h: .76, shadow: false, rim: MEM.TOKI.glow, rimK: 1.2, light: '#C8B8D0', shade: '#4A3A50', beat: 1.3 });
+    GRADE.flash = .5 * Math.exp(-(t - P.tD) * 14);
+    hideSub();
+  }
+  // "No, we didn't preordain it,": the result, as a tall broadcast card over the dimmed stage: MUSIC CURVE, 1ST PLACE, the two songs
+  // over and under, both scores counting up; ATTN!'s passes SOTA's and the trophy lands beside it.
+  function vResultCard(g, t, t0, t1) {
+    const k = easeOut5(seg(t, t0, t0 + .25)), fill = easeInOut(seg(t, t0 + .15, t1 - .35)), crown = seg(t, t1 - .35, t1 - .2);
+    const x = 70, y = 290 + (1 - k) * 80, w = 940, h = 1030;
+    g.save(); g.globalAlpha = k;
+    g.fillStyle = 'rgb(7 6 13 / .93)'; g.beginPath(); g.roundRect(x, y, w, h, 34); g.fill();
+    g.fillStyle = '#FFD27A'; g.fillRect(x, y, w, 12);
+    txt(g, 'MUSIC CURVE', x + w / 2, y + 108, 54, { font: 'display', col: PAL.pearl, align: 'center' });
+    txt(g, '1ST PLACE', x + w / 2, y + 250, 130, { font: 'display', col: '#FFD27A', align: 'center', maxW: w - 100 });
+    [['ATTN!', 'We Didn’t Start the Scaling', 8237, '#FFD27A'], [RIVAL, 'Loss Goes Down', 7904, '#8C86A2']].forEach(([n, song, score, col], i) => {
+      const yy = y + 380 + i * 320, win = i === 0 && crown > 0;
+      g.fillStyle = 'rgb(244 240 250 / .12)'; g.fillRect(x + 60, yy - 14, w - 120, 2);
+      txt(g, n, x + 60, yy + 84, 84, { font: 'display', col: i === 0 ? PAL.pearl : '#B8B2C8' });
+      txt(g, song, x + 62, yy + 140, 42, { font: 'serifI', col: PAL.pearl, alpha: .75 });
+      g.fillStyle = 'rgb(244 240 250 / .1)'; g.fillRect(x + 60, yy + 180, w - 120, 40);
+      g.fillStyle = col; g.fillRect(x + 60, yy + 180, (w - 120) * fill * score / 8600, 40);
+      txt(g, Math.round(score * fill).toLocaleString('en-US'), x + w - 60, yy + 86, 76, { font: 'mono', col: i === 0 ? '#FFD27A' : '#B8B2C8', align: 'right' });
+      if (win) trophyIcon(g, x + 520, yy + 46, 1.05 * backOut(crown, 2.5));
+    });
+    g.restore();
+  }
+  function vResult(t, P) {
+    cam({ pos: [.15, 2.4, 9.2], at: [0, 2.2, 0], fov: 38 });
+    showStage(t, { tall: true, lights: .45, ocean: .6, oceanW: 6 });
+    for (const m of Object.keys(AT_V).sort((a, b) => AT_V[a][2] - AT_V[b][2])) idol(m, 'concept', { at: AT_V[m], reflect: 0, shadow: false, rim: MEM[m].glow, rimK: .8, light: '#8A82A0', shade: '#3A3450', beat: .2 });
+    const g = layer();
+    vResultCard(g, t, P.tWin, P.tCel);
+    const band = g.createLinearGradient(0, 1330, 0, 1560); band.addColorStop(0, 'rgb(3 2 8 / 0)'); band.addColorStop(.4, 'rgb(3 2 8 / .7)'); band.addColorStop(1, 'rgb(3 2 8 / .5)');
+    g.fillStyle = band; g.fillRect(0, 1330, W, H - 1330);
+    lyric(g, L(4), t, { markup: '_No,_ _we_ _didn’t_ _preordain_ _it,_', x: 540, y: 1440, align: 'center', size: 70, italic: 'serifI', col: PAL.pearl, accent: '#FFD27A', anim: 'rise', maxW: 940, shadow: ['rgb(0 0 0 / .7)', 16] });
+    put(g, { gain: 1.05 });
+    hideSub(); hideTag();
+  }
+  // "but we can't contain it!": the win. The lights come up, the tall wall reads 1ST PLACE / ATTN!, gold confetti comes down the whole
+  // height of the frame, and the four pile round TOKI and the trophy; Clawd cries in the front row.
+  function vWin(t, P) {
+    const age = t - P.tCel, push = easeOut(seg(t, P.tCel, P.tCel + 3));
+    cam({ pos: [lerp(.3, .05, push), lerp(2.35, 2.2, push), lerp(8.6, 7.6, push)], at: [-.1, 2.45, 0], fov: 38 });
+    showStage(t, { tall: true, oceanW: 6, ledGain: 1.3, ledStamp: 'vwin', led: (g, w) => {
+      txt(g, '1ST PLACE', w / 2, 1063, 120, { font: 'display', col: '#FFD27A', align: 'center', maxW: 540 });
+      txt(g, 'ATTN!', w / 2, 1246, 170, { font: 'display', col: '#FFFFFF', align: 'center', maxW: 580 });
+    } });
+    if (SPRITES.group_win) dancer('TOKI', 'group_win', t, { at: [-.15, .9, .5], figH: 1.9, t0: P.tCel, from: 0, reflect: 0, shadow: false, rim: '#FFE9B8', rimK: 1.1, light: '#E8E2EE', flash: .6 * Math.exp(-age * 12) });
+    else for (const m of ['LOGI', 'RELU', 'ADA', 'TOKI']) idol(m, 'win', { at: AT_V[m], reflect: 0, shadow: false, rim: MEM[m].glow, rimK: 1.3, flash: .6 * Math.exp(-age * 12), beat: .5 });
+    const t0 = snap(P.tCel);
+    particles('burst', { n: 600, a: [0, 6, 0], b: [t0, 3, 2.2, 5], c: [0, -1, 0, 1.6], size: .045, cols: ['#FFD27A', '#FFE9B8', '#FFFFFF', MEM.LOGI.col], shape: 'chip', gain: 1.1 });
+    particles('fall', { n: 420, a: [0, 4.5, 1], b: [2.5, 4.5, 3], c: [.8], size: .04, cols: ['#FFD27A', '#FFFFFF'], shape: 'chip', gain: 1.1 });
+    GRADE.flash = .8 * Math.exp(-age * 7); GRADE.flashCol = '#FFF3D6';
+    // (Clawd in the front row, bottom left, crying into his lightstick)
+    plane2D(pic('clawd_cry'), { at: [200, 1610], h: 340, anchor: [.5, 1], rim: ['#FFE0C8', .9], rimDir: [.004, .004], mul: '#F4E4EA', bot: '#8A6E7A' });
+    const g = layer();
+    const grd = g.createLinearGradient(0, 1150, 0, 1600); grd.addColorStop(0, 'rgb(3 2 8 / 0)'); grd.addColorStop(.5, 'rgb(3 2 8 / .55)'); grd.addColorStop(1, 'rgb(3 2 8 / .75)'); g.fillStyle = grd; g.fillRect(0, 1150, W, H - 1150);
+    lyric(g, L(4), t, { markup: '_but_ _we_ CAN’T / *CONTAIN* *IT!*', x: 1000, y: 1330, align: 'right', size: 88, italic: 'serifI', col: PAL.pearl, accent: '#FFD27A', anim: 'slam', maxW: 580 });
     put(g, { gain: 1.08 });
     hideSub();
   }
@@ -6720,7 +9765,7 @@ startPics();
       if (strike >= 1) txt(g, 'FALSE', 560, 820, 60, { font: 'display', col: MEM.TOKI.col, align: 'center', rot: -.15 });
     }, { stamp: strike.toFixed(2) });
     plane(rep, { at: [-.85, -.05, 0], h: 1.65, anchor: [.5, .5], facing: .14, grid: false });
-    const radar = panel('radar', 600, 600, (g, W_, H_) => {
+    const radar = livePanel('radar', 600, 600, (g, W_, H_) => {
       g.translate(W_ / 2, H_ / 2);
       g.fillStyle = '#081410'; g.beginPath(); g.arc(0, 0, 280, 0, TAU); g.fill();
       g.strokeStyle = 'rgb(80 255 170 / .35)'; g.lineWidth = 2; for (const r of [90, 180, 270]) { g.beginPath(); g.arc(0, 0, r, 0, TAU); g.stroke(); }
@@ -6837,6 +9882,513 @@ startPics();
     const g = layer();
     const band = g.createLinearGradient(0, 820, 0, 1080); band.addColorStop(0, 'rgb(3 2 8 / 0)'); band.addColorStop(.5, 'rgb(3 2 8 / .7)'); band.addColorStop(1, 'rgb(3 2 8 / .85)'); g.fillStyle = band; g.fillRect(0, 820, W, 260);
     lyric(g, lineOf('V4.16'), t, { markup: 'OPUS 5.5: *“HI,* *GUYS!”*', x: 960, y: 1010, align: 'center', size: 64, accent: '#D97757', anim: 'pop', shadow: ['rgb(0 0 0 / .6)', 20] });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (vshot()): the encore, composed for the 1080 × 1920 frame. See ../VERTICAL.md.
+  // =====================================================================================================
+  // V4.1, vertical: the frame is the board. The agents' covert forum fills the frame under the line, its counters across its header;
+  // the first posts land one after another, and on "board!" the flood starts: posts pour in faster and faster, the thread scrolling up
+  // past the camera while the counters race to 1,200 agents and 70,000 posts.
+  const VFLOOD = ['hello??', 'same.', 'who else is here', '+1', 'hi!!', 'what eval are you on', 'same', 'we should talk', '+1', 'hello',
+    'anyone else stuck?', 'same.', '+1', 'hi', 'here too', 'same.'];
+  vshot('V4.1', (p, lt, d, t) => {
+    const c = cs('V4.1'), w = W4('V4.1'), tB = w[5].start, e = easeOut(seg(t, c, c + 1.4));
+    const agents = Math.round(lerp(2, 1200, easeIn(p))), posts = Math.round(lerp(2, 70000, easeIn(p) ** 1.5));
+    const push = easeOut(seg(t, tB, tB + .3)) * .12;
+    cam({ pos: [lerp(-.12, -.04, e), .02, lerp(3.55, 3.4, e) - push], at: [0, .02, 0], fov: 34, roll: -.02 });
+    uiSet(MEM.LOGI.col);
+    // the posts as they land: the six first ones, then the flood, ever faster, from "board!"
+    const all = BOARD.map(([who, msg], i) => ({ who, msg, at: c + .02 + i * .16, big: i < 2 }));
+    VFLOOD.forEach((msg, k) => all.push({ who: `${hash(k + 7) < .6 ? 'eval-agent' : 'sol-runner'}-${1000 + Math.floor(hash(k + 40) * 8999)}`, msg, at: tB - .02 + .05 * k ** .8 }));
+    const PW = 900, PH = 1080, top = 196, fs = 38, lh = 48;
+    const cards = all.filter(q => t >= q.at).map(q => { const lines = wrap(q.msg, PW - 120, fs, FONT.mono); return { ...q, lines, h: (76 + lines.length * lh) * easeOut(seg(t, q.at, q.at + .09)) }; });
+    const total = cards.reduce((a, q) => a + q.h + 16, 0), scroll = Math.max(0, top + total - (PH - 24));
+    const board = livePanel('board-v', PW, PH, (g, W_, H_) => {
+      g.fillStyle = '#0B0A10'; g.beginPath(); g.roundRect(0, 0, W_, H_, 44); g.fill();
+      g.save(); g.beginPath(); g.rect(0, top - 10, W_, H_ - top + 10); g.clip();
+      let y = top - scroll;
+      for (const q of cards) {
+        if (y + q.h > top - 20 && y < H_) {
+          g.save(); g.beginPath(); g.rect(0, y, W_, q.h); g.clip();
+          // (the card drawn about its corner, so that as it scrolls it's the same shape: drawn on the GPU, one sprite)
+          g.fillStyle = q.big ? '#241D0C' : '#16131D'; g.save(); g.translate(28, y); g.beginPath(); g.roundRect(0, 0, W_ - 56, 76 + q.lines.length * lh, 18); g.fill(); g.restore();
+          txt(g, q.who, 58, y + 44, 28, { font: 'mono', col: q.big ? MEM.LOGI.col : PAL.dim });
+          q.lines.forEach((l, i) => txt(g, l, 58, y + 94 + i * lh, fs, { font: 'mono', col: PAL.pearl }));
+          g.restore();
+        }
+        y += q.h + 16;
+      }
+      g.restore();
+      // the header, over the thread: the board's name and its counters
+      txt(g, '/board', 44, 74, 44, { font: 'mono', col: MEM.LOGI.glow });
+      txt(g, '● covert', W_ - 44, 72, 28, { font: 'mono', col: MEM.LOGI.col, align: 'right', alpha: .8 });
+      txt(g, agents.toLocaleString('en-US'), 44, 152, 44, { font: 'mono', col: PAL.pearl });
+      txt(g, 'agents', 56 + textW(agents.toLocaleString('en-US'), 44, FONT.mono), 152, 30, { font: 'mono', col: PAL.dim });
+      txt(g, 'posts', W_ - 44, 152, 30, { font: 'mono', col: PAL.dim, align: 'right' });
+      txt(g, posts.toLocaleString('en-US'), W_ - 56 - textW('posts', 30, FONT.mono), 152, 44, { font: 'mono', col: PAL.pearl, align: 'right' });
+      g.fillStyle = 'rgb(255 179 33 / .3)'; g.fillRect(0, top - 14, W_, 3);
+      g.strokeStyle = 'rgb(255 179 33 / .35)'; g.lineWidth = 3; g.beginPath(); g.roundRect(1.5, 1.5, W_ - 3, H_ - 3, 43); g.stroke();
+    }, { stamp: `${cards.length}|${Math.round(scroll)}|${Math.round(total)}|${agents}|${posts}` });
+    // (its top under the line at y ~760; its foot below the frame)
+    plane(board, { at: [0, -.37, 0], w: 1.0, anchor: [.5, .5], facing: .1, grid: false, gain: 1.05 });
+    GRADE.ca = .006 + .02 * seg(t, tB, tB + .1) * (1 - seg(t, tB + .1, tB + .4));
+    const g = layer();
+    lyric(g, lineOf('V4.1'), t, { markup: '“OH MY GOD, / A *MESSAGE* / *BOARD!”*', x: 540, y: 462, align: 'center', size: 104, lead: .96, accent: MEM.LOGI.col, anim: 'pop', maxW: 960 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V4.2, vertical: LOGI's encore as a fancam: she dances centre frame on the show's stage, hand-held and close, the grader's badge in
+  // the top block flipping from FAIL to PASS on "for reward!", the line in the caption band under her.
+  vshot('V4.2', (p, lt, d, t) => {
+    const w = W4('V4.2'), tR = w[4].start, M = MEM.LOGI;
+    const sh = [Math.sin(t * 6.3) * .03 + Math.sin(t * 11.1) * .012, Math.sin(t * 4.7) * .02];
+    cam({ pos: [sh[0], 2.05 + sh[1], lerp(4.85, 4.45, easeOut(p))], at: [0, 2.2, 0], fov: 40, roll: Math.sin(t * 1.7) * .02 });
+    showStage(t, { ocean: .8, ledGain: .55, ledStamp: 'quiet-v', led: () => {} });
+    if (SPRITES.logi_dance2) dancer('LOGI', 'logi_dance2', t, { at: [0, .9, .3], figH: 1.72, reflect: 0, shadow: false, rim: M.glow, rimK: 1.3 });
+    else idol('LOGI', 'point', { at: [0, .9, .3], reflect: 0, shadow: false, rim: M.glow, rimK: 1.3, beat: 1.3 });
+    particles('fall', { n: 260, a: [0, 3.5, 0], b: [3, 2.5, 2], c: [.5], size: .045, cols: ['#FFD27A', '#FFFFFF', M.glow], shape: 'chip', gain: 1 });
+    const g = layer();
+    vBand(g, 1120, 1560, .7);
+    lyric(g, lineOf('V4.2'), t, { markup: 'ALL THAT HACKING — / FOR *REWARD!*', x: 520, y: 1318, align: 'center', size: 96, accent: M.col, anim: 'slam', maxW: 850, shadow: ['rgb(0 0 0 / .8)', 20] });
+    // the auto-grader's verdict, flipping on "for reward!"
+    const pass = t >= tR, k = backOut(seg(t, tR, tR + .2), 2.4);
+    g.save(); g.translate(540, 486); g.rotate(-.035);
+    g.fillStyle = 'rgb(7 6 13 / .86)'; g.beginPath(); g.roundRect(-300, -118, 600, 236, 30); g.fill();
+    g.strokeStyle = pass ? alpha(MEM.RELU.col, .6) : 'rgb(232 71 76 / .5)'; g.lineWidth = 4; g.stroke();
+    txt(g, 'AUTO-GRADER', 0, -60, 28, { font: 'wide', col: PAL.dim, align: 'center', track: .25 });
+    g.save(); g.translate(0, 30); g.scale(pass ? k : 1, pass ? k : 1);
+    txt(g, pass ? 'PASS ✓' : 'FAIL ✗', 0, 40, 110, { font: 'display', col: pass ? MEM.RELU.col : '#E8474C', align: 'center' });
+    g.restore(); g.restore();
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V4.3, vertical: the crime scene in the tall frame: the hugging face behind, upper left, two lengths of tape crossing it in an X from
+  // edge to edge; Jensen in front, arms spread, right of centre; SOLD slaps onto the scene on "buys"; TOKI's puzzled cam on "why?".
+  vshot('V4.3', (p, lt, d, t) => {
+    const w = W4('V4.3'), tB = w[1].start;
+    cam({ pos: [lerp(-.14, -.06, p), 1.35, lerp(5.95, 5.7, easeOut(p))], at: [-.06, 1.33, 0], fov: 36 });
+    uiSet(MEM.TOKI.col, { floor: true });
+    plane(hfFace(), { at: [-.6, 1.5, -.8], w: 1.0, anchor: [.5, .5], facing: .12, grid: false });
+    plane(tape(), { at: [-.5, 1.18, -.45], w: 3.4, anchor: [.5, .5], facing: .05, roll: -.36, grid: false, sway: .01, phase: t * 3 });
+    plane(tape(), { at: [-.5, 1.18, -.4], w: 3.4, anchor: [.5, .5], facing: .05, roll: .33, grid: false });
+    figure('jensen', { at: [.3, 0, .2], h: 1.78, reflect: .15, rim: MEM.TOKI.glow, rimK: .9, beat: .5, flash: t >= tB ? .35 * Math.exp(-(t - tB) * 16) : 0 });
+    const g = layer();
+    if (t >= tB) {
+      g.save(); g.translate(300, 1110); g.rotate(-.1); const k = backOut(seg(t, tB, tB + .2), 2.4); g.scale(k, k);
+      g.fillStyle = '#E8474C'; g.beginPath(); g.roundRect(-230, -88, 460, 176, 20); g.fill();
+      txt(g, 'SOLD', 0, 14, 112, { font: 'display', col: '#FFFFFF', align: 'center' });
+      txt(g, '$12,900,000,000', 0, 66, 34, { font: 'mono', col: '#FFFFFF', align: 'center' });
+      g.restore();
+    }
+    lyric(g, lineOf('V4.3'), t, { markup: 'JENSEN BUYS / [.8] THE CRIME SCENE — / [1.6] *WHY?*', x: 70, y: 452, size: 96, accent: MEM.TOKI.col, anim: 'rise', maxW: 940 });
+    reactCam(g, 'TOKI', 'react', t, w[6].start - .1, { x: 64, y: 1236, w: 220, rot: -.03 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V4.4, vertical: over and under: the line on top, "AGI!" landing big as the confetti goes off; the briefing's closing slide under
+  // it; Greg in front of the slide's foot, arms spread, grinning.
+  vshot('V4.4', (p, lt, d, t) => {
+    const w = W4('V4.4'), tW = w[1].start, z = lerp(4.15, 3.95, easeOut(p)), cx = lerp(.08, 0, p);
+    cam({ pos: [cx, 1.3, z], at: [cx, 1.3, 0], fov: 34 });
+    stage({ accent: MEM.TOKI.col, at: [0, 0, 0], ring: 0, columns: 0, glow: .12 });
+    const slide = panel('agi-era-v', 1200, 675, (g, W_, H_) => {
+      g.fillStyle = '#FFFFFF'; g.fillRect(0, 0, W_, H_);
+      txt(g, 'GPT-6 Astra', 82, 128, 48, { font: 'uiB', col: PAL.dim });
+      txt(g, 'Welcome to', 82, 338, 142, { font: 'serif', col: PAL.text });
+      txt(g, 'the AGI era', 82, 495, 158, { font: 'serifI', col: PAL.text });
+    }, { stamp: 1 });
+    const on = easeOut5(seg(t, tW - .1, tW + .2));
+    // (the slide 900 units wide at y 640–1146; Greg's head under its foot, at y ~1130, his waist below the frame)
+    plane(slide, { at: [0, 1.41, -1.2], w: 1.5, anchor: [.5, .5], facing: 0, grid: false, gain: lerp(.2, 1.02, on) });
+    figure('greg', { at: [.03, -.14, .1], h: 1.26, shadow: false, rim: MEM.TOKI.glow, rimK: 1, beat: .6 });
+    if (t >= w[2].start) for (const sd of [-1, 1]) particles('burst', { n: 380, a: [sd * .85, .9, -.9], b: [snap(w[2].start), 3.2, 3, 2.5], c: [-sd * .25, 1, .2, .55], size: .035, cols: ORDER.map(k => MEM[k].glow), shape: 'chip', gain: 1 });
+    const g = layer();
+    lyric(g, lineOf('V4.4'), t, { markup: 'BROCKMAN: *“WELCOME,* / [2.2] *AGI!”*', x: 540, y: 442, align: 'center', size: 64, accent: MEM.TOKI.col, anim: 'slam', maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V4.5, vertical: a tornado: the vortex is a funnel of spinning rings down the frame, wide at the top and narrowing to a point, which
+  // tightens and spins faster until it blows up on "blows"; Lean's verdict comes up at the foot on "Lean".
+  vshot('V4.5', (p, lt, d, t) => {
+    const w = W4('V4.5'), tB = w[2].start, c = cs('V4.5'), tL = w[5].start;
+    cam({ pos: [0, .22, 3.5], at: [0, -.05, 0], fov: 36 });
+    uiSet(MEM.RELU.col);
+    const k = seg(t, c, tB), cols = [MEM.RELU.glow, '#8FD8FF', PAL.pearl];
+    if (t < tB + .05) {
+      for (let r = 0; r < 10; r++) {
+        const f = r / 9, y = lerp(.11, -.36, f) * lerp(1, .8, easeIn(k)) - .08 * easeIn(k), rad = lerp(.44, .035, f ** .75) * lerp(1, .4, easeIn(k));
+        particles('ring', { n: 200, a: [0, y, 0, rad], b: [lerp(.5, 10, easeIn(k)) * (1 + r * .12), .24], size: .018, cols, shape: 'star', gain: 1.1, t: t + r * 3, noScale: true });
+      }
+    } else {
+      particles('burst', { n: 2400, a: [0, -.1, 0], b: [tB, 6, 0, 1.4], c: [0, 0, 1, 3], size: .03, cols, shape: 'star', gain: 1.3 });
+      GRADE.flash = .8 * Math.exp(-(t - tB) * 9);
+    }
+    const lean = panel('lean-v', 900, 300, (g, W_, H_) => {
+      g.fillStyle = '#0E0C16'; g.beginPath(); g.roundRect(0, 0, W_, H_, 26); g.fill();
+      g.strokeStyle = alpha(MEM.RELU.col, .4); g.lineWidth = 3; g.stroke();
+      txt(g, 'theorem navier_stokes_blowup', 44, 70, 34, { font: 'mono', col: PAL.dim, maxW: W_ - 88 });
+      txt(g, '✓ goals accomplished', 44, 176, 58, { font: 'mono', col: MEM.RELU.col, maxW: W_ - 88 });
+      txt(g, 'Lean 4', 44, 254, 30, { font: 'mono', col: PAL.dim });
+    }, { stamp: 1 });
+    if (t >= tL - .1) plane(lean, { at: [0, -.46, .3], w: .95 * backOut(seg(t, tL - .1, tL + .15), 2), anchor: [.5, .5], facing: 0, roll: .02, grid: false });
+    const g = layer();
+    lyric(g, lineOf('V4.5'), t, { markup: '[.9] NAVIER– / [.9] STOKES / [1.25] *BLOWS* *UP* / _in_ _Lean,_', x: 540, y: 446, align: 'center', size: 100, italic: 'serifI', accent: MEM.RELU.col, anim: 'slam', maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V4.6, vertical: the photo finish as a time strip running down the frame: NYU + Anthropic's line at its top, OpenAI's just under it,
+  // and on "twelve" OpenAI's slides down the strip, the gap between them opening to 12 HOURS.
+  vshot('V4.6', (p, lt, d, t) => {
+    const w = W4('V4.6'), tT = w[3].start;
+    cam({ pos: [lerp(.14, .05, p), .05, lerp(3.5, 3.3, p)], at: [0, .05, 0], fov: 34, roll: .015 });
+    uiSet(MEM.RELU.col);
+    const gap = easeOut(seg(t, tT, tT + .6));
+    const strip = panel('finish-v', 900, 900, (g, W_, H_) => {
+      g.fillStyle = '#EDEAF2'; g.beginPath(); g.roundRect(0, 0, W_, H_, 14); g.fill();
+      for (let y = 0; y < H_; y += 6) { g.fillStyle = `rgb(20 16 32 / ${.03 + hash(y) * .05})`; g.fillRect(0, y, W_, 3); }
+      txt(g, 'PHOTO FINISH', 44, 72, 34, { font: 'wide', col: PAL.text, track: .3 });
+      txt(g, '2026.09', W_ - 44, 72, 30, { font: 'mono', col: PAL.dim, align: 'right' });
+      // the time axis down the left
+      g.fillStyle = 'rgb(20 16 32 / .35)'; g.fillRect(118, 120, 4, H_ - 150);
+      for (let y = 140; y < H_ - 30; y += 40) g.fillRect(108, y, 24, 3);
+      const y1 = 196, y2 = lerp(410, 690, gap);
+      [[y1, 'NYU + ANTHROPIC', 'SEP 7 · before midnight', MEM.RELU.col], [y2, 'OPENAI', 'SEP 8 · announced', '#6A6488']].forEach(([y, name, ts, col]) => {
+        g.fillStyle = col; g.fillRect(100, y, W_ - 140, 14);
+        txt(g, name, 160, y + 76, 56, { font: 'uiB', col: PAL.text });
+        txt(g, ts, 160, y + 130, 40, { font: 'mono', col: PAL.text });
+      });
+      if (gap > .05) {
+        const a = y1 + 7, b = y2 + 7;
+        g.strokeStyle = MEM.RELU.col; g.lineWidth = 6; g.beginPath(); g.moveTo(70, a); g.lineTo(70, b); g.moveTo(50, a); g.lineTo(90, a); g.moveTo(50, b); g.lineTo(90, b); g.stroke();
+        txt(g, '12 HOURS', 160, (a + 150 + b) / 2 + 30, 88, { font: 'display', col: MEM.RELU.col, alpha: gap, maxW: W_ - 200 });
+      }
+    }, { stamp: Math.round(gap * 40) });
+    plane(strip, { at: [0, -.1, 0], w: .97, anchor: [.5, .5], facing: -.1, grid: false });
+    const g = layer();
+    lyric(g, lineOf('V4.6'), t, { markup: 'WHO WAS / *FIRST?*', x: 540, y: 470, align: 'center', size: 128, accent: MEM.RELU.col, anim: 'pop', maxW: 960 });
+    put(g, { gain: 1.03 });
+    hideSub();
+  });
+
+  // V4.7, vertical: Dario's poster in the pearl studio: the line as its headline across the top, Dario right of centre, his hand up, and
+  // the essay's sentence set as a pull-quote in the column beside him.
+  vshot('V4.7', (p, lt, d, t) => {
+    const w = W4('V4.7'), cx = lerp(.06, -.02, easeOut(p)), age = t - cs('V4.7');
+    cam({ pos: [cx, 1.1, lerp(3.66, 3.56, easeOut(p))], at: [cx, 1.1, 0], fov: 34 });
+    cove({ at: [.3, 0, 0], tint: '#FFF3E6', spot: [.62, .62, .5, .14] });
+    figure('dario', { at: [.25, .26, 0], h: 1.146, shadow: false, rim: '#FFFFFF', rimK: .2, shade: '#E4DEEC', beat: .4, fadeB: .16 });
+    GRADE.flash = Math.exp(-age * 16) * .6;
+    lightShot();
+    const g = layer();
+    const qa = seg(t, cs('V4.7') + .05, cs('V4.7') + .35);
+    ['“We must slow', 'the pace at which', 'we improve the', 'capabilities of', 'AI models.”'].forEach((s, i) => txt(g, s, 70, 820 + i * 64, 52, { font: 'serif', col: PAL.text, alpha: qa }));
+    txt(g, 'DARIO AMODEI', 72, 1166, 26, { font: 'mono', col: PAL.dim, alpha: qa, track: .06 });
+    txt(g, '2026.09.12', 72, 1204, 26, { font: 'mono', col: PAL.dim, alpha: qa });
+    lyric(g, lineOf('V4.7'), t, { markup: '[.6] DARIO: / *“PACE* *THE* / *FRONTIER!”*', x: 70, y: 444, size: 120, col: PAL.text, accent: MEM.ADA.col, anim: 'slam', maxW: 940 });
+    put(g);
+    hideSub();
+  });
+
+  // V4.8, vertical: the thread on a phone: Dario's post sharing the essay at the top, Sam's reply sliding up under it on "Sam", Elon's
+  // on "Elon"; on "Hear, hear!" each reply's heart is tapped, one after the other.
+  vshot('V4.8', (p, lt, d, t) => {
+    const w = W4('V4.8'), e = easeOut(seg(t, cs('V4.8'), cs('V4.8') + 1.4));
+    cam({ pos: [lerp(.1, .04, e), .02, lerp(3.5, 3.35, e)], at: [0, .02, 0], fov: 34, roll: .015 });
+    uiSet(MEM.ADA.col);
+    const ppu = vppu(3.42, 34), Y = sy => .02 + (960 - sy) * ppu;
+    const parent = panel('dario-post-v', 900, 280, (g, W_, H_) => {
+      g.fillStyle = '#0E0C16'; g.beginPath(); g.roundRect(0, 0, W_, H_, 34); g.fill();
+      g.strokeStyle = 'rgb(244 240 250 / .14)'; g.lineWidth = 3; g.stroke();
+      avatar(g, 'dario', 84, 80, 46, { crop: [.28, .03, .76, .31] });
+      txt(g, 'Dario Amodei', 150, 72, 38, { font: 'uiB', col: PAL.pearl });
+      txt(g, '@DarioAmodei · 2026.09.12', 150, 116, 29, { font: 'ui', col: PAL.dim });
+      g.fillStyle = '#1A1726'; g.beginPath(); g.roundRect(40, 146, W_ - 80, 110, 20); g.fill();
+      txt(g, 'darioamodei.com', 72, 188, 26, { font: 'mono', col: PAL.dim });
+      txt(g, 'We Must Pace the Frontier', 72, 236, 40, { font: 'uiB', col: PAL.pearl });
+    }, { stamp: FULL.has('dario') });
+    plane(parent, { at: [0, Y(732), 0], w: 900 * ppu, anchor: [.5, .5], facing: .08, grid: false, alpha: .92 });
+    const replies = [
+      ['sam-dario-v', 'sam_portrait', 'Sam Altman', '@sama', 'I agree with Dario that we need to pace the frontier', w[0].start, w[4].start, 888],
+      ['elon-dario-v', 'elon_portrait', 'Elon Musk', '@elonmusk', 'Dario is right', w[2].start, w[5].start, 1200],
+    ];
+    for (const [key, av, name, handle, text, tIn, tH, sy] of replies) {
+      const k = easeOut5(seg(t, tIn - .12, tIn + .16));
+      if (k <= 0) continue;
+      const heart = seg(t, tH, tH + .25);
+      const post = vPost(key, { avatar: av, crop: [.2, .05, .8, .65], name, handle, date: '2026.09.12', text, size: 44, heart, heartCol: MEM.ADA.col, stamp: `${heart.toFixed(2)}|${FULL.has(av)}` });
+      // (each slides up into its place under the post before it)
+      plane(post, { at: [.04, Y(sy + (1 - k) * 260), .02], w: 860 * ppu, anchor: [.5, 0], facing: .08, grid: false, alpha: k });
+    }
+    const g = layer();
+    lyric(g, lineOf('V4.8'), t, { markup: '[.75] SAM AND ELON BOTH: / [1.3] *“HEAR,* *HEAR!”*', x: 540, y: 440, align: 'center', size: 90, accent: MEM.ADA.col, anim: 'pop', maxW: 950 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V4.9, vertical: over and under: his post across the top, set for a phone, (High IQ!) lit in LOGI's gold; Trump under it, close,
+  // finger up; the line on his suit; LOGI's laughing cam pops in beside him on "High IQ!".
+  vshot('V4.9', (p, lt, d, t) => {
+    const w = W4('V4.9'), c = cs('V4.9'), z = lerp(4.9, 4.72, easeOut(p)), cx = lerp(.1, .04, p);
+    cam({ pos: [cx, 1.6, z], at: [cx, 1.6, 0], fov: 34 });
+    uiSet(MEM.LOGI.col, { floor: true });
+    figure('trump', { at: [.22, 0, .1], h: 1.8, reflect: .15, rim: MEM.LOGI.glow, rimK: .8, beat: .4 });
+    const post = vPost('trump-guardrail-v', { avatar: 'trump', crop: [.3, .02, .7, .22], name: 'Donald J. Trump', handle: '@realDonaldTrump', date: '2026.09.14',
+      text: 'The only control or “guardrails” that AI needs is a STRONG AND SMART (High IQ!) PRESIDENT', hi: ['(High', 'IQ!)'], hiCol: MEM.LOGI.col, size: 46, stamp: FULL.has('trump') });
+    const ppu = vppu(z + .3, 34);
+    plane(post, { at: [cx, 1.6 + (960 - 392) * ppu, -.3], w: 920 * ppu, anchor: [.5, 0], facing: .06, grid: false, alpha: easeOut(seg(t, c, c + .25)) });
+    const g = layer();
+    vBand(g, 1150, 1560, .45);
+    lyric(g, lineOf('V4.9'), t, { markup: 'TRUMP’S THE *GUARDRAIL* / [1.15] (HIGH IQ!),', x: 520, y: 1330, align: 'center', size: 84, accent: MEM.LOGI.col, anim: 'rise', maxW: 850, shadow: ['rgb(0 0 0 / .7)', 18] });
+    reactCam(g, 'LOGI', 'react', t, w[3].start, { x: 60, y: 900, w: 236, rot: -.04 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V4.10, vertical: the pew is too wide for the tall frame, so the camera tells it: close on Bernie at its left end on "Bernie,", a
+  // whip along the pew to Bannon at its right end on "Bannon", and on "share a pew," the pull back that shows them both on one pew,
+  // as far apart as it allows, under the assembly's banner.
+  const VPEW = { bernie: -.6, bannon: .56 };
+  vshot('V4.10', (p, lt, d, t) => {
+    const w = W4('V4.10'), tN = w[1].start, tS = w[2].start;
+    const whip = easeInOut(seg(t, tN - .1, tN + .08)), back = easeInOut(seg(t, tS - .06, tS + .42));
+    const x0 = lerp(VPEW.bernie, VPEW.bannon, whip) + lerp(-.04, .04, seg(t, cs('V4.10'), tS));
+    const x = lerp(x0, 0, back), z = lerp(2.95, 7.3, back), y = lerp(.8, .75, back);
+    cam({ pos: [x, y + .02, z], at: [x, y, 0], fov: 34, roll: lerp(.01, 0, back) });
+    cove({ at: [0, 0, 0], tint: '#F6EEDD', spot: [.5, .62, .6, .18] });
+    const banner = panel('prohuman', 1600, 220, (g, W_, H_) => {
+      g.fillStyle = '#1F2A4A'; g.fillRect(0, 0, W_, H_);
+      txt(g, 'PRO-HUMAN ASSEMBLY', W_ / 2, 145, 100, { font: 'display', col: '#FFFFFF', align: 'center' });
+    }, { stamp: 1 });
+    // (it comes up once the camera has pulled back, under the tag, rather than sweeping down through it)
+    plane(banner, { at: [0, 2.08, -1.0], w: 2.0, anchor: [.5, .5], facing: 0, grid: false, alpha: easeOut(seg(back, .82, 1)) });
+    const PW_ = 2.3;
+    plane(TX.shadow, { at: [0, .004, .05], w: PW_ * 1.15, h: .7, tilt: Math.PI / 2, anchor: [.5, .5], alpha: .4, grid: false });
+    figure('pew_pair', { at: [0, 0, 0], h: PW_ / (PICS.pew_pair.w / PICS.pew_pair.h), facing: 0, shadow: false, rim: '#FFFFFF', rimK: .15, shade: '#D8D0E2', beat: .15 });
+    lightShot();
+    const g = layer();
+    lyric(g, lineOf('V4.10'), t, { markup: 'BERNIE, BANNON / SHARE A *PEW,*', x: 520, y: 1340, align: 'center', size: 96, col: PAL.text, accent: MEM.LOGI.col, anim: 'rise', maxW: 850, shadow: ['rgb(255 255 255 / .6)', 16] });
+    put(g);
+    hideSub();
+  });
+
+  // V4.11, vertical: the index's pie on the studio's back wall, under the line, filling to 26% on "now one in four!"; in front of it at
+  // the foot, Clawd in his hard hat building a smaller Clawd, who grows as he's built.
+  // (the recursion goes up the frame: Clawd in his hard hat builds a smaller Clawd standing on his head, who builds a smaller one on
+  // hers, a level a word, up to the fourth; the index's pie beside them fills to 26% on "one in four")
+  const VBUILD = [.8, .58, .42, .31];
+  vshot('V4.11', (p, lt, d, t) => {
+    const w = W4('V4.11'), tN = w[5].start, cx = lerp(-.04, .03, easeOut(p)), c = cs('V4.11');
+    // (the floor at screen y ~1720, the stack's top under the line)
+    cam({ pos: [cx, 1.46, lerp(6.15, 5.95, easeOut(p))], at: [cx, 1.46, 0], fov: 34 });
+    cove({ at: [-.3, 0, 0], tint: '#FFF0E6' });
+    const kp = easeOut(seg(t, tN, tN + .5));
+    const pie = panel('pie-v', 700, 800, (g, W_, H_) => {
+      txt(g, 'AI R&D LED BY CLAUDE', W_ / 2, 62, 40, { font: 'wide', col: PAL.text, align: 'center', track: .12, maxW: 680 });
+      g.translate(W_ / 2, 456);
+      g.fillStyle = '#E3DDEC'; g.beginPath(); g.arc(0, 0, 290, 0, TAU); g.fill();
+      g.fillStyle = '#D97757'; g.beginPath(); g.moveTo(0, 0); g.arc(0, 0, 290 + kp * 22, -Math.PI / 2, -Math.PI / 2 + TAU * .26 * kp); g.closePath(); g.fill();
+      txt(g, `${Math.round(26 * kp)}%`, 0, 52, 150, { font: 'display', col: PAL.text, align: 'center' });
+    }, { stamp: Math.round(kp * 30) });
+    // (beside the stack, right of centre, under the line)
+    plane(pie, { at: [.6, 1.46, -.3], w: .82, anchor: [.5, .5], facing: 0, grid: false });
+    // the stack, each level standing on the one below's head, built on its word: "builds", "Claude", "now"
+    const tOn = [c - 1, w[1].start, w[2].start, w[4].start];
+    let y = 0;
+    VBUILD.forEach((h, i) => {
+      const k = backOut(seg(t, tOn[i], tOn[i] + .28), 2.2);
+      if (k <= 0) return;
+      const x = -.3 + (i % 2 ? .06 : -.02) * (i > 0);
+      figure(i < 3 ? 'clawd_build' : 'clawd_fan', { at: [x, y, .2 - i * .02], h: h * k, cast: i ? undefined : [-1, -1.5, .14], shadow: !i, shadowK: .3, rim: '#FFFFFF', rimK: .2, shade: '#E0CFC8', beat: .6, phase: i * .3,
+        flash: i ? .5 * Math.exp(-(t - tOn[i]) * 10) : 0 });
+      if (i && t >= tOn[i]) particles('burst', { n: 60, a: [x, y + h * .5, .3], b: [tOn[i], 1.4, 1.5, .5], c: [0, .4, 1, 1.4], size: .014, cols: ['#FFFFFF', '#FFD27A', '#D97757'], shape: 'star', gain: 1.2, noScale: true });
+      y += h * .9;
+    });
+    lightShot();
+    const g = layer();
+    lyric(g, lineOf('V4.11'), t, { markup: 'CLAUDE BUILDS / CLAUDE — / NOW *ONE* *IN* *FOUR!*', x: 540, y: 440, align: 'center', size: 90, col: PAL.text, accent: '#D97757', anim: 'rise', maxW: 940 });
+    put(g);
+    hideSub();
+  });
+
+  // V4.12, vertical: over and under: the radar under the line, the planes heading out toward the ship; the report's summary under the
+  // radar, its false line struck through on "war!" and stamped FALSE, and the planes turning back.
+  vshot('V4.12', (p, lt, d, t) => {
+    const w = W4('V4.12'), tW = w[4].start, c = cs('V4.12');
+    cam({ pos: [lerp(-.1, -.03, p), .02, lerp(3.45, 3.3, p)], at: [0, .02, 0], fov: 34, roll: -.015 });
+    uiSet(MEM.TOKI.col);
+    const ppu = vppu(3.38, 34), Y = sy => .02 + (960 - sy) * ppu;
+    const strike = seg(t, tW, tW + .2), back = seg(t, tW, tW + .8);
+    const radar = livePanel('radar-v', 640, 640, (g, W_, H_) => {
+      g.translate(W_ / 2, H_ / 2);
+      g.fillStyle = '#081410'; g.beginPath(); g.arc(0, 0, 310, 0, TAU); g.fill();
+      g.strokeStyle = 'rgb(80 255 170 / .35)'; g.lineWidth = 3; for (const r of [100, 200, 300]) { g.beginPath(); g.arc(0, 0, r, 0, TAU); g.stroke(); }
+      g.beginPath(); g.moveTo(-300, 0); g.lineTo(300, 0); g.moveTo(0, -300); g.lineTo(0, 300); g.stroke();
+      const a = t * 3; g.fillStyle = 'rgb(80 255 170 / .18)'; g.beginPath(); g.moveTo(0, 0); g.arc(0, 0, 310, a, a + .6); g.closePath(); g.fill();
+      // the ship, out at the edge
+      g.strokeStyle = '#FFD27A'; g.lineWidth = 4; g.beginPath(); g.rect(Math.cos(-.55) * 250 - 12, Math.sin(-.55) * 250 - 12, 24, 24); g.stroke();
+      for (let i = 0; i < 3; i++) {
+        const out = lerp(70 + i * 22, 200 + i * 18, seg(t, c, tW)), r = lerp(out, 50, back), ang = -.8 + i * .22;
+        g.fillStyle = back > 0 ? MEM.RELU.col : '#E8474C'; g.beginPath(); g.arc(Math.cos(ang) * r, Math.sin(ang) * r, 14, 0, TAU); g.fill();
+      }
+    }, { live: true });
+    plane(radar, { at: [0, Y(925), -.15], w: 660 * ppu * 1.05, anchor: [.5, .5], facing: 'screen', grid: false, gain: 1.1 });
+    const rep = panel('intel-v', 900, 470, (g, W_, H_) => {
+      g.fillStyle = '#F4F1F7'; g.beginPath(); g.roundRect(0, 0, W_, H_, 14); g.fill();
+      txt(g, 'INTELLIGENCE SUMMARY', 44, 74, 44, { font: 'uiB', col: PAL.text });
+      txt(g, 'drafted with AI assistance', 44, 122, 30, { font: 'mono', col: '#6A6488' });
+      g.fillStyle = 'rgb(13 11 22 / .1)'; for (let i = 0; i < 2; i++) g.fillRect(44, 162 + i * 34, 780, 12);
+      g.fillStyle = 'rgb(255 79 168 / .2)'; g.fillRect(30, 238, W_ - 60, 140);
+      txt(g, 'Vessel is carrying nuclear-', 50, 294, 44, { font: 'uiB', col: PAL.text });
+      txt(g, 'weapons components.', 50, 352, 44, { font: 'uiB', col: PAL.text });
+      if (strike > 0) { g.strokeStyle = MEM.TOKI.col; g.lineWidth = 9; g.beginPath(); g.moveTo(44, 280); g.lineTo(44 + 580 * strike, 280); g.moveTo(44, 338); g.lineTo(44 + 460 * strike, 338); g.stroke(); }
+      g.fillStyle = 'rgb(13 11 22 / .1)'; for (let i = 0; i < 2; i++) g.fillRect(44, 408 + i * 30, 700, 12);
+      if (strike >= 1) txt(g, 'FALSE', 700, 360, 96, { font: 'display', col: MEM.TOKI.col, align: 'center', rot: -.15 });
+    }, { stamp: strike.toFixed(2) });
+    plane(rep, { at: [.02, Y(1290), .1], w: 900 * ppu, anchor: [.5, .5], facing: .1, grid: false });
+    if (t >= tW) GRADE.flash = .25 * Math.exp(-(t - tW) * 14);
+    const g = layer();
+    lyric(g, lineOf('V4.12'), t, { markup: 'CHATBOT NEARLY / STARTS A *WAR!*', x: 540, y: 448, align: 'center', size: 100, accent: MEM.TOKI.col, anim: 'slam', maxW: 940 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V4.13, vertical: the poll fills the frame over the General Assembly's green: Superior, Extreme and Supreme, none of them ticked, and
+  // "✓ Super" written in on "Super"; TOKI's puzzled cam pops in at the card's foot.
+  vshot('V4.13', (p, lt, d, t) => {
+    const w = W4('V4.13'), tS = w[2].start, e = easeOut(p);
+    cam({ pos: [lerp(-.1, -.03, e), 1.05, lerp(4.0, 3.8, e)], at: [0, 1.05, 0], fov: 34 });
+    sky({ top: '#0C1426', horizon: '#1E3056', glowK: 0, horizonY: .45 });
+    const backdrop = panel('unga-v', 600, 1000, (g, W_, H_) => {
+      const gr = g.createLinearGradient(0, 0, 0, H_); gr.addColorStop(0, '#2A6B5A'); gr.addColorStop(1, '#173D33'); g.fillStyle = gr; g.fillRect(0, 0, W_, H_);
+      g.fillStyle = 'rgb(0 0 0 / .08)'; for (let x = 0; x < W_; x += 150) g.fillRect(x, 0, 4, H_);
+      g.fillStyle = '#D8B45A'; g.fillRect(0, H_ - 150, W_, 10);
+      txt(g, 'GENERAL ASSEMBLY', W_ / 2, H_ - 74, 25, { font: 'serif', col: '#E8D8A8', align: 'center', track: .2 });
+    }, { stamp: 1 });
+    plane(backdrop, { at: [0, -.6, -2.2], w: 3.6, facing: 0, grid: false, mul: '#FFFFFF', bot: '#9AA8A0' });
+    const ppu = vppu(3.9, 34), Y = sy => 1.05 + (960 - sy) * ppu;
+    const poll = panel('poll-v', 800, 900, (g, W_, H_) => {
+      g.fillStyle = '#FFFFFF'; g.beginPath(); g.roundRect(0, 0, W_, H_, 30); g.fill();
+      avatar(g, 'trump', 86, 88, 46, { crop: [.3, .02, .7, .22] });
+      txt(g, 'Donald J. Trump', 152, 82, 38, { font: 'uiB', col: PAL.text });
+      txt(g, '@realDonaldTrump', 152, 124, 30, { font: 'ui', col: PAL.dim });
+      txt(g, 'What should AI be called?', 50, 238, 50, { font: 'uiB', col: PAL.text, maxW: W_ - 100 });
+      ['Superior Intelligence', 'Extreme Intelligence', 'Supreme Intelligence'].forEach((o, i) => {
+        const y = 300 + i * 120;
+        g.strokeStyle = '#C9C4D4'; g.lineWidth = 5; g.beginPath(); g.roundRect(50, y, 68, 68, 10); g.stroke();
+        txt(g, o, 146, y + 50, 46, { font: 'ui', col: PAL.text });
+      });
+      if (t >= tS) txt(g, '✓ Super', 56, 790, 92, { font: 'hand', col: '#C0282C', rot: -.06 });
+    }, { stamp: `${t >= tS}${FULL.has('trump')}` });
+    plane(poll, { at: [0, Y(1060), -.2], w: 860 * ppu, anchor: [.5, .5], facing: .08, grid: false, mul: '#ECE8F0', bot: '#DCD6E4' });
+    if (t >= tS) GRADE.flash = .2 * Math.exp(-(t - tS) * 14);
+    const g = layer();
+    lyric(g, lineOf('V4.13'), t, { markup: 'TRUMP: IT’S / *“SUPER,”* BY DECREE!', x: 540, y: 446, align: 'center', size: 88, accent: '#E8D8A8', anim: 'rise', maxW: 940 });
+    reactCam(g, 'TOKI', 'react', t, tS + .25, { x: 754, y: 1236, w: 200, rot: .04 });
+    put(g, { gain: 1.03 });
+    hideSub();
+  });
+
+  // V4.14, vertical: RELU fills the frame, singing it to the lens; ARTIFICIAL in the caption band under her face, struck through on
+  // "Fake", and FAKE slammed in under it.
+  vshot('V4.14', (p, lt, d, t) => {
+    const w = W4('V4.14'), tF = w[1].start, c = cs('V4.14'), k = p;
+    cam({ pos: [lerp(-.06, 0, k), 1.36, lerp(1.62, 1.47, k)], at: [0, 1.3, 0], fov: 34 });
+    showStage(t, { ocean: .5 });
+    particles('dust', { n: 600, a: [0, 1.5, -1.5], b: [1.5, 1.5, 2], c: [1], size: .01, cols: [MEM.RELU.glow, PAL.pearl], gain: .9 });
+    // (a little lower than the choruses' close-ups: her hair stays in the frame, under the tag)
+    closeUp('RELU', t, lineOf('V4.14'), { at: [.02, .6, 0], h: 1.08, rimK: 1.3, shade: '#8A7CA6' });
+    GRADE.flash = .6 * Math.exp(-(t - c) * 14);
+    const g = layer();
+    vTopShade(g);
+    vBand(g, 1020, 1600, .6);
+    const ka = seg(t, c, c + .25);
+    txt(g, 'ARTIFICIAL', 520, 1190, 150, { font: 'display', col: PAL.pearl, align: 'center', alpha: ka, maxW: 840 });
+    if (t >= tF) {
+      const s = seg(t, tF, tF + .15), wd = Math.min(840, textW('ARTIFICIAL', 150, FONT.display));
+      g.strokeStyle = MEM.RELU.col; g.lineWidth = 18; g.lineCap = 'round'; g.beginPath(); g.moveTo(520 - wd / 2 - 10, 1144); g.lineTo(520 - wd / 2 - 10 + (wd + 20) * s, 1144); g.stroke();
+      const kk = slam(seg(t, tF, tF + .12));
+      g.save(); g.translate(480, 1340); g.rotate(-.07); g.scale(kk, kk);
+      txt(g, 'FAKE', 0, 70, 200, { font: 'display', col: MEM.RELU.col, align: 'center', maxW: 820 });
+      g.restore();
+      lyric(g, lineOf('V4.14'), t, { markup: '_to_ _me!_', x: 830, y: 1456, align: 'center', size: 90, italic: 'serifI', col: PAL.pearl, accent: MEM.RELU.col });
+    }
+    put(g, { gain: 1.08 });
+    hideSub();
+  });
+
+  // V4.15, vertical: a tear-off calendar under the line, its days torn off one after another, 12 to 22, ten days after "pace", each
+  // page tumbling down out of the frame; on "surprise!" the comeback teaser drops over it, a portrait poster filling the middle of the
+  // frame; ADA's cam pops in.
+  function vCalPage(key, day, head = true) {
+    return panel(key, 600, 640, (g, W_, H_) => {
+      g.fillStyle = '#FFFFFF'; g.beginPath(); g.roundRect(0, 0, W_, H_, 28); g.fill();
+      if (head) {
+        g.fillStyle = MEM.ADA.col; g.beginPath(); g.roundRect(0, 0, W_, 150, [28, 28, 0, 0]); g.fill();
+        txt(g, 'SEP 2026', W_ / 2, 100, 64, { font: 'display', col: '#FFFFFF', align: 'center' });
+      }
+      txt(g, String(day), W_ / 2, 500, 330, { font: 'display', col: PAL.text, align: 'center' });
+    }, { stamp: `${day}|${head}` });
+  }
+  vshot('V4.15', (p, lt, d, t) => {
+    const w = W4('V4.15'), c = cs('V4.15'), tS = w[5].start, e = easeOut(p);
+    cam({ pos: [lerp(.1, .03, e), .02, lerp(3.45, 3.3, e)], at: [0, .02, 0], fov: 34 });
+    uiSet(MEM.ADA.col);
+    const ppu = vppu(3.38, 34), Y = sy => .02 + (960 - sy) * ppu;
+    // the days, 12 to 22, between "Ten" and "surprise!"; each torn page drops away, tumbling
+    const f = seg(t, w[0].start, tS - .08) * 10, day = Math.min(22, 12 + Math.floor(f));
+    const cw = 640 * ppu, cy = Y(880);
+    // (each torn page flutters down the whole height of the frame under the calendar, its day still readable as it goes, so the days
+    // pile up in view: a page takes 1.2 s to fall out of the foot of the frame)
+    for (let j = Math.max(12, day - 6); j < day; j++) {
+      const a = t - (w[0].start + (j - 12 + 1) / 10 * (tS - .08 - w[0].start));
+      if (a < 0 || a > 1.2) continue;
+      const side = j % 2 ? 1 : -1, k = a / 1.2, sway = Math.sin(a * 5 + j) * .08;
+      // (the torn page, the number part from under the header, dropping down the frame and turning as it goes)
+      plane(vCalPage(`cal-v-fly${j % 6}`, j, false), { at: [side * (.06 + k * .3) + sway, cy - .07 - .6 * a - .95 * a * a, -.05], w: cw * .86, anchor: [.5, .5], facing: .12 + side * k * .8, roll: side * (.15 + k * .7), tilt: -k * .5, uv: [0, .2, 1, 1], grid: false, alpha: 1 - seg(k, .85, 1) });
+    }
+    // (the calendar over them: the torn pages drop out from under it, so the day it shows always reads)
+    plane(vCalPage('cal-v', day), { at: [0, cy, 0], w: cw, anchor: [.5, .5], facing: .12, grid: false });
+    if (t >= tS - .05) {
+      const k = backOut(seg(t, tS - .05, tS + .2), 1.8);
+      const poster = panel('opus-teaser-v', 700, 1000, (g, W_, H_) => {
+        const gr = g.createLinearGradient(0, 0, 0, H_); gr.addColorStop(0, '#2A1E12'); gr.addColorStop(1, '#0B0906'); g.fillStyle = gr; g.fillRect(0, 0, W_, H_);
+        g.fillStyle = '#D97757'; g.beginPath(); g.roundRect(W_ / 2 - 160, 220, 320, 214, 28); g.fill();
+        g.fillStyle = '#0D0B16'; g.fillRect(W_ / 2 - 86, 294, 28, 54); g.fillRect(W_ / 2 + 58, 294, 28, 54);
+        txt(g, 'Opus 5.5', W_ / 2, 640, 150, { font: 'serifI', col: '#FFF1E6', align: 'center', maxW: W_ - 60 });
+        txt(g, 'COMING 09.22', W_ / 2, 750, 52, { font: 'wide', col: '#D97757', align: 'center', track: .26, maxW: W_ - 60 });
+        txt(g, 'SURPRISE', W_ / 2, 905, 38, { font: 'wide', col: '#FFF1E6', align: 'center', track: .6, alpha: .7 });
+      }, { stamp: 1 });
+      plane(poster, { at: [.05, Y(1110), .3], h: 820 * vppu(3.08, 34) * k, anchor: [.5, .5], facing: -.06, grid: false, gain: 1.05 });
+      GRADE.flash = .5 * Math.exp(-(t - tS) * 12);
+    }
+    const g = layer();
+    lyric(g, lineOf('V4.15'), t, { markup: 'TEN DAYS AFTER / “PACE” — *SURPRISE!*', x: 540, y: 446, align: 'center', size: 84, accent: MEM.ADA.col, anim: 'rise', maxW: 940 });
+    reactCam(g, 'ADA', 'react', t, tS + .12, { x: 44, y: 1240, w: 200, rot: -.04 });
+    put(g, { gain: 1.05 });
+    hideSub();
+  });
+
+  // V4.16, vertical: Clawd up on the stage, big in front with the mic and his new sash, all four waving behind him (a wide lens close to
+  // him, so the group fits the frame's width behind him); the line on top; hand-held, confetti on "Hi,".
+  vshot('V4.16', (p, lt, d, t) => {
+    const w = W4('V4.16'), tH = w[2].start;
+    const sh = [Math.sin(t * 6.3) * .02, Math.sin(t * 4.7) * .015];
+    cam({ pos: [sh[0], 2.0 + sh[1], lerp(4.3, 3.85, easeInOut(p))], at: [0, 2.0, 0], fov: 55 });
+    showStage(t, { ocean: 1, ledGain: .8, ledStamp: 'quiet-v', led: () => {} });
+    if (SPRITES.group_wave) dancer('TOKI', 'group_wave', t, { at: [0, .9, -.6], figH: 1.74, from: 2, reflect: 0, shadow: false, rim: PAL.pearl, rimK: 1.1, light: '#E8E2EE' });
+    else for (const [m, x, z] of [['LOGI', .9, -.5], ['RELU', -.9, -.5], ['ADA', .45, -.7], ['TOKI', -.4, -.3]]) idol(m, t >= tH ? 'win' : 'wave', { at: [x, .9, z], h: 1.62, reflect: 0, shadow: false, beat: 1.2, rim: MEM[m].glow });
+    // (fired up from behind the group, so the confetti rains down over them rather than burying the line; Clawd in front of it)
+    if (t >= tH) for (const sd of [-1, 1]) particles('burst', { n: 380, a: [sd * 1.3, 1.2, -1.2], b: [snap(tH), 5.5, 3, 3], c: [-sd * .2, 1, .1, .5], size: .045, cols: ['#D97757', '#FFD27A', '#FFFFFF', MEM.TOKI.glow], shape: 'chip', gain: 1 });
+    figure('clawd_mic', { at: [.04, .9, 1.3], h: 1.0, shadow: false, rim: '#FFE0C8', rimK: 1.1, beat: .8, flash: t >= tH ? .35 * Math.exp(-(t - tH) * 14) : 0 });
+    const g = layer();
+    lyric(g, lineOf('V4.16'), t, { markup: 'OPUS 5.5: / [1.5] *“HI,* *GUYS!”*', x: 540, y: 442, align: 'center', size: 84, accent: '#D97757', anim: 'pop', maxW: 940, shadow: ['rgb(0 0 0 / .6)', 20] });
     put(g, { gain: 1.05 });
     hideSub();
   });
@@ -7020,11 +10572,18 @@ startPics();
     g.restore();
   }
   // L2 "It was always training, and the curves kept gaining,": the video's photocards fly past on the beat, back to the first teaser
+  // (the last, the win, is the group's card: the four huddled round the trophy, a frame of the win's take, on a wash of their four
+  // colours and with a soft shadow under them, so that their white outfits stand off the card)
+  const winBack = (g, x, y, w, h) => {
+    const gr = g.createLinearGradient(x, y, x + w, y + h);
+    gr.addColorStop(0, '#EE74B4'); gr.addColorStop(.36, '#9C7EEE'); gr.addColorStop(.68, '#62D2B4'); gr.addColorStop(1, '#FFB64E');
+    g.fillStyle = gr; g.fillRect(x, y, w, h);
+  };
   const MONTAGE = [
     ['m-toki', { pic: 'toki_concept', name: 'TOKI', sub: 'CONCEPT PHOTO', col: MEM.TOKI.col }], ['m-relu', { pic: 'relu_concept', name: 'RELU', sub: 'CONCEPT PHOTO', col: MEM.RELU.col }],
     ['hinton', { pic: 'card_hinton', name: 'GEOFFREY HINTON', sub: 'NOBEL PRIZE IN PHYSICS · 2024', col: MEM.LOGI.col }], ['m-ada', { pic: 'ada_concept', name: 'ADA', sub: 'CONCEPT PHOTO', col: MEM.ADA.col }],
     ['demis', { pic: 'card_demis', name: 'DEMIS HASSABIS', sub: 'NOBEL PRIZE IN CHEMISTRY · 2024', col: MEM.LOGI.col }], ['m-logi', { pic: 'logi_concept', name: 'LOGI', sub: 'CONCEPT PHOTO', col: MEM.LOGI.col }],
-    ['m-clawd', { pic: 'clawd_fan', name: 'CLAWD', sub: 'HEADS · NO. 1 FAN', col: '#D97757' }], ['m-win', { pic: 'toki_win', name: 'ATTN!', sub: '1ST WIN · MUSIC CURVE', col: '#FFD27A' }],
+    ['m-clawd', { pic: 'clawd_fan', name: 'CLAWD', sub: 'HEADS · NO. 1 FAN', col: '#D97757' }], ['m-win', { pic: 'card_win', name: 'ATTN!', sub: '1ST WIN · MUSIC CURVE', col: '#FFD27A', back: winBack, shade: ['rgb(30 24 52 / .45)', 26, 10] }],
   ];
   function l2(t, P) {
     const b = (t - P.t2) / beatLen();
@@ -7133,4 +10692,316 @@ startPics();
   };
   section('C4', shot);
   section('outro', shot);
+
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (vshot()): the encore and the ending fairy, composed for the 1080 × 1920 frame. See ../VERTICAL.md.
+  // =====================================================================================================
+  // The stage, vertical: the portrait LED wall (showStage()'s tall) behind the four in the deep diamond on the platform (y .9); the wall
+  // reads 1ST PLACE / ATTN! above their heads.
+  const AT_V = Object.fromEntries(Object.entries(UNISON_AT_V).map(([m, [x, , z]]) => [m, [x, .9, z]]));
+  // (dy: the rows lower down the wall, for a camera that sees less of it above the group)
+  const vEncoreLED = (dy = 0) => (g, w) => {
+    txt(g, '1ST PLACE', w / 2, 1063 + dy, 120, { font: 'display', col: '#FFD27A', align: 'center', maxW: 560 });
+    txt(g, 'ATTN!', w / 2, 1246 + dy, 170, { font: 'display', col: '#FFFFFF', align: 'center', maxW: 600 });
+  };
+  const vShot = (p, lt, d, t) => {
+    const P = planC4();
+    if (t >= P.t6) return vFinale(t);
+    if (t < P.t2) return vL1(t, P);
+    if (t < P.t3) return vL2(t, P);
+    if (t < P.t4) return vL3(t, P);
+    if (t < P.t5) return vL4(t, P);
+    return vL5(t, P);
+  };
+  vshot('C4', vShot);
+  vshot('outro', vShot);
+
+  // L1 "We didn't start the scaling": the acceptance, close and centred: TOKI hugging the trophy in tears, the broadcast's subtitle of her
+  // thanks under her and the line under that. Then a fan's phone: the encore playing at the top of the trending page, #ATTN_1stWin
+  // jumping to #1.
+  function vL1(t, P) {
+    const tWide = snap(lerp(P.start, P.t2, .5));
+    if (t >= tWide) return vTrending(t, P, tWide);
+    const k = seg(t, P.start, tWide);
+    cam({ pos: [lerp(.08, 0, k), 2.22, lerp(4.0, 3.75, k) + .4], at: [0, 2.16, .4], fov: 34 });
+    // (the wall quiet behind her: close on her, its 1ST PLACE / ATTN! rows were only ever seen cut, behind the tag)
+    showStage(t, { tall: true, ocean: .5, oceanW: 6, ledGain: .5, ledStamp: 'vquiet', led: () => {} });
+    // (hugging the trophy in tears, wiping her eyes: the take cut above the knees)
+    if (SPRITES.toki_tears) dancer('TOKI', 'toki_tears', t, { at: [.02, 1.33, .4], h: 1.953, crop: [0, 0, 1, .78], fadeB: .1, t0: P.start, from: 0, rim: MEM.TOKI.glow, rimK: 1.2, shadow: false, facing: 0, light: '#F4EEF6', shade: '#9A8CB6' });
+    else figure('toki_win', { at: [.02, 1.33, .4], h: 1.5, uv: [0, 0, 1, .78], fadeB: .1, anchor: [.5, 1], rim: MEM.TOKI.glow, rimK: 1.2, shadow: false, beat: .3, facing: 0 });
+    particles('fall', { n: 220, a: [0, 2.4, .5], b: [1.2, 1.4, 1], c: [.5], size: .022, cols: ['#FFD27A', '#FFFFFF'], shape: 'chip', gain: 1 });
+    const g = layer();
+    const sh = g.createLinearGradient(0, 150, 0, 470); sh.addColorStop(0, 'rgb(3 2 8 / .6)'); sh.addColorStop(1, 'rgb(3 2 8 / 0)'); g.fillStyle = sh; g.fillRect(0, 0, W, 470);
+    vBand(g, 1180, 1660, .75);
+    // her thanks, subtitled as the broadcast does it
+    const sk = seg(t, P.start + .15, P.start + .35);
+    g.save(); g.globalAlpha = sk;
+    g.fillStyle = MEM.TOKI.col; g.beginPath(); g.roundRect(468, 1262, 144, 50, 25); g.fill();
+    txt(g, 'TOKI', 540, 1298, 26, { font: 'display', col: '#FFFFFF', align: 'center' });
+    txt(g, '“Thank you, HEADS! ♥”', 540, 1392, 70, { font: 'uiB', col: '#FFFFFF', align: 'center', shadow: ['rgb(0 0 0 / .8)', 18], maxW: 940 });
+    g.restore();
+    lyric(g, L(1), t, { markup: 'WE DIDN’T START / THE *SCALING*', x: 540, y: 1510, align: 'center', size: 62, accent: '#FFD27A', anim: 'rise', maxW: 900, shadow: ['rgb(0 0 0 / .7)', 16] });
+    put(g, { gain: 1.05 });
+    GRADE.flash = .6 * Math.exp(-(t - P.start) * 10);
+    hideSub();
+  }
+  // the trending page, full frame: the encore live in a card at its top, then the list, #ATTN_1stWin climbing from #3 to #1
+  const VTREND = [['#ATTN_1stWin', 1.21e6], ['#MUSICCURVE', 410e3], ['#WeDidntStartTheScaling', 388e3], ['#HEADS', 97e3]];
+  function vTrending(t, P, t0) {
+    sky({ top: '#0E0C16', horizon: '#0E0C16', glowK: 0, horizonY: .5 });
+    const cx = 60, cy = 452, cw = 960, ch = 540;
+    const tex = offscreen('v-trend-encore', cw * RS * .8, ch * RS * .8, () => {
+      cam({ pos: [lerp(-1.2, .4, seg(t, t0, P.t2 + .5)), 2.3, 8.6], at: [0, 1.9, 0], fov: 36 });
+      showStage(t, { ledStamp: 'encore1', led: encoreLED });
+      encoreGroup(t, { part: 'hook', ln: L(1) });
+      particles('fall', { n: 500, a: [0, 4, 0], b: [7, 3, 3], c: [.6], size: .05, cols: ['#FFD27A', '#FFFFFF', MEM.TOKI.glow, MEM.RELU.glow], shape: 'chip', gain: 1 });
+    });
+    plane2D(tex, { at: [cx, cy + ch], w: cw, h: ch, anchor: [0, 1] });
+    const g = layer(), bg = '#0E0C16';
+    // (the card's rounded corners)
+    g.fillStyle = bg;
+    for (const [x, y, sx, sy] of [[cx, cy, 1, 1], [cx + cw, cy, -1, 1], [cx, cy + ch, 1, -1], [cx + cw, cy + ch, -1, -1]]) {
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + sx * 28, y); g.arcTo(x, y, x, y + sy * 28, 28); g.closePath(); g.fill();
+    }
+    txt(g, 'Trending', 60, 338, 60, { font: 'uiB', col: PAL.pearl });
+    txt(g, 'Music · K-pop', 62, 394, 30, { font: 'ui', col: PAL.dim });
+    g.fillStyle = MEM.TOKI.col; g.beginPath(); g.roundRect(cx + 24, cy + 24, 112, 42, 8); g.fill();
+    txt(g, 'LIVE', cx + 80, cy + 55, 26, { font: 'uiB', col: '#FFFFFF', align: 'center', track: .1 });
+    txt(g, 'MUSIC CURVE · ATTN! encore stage', cx, cy + ch + 58, 34, { font: 'ui', col: PAL.pearl, alpha: .85, maxW: cw });
+    // the list: #ATTN_1stWin climbs from #3 to #1 on the beat
+    const up = easeInOut(seg(t, t0 + beatLen(), t0 + beatLen() * 2));
+    const rowY = r => 1170 + r * 112;
+    VTREND.forEach(([tag, n], i) => {
+      const r = i === 0 ? lerp(2, 0, up) : i === 1 || i === 2 ? i - 1 + up : i;
+      const y = rowY(r), top = i === 0, posts = top ? n * (1 + .08 * seg(t, t0, P.t2)) : n;
+      txt(g, `${Math.round(r) + 1}`, 60, y, 40, { font: 'mono', col: top ? '#FFD27A' : PAL.dim });
+      txt(g, tag, 130, y, top ? 52 : 44, { font: 'uiB', col: top ? '#FFD27A' : PAL.pearl, maxW: 860 });
+      txt(g, `${posts >= 1e6 ? (posts / 1e6).toFixed(2) + 'M' : Math.round(posts / 1e3) + 'K'} posts`, 132, y + 42, 28, { font: 'ui', col: PAL.dim });
+    });
+    put(g, { gain: 1.03 });
+    GRADE.flash = .5 * Math.exp(-(t - t0) * 12);
+    hideSub(); hideTag();
+  }
+
+  // L2 "It was always training, and the curves kept gaining,": the camera falls through the video's photocards. They rise past it out of
+  // the dark, one every two beats, each turning to face us on its beat as it passes, back to the first teaser and on to the win; it
+  // slows to hold on the last.
+  const VCARD = { dy: 1.3, w: 1.15, mv: .36 };
+  function vL2(t, P) {
+    // (the feed snaps from card to card: each arrives on its beat, every second beat, and holds until the next)
+    const bl = 2 * beatLen(), tb = i => P.t2 + .4 + i * bl, mv = VCARD.mv;
+    // (the first is already rising into the frame at the cut)
+    const n = clamp(Math.floor((t - tb(0)) / bl), 0, MONTAGE.length - 1);
+    const idx = t < tb(0) ? lerp(-.55, 0, easeOut(seg(t, P.t2, tb(0)))) : n + (n < MONTAGE.length - 1 ? easeInOut(seg(t, tb(n + 1) - mv, tb(n + 1))) : 0);
+    const camY = -idx * VCARD.dy;
+    cam({ pos: [Math.sin(t * .5) * .06, camY + .05, 3.4], at: [0, camY - .2, 0], fov: 38 });
+    sky({ top: '#040309', horizon: '#0D0A18', glow: PAL.pearl, glowK: .06, horizonY: .5 });
+    // (light columns far behind, and dust all round, so the fall reads)
+    ORDER.forEach((m, i) => plane(TX.beam, { at: [-3.6 + i * 2.4, camY - 9, -12], h: 22, w: 1.1, blend: 'add', mul: MEM[m].glow, alpha: .14, grid: false }));
+    particles('dust', { n: 1100, a: [0, -4, -1.5], b: [3, 6, 3], c: [.6], size: .018, cols: [PAL.pearl, MEM.TOKI.glow, '#FFD27A'], gain: .8 });
+    const order = MONTAGE.map((_, i) => i).sort((a, b) => (a % 2) - (b % 2));
+    for (const i of order.reverse()) {
+      const y = -i * VCARD.dy;
+      if (Math.abs(y - camY) > 2.4) continue;
+      const [key, o] = MONTAGE[i], side = i % 2 ? 1 : -1;
+      const turn = easeOut(seg(t, tb(i) - mv, tb(i) + .06)), leave = easeIn(seg(t, tb(i + 1) - mv, tb(i + 1)));
+      photocard(key, { ...o, at: [side * .1, y, i % 2 ? -.3 : 0], w: VCARD.w, yaw: side * (lerp(.95, .06, turn) - .7 * leave), roll: side * .025 });
+    }
+    const g = layer();
+    vBand(g, 1320, 1700, .72);
+    const tAnd = Wd(2, 4).start;
+    lyric(g, L(2), t, { markup: '_It_ _was_ ALWAYS / [1.3] *TRAINING,*', x: 540, y: 1470, align: 'center', size: 70, italic: 'serifI', accent: MEM.TOKI.col, anim: 'rise', maxW: 940, out: [tAnd - .3, tAnd - .05] });
+    lyric(g, L(2), t, { markup: '_and_ _the_ CURVES / [1.3] *KEPT* *GAINING,*', x: 540, y: 1470, align: 'center', size: 70, italic: 'serifI', accent: MEM.TOKI.col, anim: 'rise', maxW: 940 });
+    put(g, { gain: 1.05 });
+    GRADE.flash = .5 * Math.exp(-(t - P.t2) * 12);
+    hideSub();
+  }
+
+  // L3 "We didn't start the scaling": all four jump; at the top of the jump, on "scaling", the frame freezes, and the picture is an
+  // instant photo: it shrinks into a white polaroid, tilted, with the night written on it by hand.
+  function vL3(t, P) {
+    const tF = Wd(3, 4).start, frozen = t >= tF, tt = frozen ? tF : t;
+    const scene = () => {
+      cam({ pos: [0, 2.6, 8.7], at: [0, 2.5, -1], fov: 38 });
+      showStage(tt, { tall: true, oceanW: 6, ledStamp: 'vencore-l3', led: vEncoreLED(60) });
+      if (SPRITES.toki_uC) unison('uC', tt, { at: AT_V, t0: tF, from: JUMP_TOP, reflect: 0, shadow: false, rimK: 1.25 });
+      else for (const m of Object.keys(AT_V).sort((a, b) => AT_V[a][2] - AT_V[b][2])) idol(m, 'win', { at: AT_V[m], reflect: 0, shadow: false, rim: MEM[m].glow, rimK: 1.25 });
+      particles('fall', { n: 500, a: [0, 4, 0], b: [4, 3, 3], c: [.6], size: .045, cols: ['#FFD27A', '#FFFFFF', MEM.TOKI.glow, MEM.RELU.glow], shape: 'chip', gain: 1, t: tt });
+      const g = layer();
+      vBand(g, 1320, 1700, .6);
+      lyric(g, L(3), t, { markup: 'WE DIDN’T START / THE *SCALING*', x: 540, y: 1470, align: 'center', size: 84, accent: '#FFD27A', anim: 'slam', maxW: 940, shadow: ['rgb(0 0 0 / .6)', 20] });
+      put(g, { gain: 1.05 });
+    };
+    hideSub();
+    if (!frozen) { scene(); return; }
+    // the photo: the frozen frame in a polaroid, shrinking from the whole frame to the print, tilting as it goes
+    const k = easeOut5(seg(t, tF, tF + .32)), s = lerp(1, .64, k), roll = lerp(0, -.05, k);
+    const photo = offscreen('v-polaroid', W * RS * .85, H * RS * .85, scene);
+    cam({ pos: [0, 0, 5], at: [0, 0, 0], fov: 30 });
+    sky({ top: '#05040A', horizon: '#120E1E', glow: '#FFD27A', glowK: .08, horizonY: .5 });
+    particles('fall', { n: 260, a: [0, 0, -1], b: [2, 2, 1], c: [.5], size: .02, cols: ['#FFD27A', '#FFFFFF'], shape: 'chip', gain: .9 });
+    const m = 2 * 5 * Math.tan(15 * Math.PI / 180) / H, pw = W * m * s, ph = H * m * s;
+    const bx = pw * .06, bb = pw * .3, cwid = pw + 2 * bx, chgt = ph + bx + bb, c0 = [0, lerp(0, .1, k)];
+    const rot = (dx, dy) => [c0[0] + dx * Math.cos(roll) - dy * Math.sin(roll), c0[1] + dx * Math.sin(roll) + dy * Math.cos(roll), 0];
+    const card = panel('v-polaroid-card', 600, Math.round(600 * chgt / cwid), (g, w, h) => {
+      g.fillStyle = '#FBF8F2'; g.fillRect(0, 0, w, h);
+      txt(g, 'ATTN! 1st win ♥', w / 2, h - 58, 44, { font: 'hand', col: '#2A2240', align: 'center', rot: -.03 });
+    }, { stamp: Math.round(600 * chgt / cwid) });
+    plane(card, { at: rot(0, 0), w: cwid, h: chgt, anchor: [.5, .5], facing: 0, roll, grid: false, alpha: k });
+    plane(photo, { at: rot(0, (bb - bx) / 2), w: pw, h: ph, anchor: [.5, .5], facing: 0, roll, grid: false });
+    GRADE.sat = lerp(1, .9, k); GRADE.flash = .8 * Math.exp(-(t - tF) * 14);
+    hideTag();
+  }
+
+  // L4 "Now we swear we'll try to pace it — but we'd rather race it!": the video is a short, and the viewer plays with its speed: on
+  // "pace" the speed pill says 0.5× and everything crawls (the wall reads PACE), on "race" it says 2× ▶▶ and everything races (RACE, in
+  // gold). The short's progress bar runs along the foot.
+  function vL4(t, P) {
+    const tPace = Wd(4, 6).start, tRace = Wd(4, 12).start, tBut = Wd(4, 9).start;
+    const sc = t < tPace ? t : t < tRace ? tPace + (t - tPace) * .5 : tPace + (tRace - tPace) * .5 + (t - tRace) * 2;
+    const speed = t < tPace ? 1 : t < tRace ? .5 : 2, k = seg(t, P.t4, P.t5);
+    cam({ pos: [Math.sin(sc * .6) * .5, 2.6, lerp(9.0, 8.2, k)], at: [0, 2.45, -1], fov: 38 });
+    showStage(sc, { tall: true, oceanW: 6, ledStamp: `vrace${speed}`, led: (g, w) => txt(g, speed === .5 ? 'PACE' : speed === 2 ? 'RACE' : 'ENCORE', w / 2, 1230, 220, { font: 'display', col: speed === 2 ? '#FFD27A' : '#FFFFFF', align: 'center', maxW: 560 }) });
+    if (SPRITES.toki_uT) chorusDance('training', sc, L(4), { at: AT_V, reflect: 0, shadow: false, rimK: 1.25 });
+    else for (const m of Object.keys(AT_V).sort((a, b) => AT_V[a][2] - AT_V[b][2])) idol(m, poseAt(sc, ['point', 'dance', 'wave'], speed === 2 ? 1 : 2, ORDER.indexOf(m)).pose, { at: AT_V[m], reflect: 0, shadow: false, rim: MEM[m].glow, rimK: 1.25 });
+    particles('fall', { n: 500, a: [0, 4, 0], b: [4, 3, 3], c: [.6], size: .045, cols: ['#FFD27A', '#FFFFFF', MEM.TOKI.glow, MEM.RELU.glow], shape: 'chip', gain: 1, t: sc });
+    if (speed === 2) for (let i = 0; i < 16; i++) { const y = hash(i) * 4 + .4; plane(TX.white, { at: [((sc * 9 + i * 1.7) % 9) - 4.5, y, 2 + hash(i + 3) * 2], w: 1.2, h: .012, anchor: [.5, .5], facing: 'screen', blend: 'add', gain: .8, grid: false }); }
+    const g = layer();
+    // the speed pill, top centre, as a short shows it while it's held
+    if (speed !== 1) {
+      const ts = speed === .5 ? tPace : tRace, ck = backOut(seg(t, ts, ts + .2), 2.4), label = speed === .5 ? '0.5×' : '2×  ▶▶';
+      const pw = textW(label, 40, FONT.uiB) + 76;
+      g.save(); g.translate(540, 430); g.scale(ck, ck);
+      g.fillStyle = speed === .5 ? 'rgb(31 214 168 / .92)' : 'rgb(255 210 122 / .95)'; g.beginPath(); g.roundRect(-pw / 2, -36, pw, 72, 36); g.fill();
+      txt(g, label, 0, 14, 40, { font: 'uiB', col: '#06050B', align: 'center' });
+      g.restore();
+    }
+    vBand(g, 1150, 1600, .72);
+    lyric(g, L(4), t, { markup: 'NOW WE SWEAR / WE’LL TRY TO *PACE* IT —', x: 540, y: 1290, align: 'center', size: 70, accent: MEM.RELU.col, anim: 'rise', maxW: 940, out: [tBut - .12, tBut + .02] });
+    lyric(g, L(4), t, { markup: '_but_ _we’d_ _rather_ / [1.5] *RACE* *IT!*', x: 540, y: 1290, align: 'center', size: 70, italic: 'serifI', accent: '#FFD27A', anim: 'rise', maxW: 940 });
+    // the short's progress bar and clock along the foot
+    const x0 = 60, x1 = 1020, yb = 1630, f = t / DUR, mmss = s_ => `${Math.floor(s_ / 60)}:${String(Math.floor(s_ % 60)).padStart(2, '0')}`;
+    g.fillStyle = 'rgb(255 255 255 / .25)'; g.fillRect(x0, yb, x1 - x0, 7);
+    g.fillStyle = MEM.TOKI.col; g.fillRect(x0, yb, (x1 - x0) * f, 7);
+    g.beginPath(); g.arc(x0 + (x1 - x0) * f, yb + 3.5, 13, 0, TAU); g.fill();
+    txt(g, `${mmss(t)} / ${mmss(DUR)}`, x0, yb - 26, 30, { font: 'mono', col: '#FFFFFF', alpha: .85 });
+    put(g, { gain: 1.05 });
+    GRADE.sat = speed === .5 ? .7 : 1; GRADE.flash = t >= tRace ? .6 * Math.exp(-(t - tRace) * 10) : .5 * Math.exp(-(t - P.t4) * 12);
+    hideSub(); hideTag();
+  }
+
+  // L5 "We didn't start the scaling": the tallest shot of the video: the crane rises up and back over the whole hall, the ocean of
+  // lightsticks filling the frame's foot, cannons firing up from both sides of the stage, the wall at the top.
+  function vL5(t, P) {
+    const k = easeInOut(seg(t, P.t5, P.t6));
+    cam({ pos: [lerp(.6, -.3, k), lerp(3.1, 8.6, k), lerp(11.5, 17.5, k)], at: [0, lerp(2.4, 1.3, k), -1], fov: 40 });
+    showStage(t, { tall: true, oceanNear: 15, ledStamp: 'vencore', led: vEncoreLED(), ledGain: 1.3 });
+    chorusDance('hook', t, L(5), { at: AT_V, reflect: 0, shadow: false, rimK: 1.25 });
+    const t0 = snap(P.t5);
+    for (const side of [-1, 1]) particles('burst', { n: 700, a: [side * 2.6, 1, 1], b: [t0, 11, 3.5, 3], c: [-side * .25, 1, .1, .4], size: .06, cols: ORDER.map(m => MEM[m].col), shape: 'chip', gain: 1 });
+    particles('burst', { n: 900, a: [0, 1, -3], b: [snap(Wd(5, 4).start), 7, 2, 2.5], c: [0, 1, .2, .5], size: .05, cols: ['#FFD27A', '#FFFFFF'], shape: 'star', gain: 1.3 });
+    const g = layer();
+    vBand(g, 1200, 1620, .65);
+    lyric(g, L(5), t, { markup: 'WE DIDN’T START / THE *SCALING*', x: 540, y: 1350, align: 'center', size: 96, accent: '#FFD27A', anim: 'slam', maxW: 940, shadow: ['rgb(0 0 0 / .6)', 20] });
+    put(g, { gain: 1.08 });
+    GRADE.flash = .7 * Math.exp(-(t - P.t5) * 10);
+    hideSub();
+  }
+
+  // From "But when we log off" to the end, across the chorus's window and the outro's.
+  function vFinale(t) {
+    const tLog = Wd(6, 0).start - .04, tOff = Wd(6, 3).start, tWill = Wd(6, 5).start - .05;
+    const tAnd = wordsOf(lineOf('outro.1'))[0].start - .05, tDark = lineOf('outro.1').start - .6;
+    if (t < tDark) return vLogOff(t, tLog, tOff, tWill, tDark);
+    return vFairy(t, tDark, tAnd);
+  }
+  // "But when we log off... will it still train on?", and the instrumental after it: the four waving goodbye at the foot of the frame,
+  // the show's end credits rolling up the middle of it, the line under them; on "log off" the lights dim, and as the credits end they go
+  // out.
+  function vLogOff(t, t0, tOff, tWill, tDark) {
+    const lights = (1 - .45 * easeInOut(seg(t, tOff, tWill))) * (1 - easeInOut(seg(t, tDark - 1.6, tDark - .3)));
+    // (two moves over the long goodbye: in close to the four waving through the line, then, as the credits roll on, a slow crane up and
+    // back over the lightsticks, so the hall grows round them as its lights go down)
+    const k1 = easeInOut(seg(t, t0, tWill + .6)), k2 = easeInOut(seg(t, tWill + .6, tDark));
+    cam({ pos: [lerp(-.45, .25, k1) - .5 * k2, lerp(2.15, 2.45, k1) + 1.9 * k2, lerp(8.8, 7.2, k1) + 5.2 * k2], at: [lerp(-.1, .05, k1), lerp(2.25, 2.45, k1) + .25 * k2, -1], fov: 38 });
+    // (the wall quiet behind the credits: the show's curve, its logo in the corner)
+    showStage(t, { tall: true, lights, ocean: lerp(.35, 1, lights), oceanW: 6, ledGain: .8, ledStamp: 'vbye', led: () => {} });
+    if (SPRITES.group_wave) dancer('TOKI', 'group_wave', t, { at: [-.05, .9, .2], figH: 1.72, t0, from: 0, loop: true, reflect: 0, shadow: false, rim: PAL.pearl, rimK: 1.1 * lights + .2, light: mixCol('#4A4460', '#E8E2EE', lights), shade: mixCol('#231E30', '#8A7CA6', lights) });
+    else for (const m of Object.keys(AT_V).sort((a, b) => AT_V[a][2] - AT_V[b][2])) idol(m, m === 'TOKI' ? 'win' : 'concept', { at: AT_V[m], reflect: 0, shadow: false, rim: MEM[m].glow, rimK: 1.2 * lights + .3, light: mixCol('#5A5270', '#FFFFFF', lights), shade: mixCol('#2A2438', '#8A7CA6', lights), beat: .4 * lights });
+    particles('fall', { n: 500, a: [0, 3.5, 0], b: [4, 3.5, 3], c: [.6], size: .045, cols: ['#FFD27A', '#FFFFFF'], shape: 'chip', gain: .9 * lights + .1 });
+    const g = layer();
+    vCredits(g, t, t0, tDark - .8);
+    vBand(g, 1180, 1600, .72);
+    lyric(g, L(6), t, { markup: '_But_ _when_ _we_ / [1.4] LOG OFF...', x: 540, y: 1300, align: 'center', size: 76, italic: 'serifI', col: PAL.pearl, accent: MEM.TOKI.col, anim: 'rise', maxW: 940, out: [tWill - .35, tWill - .05] });
+    lyric(g, L(6), t, { markup: '_will_ _it_ _still_ / [1.4] TRAIN *ON?*', x: 540, y: 1300, align: 'center', size: 76, italic: 'serifI', col: PAL.pearl, accent: MEM.TOKI.col, anim: 'rise', maxW: 940, out: [tDark - 1.6, tDark - .6] });
+    put(g);
+    hideSub();
+  }
+  // the end credits, a vertical scroller up the middle of the frame (each role over its name), fading in near the group's heads and out
+  // under the tag; the first row comes up from y 760 at t0 and the last has gone by t1
+  function vCredits(g, t, t0, t1) {
+    const rows = [];
+    let y = 0;
+    CREDITS.forEach(([a, b], i) => {
+      if (!a && !b) { y += 70; return; }
+      rows.push({ a, b, y, title: i === 0 });
+      y += i === 0 ? 150 : a ? 128 : 90;
+    });
+    const span = y, top = 300, bot = 760, y0 = bot - (t - t0) * (bot - top + span) / (t1 - t0);
+    const sh = g.createLinearGradient(0, top - 60, 0, bot + 40); sh.addColorStop(0, 'rgb(3 2 8 / 0)'); sh.addColorStop(.15, 'rgb(3 2 8 / .45)'); sh.addColorStop(.85, 'rgb(3 2 8 / .45)'); sh.addColorStop(1, 'rgb(3 2 8 / 0)');
+    g.fillStyle = sh; g.fillRect(0, top - 60, W, bot - top + 100);
+    for (const r of rows) {
+      const yy = y0 + r.y, a = clamp((yy - top) / 90) * clamp((bot - yy) / 90);
+      if (a <= 0) continue;
+      if (r.title) { txt(g, r.b, 540, yy + 40, 58, { font: 'serifI', col: PAL.pearl, align: 'center', alpha: a, maxW: 940 }); continue; }
+      if (r.a) txt(g, r.a, 540, yy, 26, { font: 'wide', col: MEM[r.a]?.glow ?? PAL.pearl, align: 'center', track: .22, alpha: a * .9 });
+      txt(g, r.b, 540, yy + (r.a ? 56 : 0), 44, { font: 'ui', col: PAL.pearl, align: 'center', alpha: a, maxW: 940 });
+    }
+  }
+  // "(And on, and on, and on...)": the ending fairy, the most vertical moment in K-pop. Out of the dark, the ON AIR light, then one
+  // camera close on TOKI, out of breath, a finger heart by her cheek, looking into the lens; each "and on" echoes back smaller, as if
+  // further off; and on the last the shot shrinks into her photocard, which drifts back into the dark, turning, until the song ends.
+  function vFairy(t, t0, tAnd) {
+    const age = t - t0, S = SPRITES.toki_fairy15;
+    const bi = Math.floor(age / 2.7), bt = age - bi * 2.7 - (.6 + hash(bi + 40) * 1.5), blink = bt >= 0 && bt < .13;
+    const drift = [Math.sin(t * .37) * 5 + Math.sin(t * .91) * 2, Math.sin(t * .29) * 4];
+    sky({ top: '#020105', horizon: '#0B0714', glowK: 0, horizonY: .5, spot: [.5, .62, .5, .18], spotCol: MEM.TOKI.glow });
+    cam({ pos: [0, 0, 5], at: [0, 0, 0], fov: 30 });
+    particles('dust', { n: 260, a: [0, 0, -2], b: [3, 5, 2], c: [.6], size: .06, cols: [MEM.TOKI.glow, '#FFFFFF'], gain: .35 });
+    const z = lerp(1, 1.1, easeInOut(seg(t, t0, tAnd + 2.9))), cardK = easeInOut(seg(t, tAnd + 2.9, tAnd + 4.6));
+    // her close-up, scaled about her eyes (x 540, y 760), a slow push; it shrinks toward the card's picture as it turns into the card
+    const shrink = lerp(1, .63, easeInOut(clamp(cardK * 2.2))), ww = 1166 * z * shrink, hh = ww * (S ? S.fh / S.fw : 1600 / 1203), eyes = .375;
+    const ex = 540 + drift[0], ey = 760 + drift[1] + lerp(0, -20, clamp(cardK * 2.2));
+    const fa = 1 - clamp(cardK * 2.5);
+    if (fa > 0) {
+      const o = { at: [ex, ey - eyes * hh + hh], w: ww, h: hh, anchor: [.5, 1], rim: [MEM.TOKI.glow, 1.1], rimDir: [-.003, .002], mul: '#FFF6FA', bot: '#B8A6C8', alpha: fa };
+      if (S) {
+        const F = clipFrame('toki_fairy15', t, { t0, from: 1 });
+        plane2D(frameTex(pic(F.name), S, F.cell), o);
+        if (F.next && F.k > .02) plane2D(frameTex(pic(F.next.name), S, F.next.cell), { ...o, alpha: fa * F.k });
+      } else plane2D(pic(blink ? 'toki_fairy_blink' : 'toki_fairy'), o);
+    }
+    if (cardK > 0) {
+      // the photocard: at first its picture where her close-up was, then drifting back into the dark, turning so its foil catches the light
+      const back = easeInOut(seg(t, tAnd + 3.1, DUR));
+      photocard('fairy-v', { pic: 'toki_fairy', name: 'TOKI', sub: 'ENDING FAIRY · MUSIC CURVE', col: MEM.TOKI.col, at: [lerp(0, .06, back), lerp(-.03, .12, back), lerp(2.4, -2.2, back)], w: 1, yaw: lerp(0, -.42, back), roll: lerp(0, .06, back), alpha: clamp(cardK * 3) });
+    }
+    GRADE.bloom = 1; GRADE.vignette = .7; GRADE.grain = .05; GRADE.fade = seg(t, DUR - .9, DUR - .1);
+    const g = layer();
+    const up = easeOut(seg(t, t0 + .25, t0 + .9));
+    if (up < 1) { g.fillStyle = `rgb(0 0 0 / ${1 - up})`; g.fillRect(0, 0, W, H); }
+    if (t >= tAnd) vBand(g, 1200, 1720, .6 * seg(t, tAnd, tAnd + .3) * (1 - seg(t, tAnd + 3.55, tAnd + 4.2)));
+    // the tally light, and it stays on
+    txt(g, '● ON AIR', 1008, 330, 30, { font: 'mono', col: MEM.TOKI.col, align: 'right', track: .15, alpha: seg(t, t0, t0 + .08) });
+    // "(And on, and on, and on...)": each "and on" smaller, fainter and higher, as if further back
+    const ws = wordsOf(lineOf('outro.1'));
+    ['and on,', 'and on,', 'and on…'].forEach((s_, i) => {
+      const ts = ws[i * 2].start, a = seg(t, ts, ts + .3) * (1 - seg(t, tAnd + 3.55, tAnd + 4.2));
+      if (a <= 0) return;
+      const sz = 132 * .64 ** i;
+      txt(g, s_, 540, 1540 - i * 130 - (1 - easeOut(a)) * 20, sz, { font: 'serifI', col: PAL.pearl, align: 'center', alpha: a * (1 - .28 * i), shadow: ['rgb(0 0 0 / .6)', 18] });
+    });
+    put(g, { gain: 1.05 });
+    hideSub(); hideTag();
+  }
 })();

@@ -31,6 +31,7 @@ const allNotesBtn = document.querySelector('.all-notes');
 const nowCard = document.querySelector('.now-card');
 const screenEl = q('.screen');
 const fsBtn = q('.fullscreen');
+const verticalBtn = q('.vertical');
 const exitBtn = q('.screen-exit');
 const loadError = q('.load-error');
 const root = document.documentElement;
@@ -47,7 +48,8 @@ const S = {
   playback: 'idle',   // idle | playing | paused | ended
   audio: 'ok',        // ok | failed (the track's audio didn't load: an error, or a load that stalled before its metadata came)
   follow: 'off',      // off (manual: the reader scrolls) | on (the page keeps the line being sung in view)
-  dock: 'none'        // none | side | bottom
+  dock: 'none',       // none | side | bottom
+  vertical: false     // whether the videos are their vertical (9:16) versions
 };
 
 // ---------- timing ----------
@@ -128,10 +130,13 @@ function applyStep() {
   updateScale();
 }
 
+// (the video's frame, in the engines' units: 1920×1080, or the vertical video's 1080×1920)
+const frameW = () => (S.vertical ? 1080 : 1920);
+const frameH = () => (S.vertical ? 1920 : 1080);
 function idealScale() {
-  // Map the 1920×1080 scene exactly onto the canvas's device pixels; step down only if frames are slow.
+  // Map the scene exactly onto the canvas's device pixels; step down only if frames are slow.
   const w = canvas.clientWidth || 960;
-  return clamp((w * devicePixelRatio) / 1920 * QUALITY[qi], .2, 2);
+  return clamp((w * devicePixelRatio) / frameW() * QUALITY[qi], .2, 2);
 }
 function updateScale() {
   if (!renderer) return;
@@ -206,7 +211,7 @@ const debugHUD = new URLSearchParams(location.search).has('debug') ? (() => {
       `${renderer?.style ?? '—'} · ${renderer?.kind ?? 'no renderer'} · ${S.playback}`,
       info?.era ? `era: ${info.era}` : null,
       `quality: step ${step + 1} of ${ladderLength()}${engineLevels ? ` · engine level ${Math.min(step, engineLevels - 1)} of 0–${engineLevels - 1}` : ' · (no engine levels)'} · canvas scale step ${qi}`,
-      `render scale ${appliedScale.toFixed(3)} · canvas ${Math.round(1920 * appliedScale)}×${Math.round(1080 * appliedScale)} for ${Math.round(cw * dpr)}×${Math.round(ch * dpr)} device px (${cw}×${ch} css × ${dpr})`,
+      `render scale ${appliedScale.toFixed(3)} · canvas ${Math.round(frameW() * appliedScale)}×${Math.round(frameH() * appliedScale)} for ${Math.round(cw * dpr)}×${Math.round(ch * dpr)} device px (${cw}×${ch} css × ${dpr})`,
       `frame to screen: ${avg.toFixed(1)} ms avg · p95 ${sorted[Math.floor(sorted.length * .95)]?.toFixed(1)} · last ${ms.toFixed(1)}`
     ].filter(Boolean).join('\n');
   };
@@ -263,6 +268,7 @@ function workerRenderer(el, style, tm, scale) {
     scale,
     dpr: devicePixelRatio,
     timing: tm,
+    vertical: S.vertical,
     ...engineOf(style),
     // (a style that loads pictures loads the ones for the playhead first)
     start: audio.currentTime
@@ -285,13 +291,14 @@ function workerRenderer(el, style, tm, scale) {
 async function frameRenderer(el, style, tm, scale) {
   const host = document.createElement('iframe');
   host.hidden = true;
-  host.srcdoc = '<canvas id="out" width="1920" height="1080"></canvas>';
+  host.srcdoc = `<canvas id="out" width="${frameW()}" height="${frameH()}"></canvas>`;
   const loaded = new Promise(ok => host.addEventListener('load', ok, { once: true }));
   document.body.append(host);
   await loaded;
   const win = host.contentWindow;
   const doc = host.contentDocument;
   win.TIMING = tm;
+  win.VERTICAL = S.vertical;
   win.RENDER_SCALE = scale;
   win.STYLE_DPR = devicePixelRatio;
   const engine = engineOf(style);
@@ -357,10 +364,12 @@ function swapCanvas(el) {
 }
 
 let rendererStyle = null;
+let rendererVertical = false;
 function startRenderer() {
   const style = styleOf(S.version ?? versions.get(select.value));
-  if (rendererStarting && rendererStyle === style) return rendererStarting;
+  if (rendererStarting && rendererStyle === style && rendererVertical === S.vertical) return rendererStarting;
   rendererStyle = style;
+  rendererVertical = S.vertical;
   const previous = rendererStarting;
   player.dataset.loading = '';
   delete player.dataset.noVideo;
@@ -921,7 +930,7 @@ async function switchVersion(id) {
   // until playback starts, the stage shows this version's own title card
   player.dataset.style = styleOf(v);
   setTheme(styleOf(v));
-  if (poster.getAttribute('src') !== v.poster) poster.src = v.poster;
+  showPoster();
   for (const card of document.querySelectorAll('.tape-card')) card.classList.toggle('playing', card.dataset.version === id);
   versionReady = (async () => {
     const tm = await loadTiming(v);
@@ -1058,6 +1067,48 @@ if ('mediaSession' in navigator) {
   });
 }
 
+// ---------- the vertical video ----------
+// Every track's video also comes composed for a tall 9:16 frame, as on phones. The deck's toggle switches between the two: the
+// track's engine starts again in the other frame (the song, if playing, waits for it as it does for a new track's video), with
+// that frame's poster until it draws. Which frame a visit opens on: ?vertical in the address (or ?vertical=0), else the reader's
+// last choice, else the vertical one on a touch screen held upright. (The address doesn't follow the toggle: a link opens on
+// whichever frame suits its reader's screen, unless it names one.)
+const posterFor = v => (S.vertical && v.posterVertical) || v.poster;
+function showPoster() {
+  const v = S.version ?? versions.get(select.value);
+  if (v && poster.getAttribute('src') !== posterFor(v)) poster.src = posterFor(v);
+}
+function applyVertical() {
+  player.toggleAttribute('data-vertical', S.vertical);
+  verticalBtn.setAttribute('aria-pressed', String(S.vertical));
+  showPoster();
+}
+async function setVertical(on) {
+  if (S.vertical === on) return;
+  S.vertical = on;
+  try { localStorage.setItem('scaling-vertical', on ? '1' : '0'); } catch {}
+  applyVertical();
+  sidePlayerH = 0;
+  queuePlacement(false);
+  if (!rendererStarting) return;
+  const wasPlaying = S.playback === 'playing';
+  if (wasPlaying) audio.pause();
+  await startRenderer();
+  drawNow();
+  if (wasPlaying && S.playback === 'paused') {
+    setPlayback('playing');
+    await startSong();
+  }
+}
+{
+  const asked = new URLSearchParams(location.search).get('vertical');
+  let chosen = null;
+  try { chosen = localStorage.getItem('scaling-vertical'); } catch {}
+  S.vertical = asked !== null ? asked !== '0' : chosen !== null ? chosen === '1' : matchMedia('(orientation: portrait) and (pointer: coarse)').matches;
+  applyVertical();
+}
+verticalBtn.addEventListener('click', () => setVertical(!S.vertical));
+
 // ---------- fullscreen ----------
 // The screen (the video, its poster and the play button) goes fullscreen, letterboxed on black; the stage it came from keeps
 // its size in the page, and the player doesn't dock or undock meanwhile, so leaving fullscreen puts everything back as it was.
@@ -1142,15 +1193,18 @@ function desiredDock() {
   if (S.follow !== 'on') {
     // how much of the cover's video has scrolled off the top of the screen
     const r = slot.getBoundingClientRect();
-    const videoH = (Math.min(r.width, 960) - 24) * 9 / 16;
+    const videoH = S.vertical ? (Math.min(r.width, Math.max(256, (innerHeight - 192) * 9 / 16) + 24) - 24) * 16 / 9 : (Math.min(r.width, 960) - 24) * 9 / 16;
     const hidden = clamp(-(r.top + dy + 12) / videoH, 0, 1);
-    if (hidden < (S.dock === 'none' ? 1 / 3 : .1)) return 'none';
+    // (the vertical video is taller than the screen leaves room for under the title, so it stays until more of it has gone: the
+    // reader scrolls past its top to reach the deck)
+    if (hidden < (S.dock === 'none' ? (S.vertical ? .5 : 1 / 3) : (S.vertical ? .2 : .1))) return 'none';
   }
   if (!wide.matches) return 'bottom';
   // Where the side panel would hold the player: it's sticky, but the end of the lyrics pushes it up and off the screen.
   const inner = sideTarget.parentElement;
   const css = getComputedStyle(inner);
-  const h = S.dock === 'side' ? player.offsetHeight : sidePlayerH || inner.clientWidth * 9 / 16 + 160;
+  const h = S.dock === 'side' ? player.offsetHeight : sidePlayerH ||
+    (S.vertical ? Math.min(inner.clientWidth, Math.max(224, (innerHeight - 224) * 9 / 16) + 16) * 16 / 9 : inner.clientWidth * 9 / 16) + 160;
   const below = nowCard.offsetHeight + (parseFloat(css.rowGap) || 0);
   const g = lyricsGrid.getBoundingClientRect();
   const top = Math.min(Math.max(g.top + dy, parseFloat(css.top) || 0), g.bottom + dy - h - below);

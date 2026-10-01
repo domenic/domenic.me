@@ -22,7 +22,11 @@ self.CANVAS_GL = (() => {
 // core.js: canvas, time, randomness, easing, camera, shot registry, frame compositor.
 // Everything a shot draws must be a pure function of song time `t` (frames render out of order, in parallel).
 
-const W = 1920, H = 1080, TAU = Math.PI * 2;
+// The frame: 1920×1080, or 1080×1920 in the vertical video (VERT: self.VERTICAL, which the page sets before the engine's scripts run,
+// or ?vertical in a studio page). W and H are the frame's; landscape() lends code written for the 1920×1080 frame a 16:9 one.
+const VERT = !!self.VERTICAL || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('vertical'));
+let W = VERT ? 1080 : 1920, H = VERT ? 1920 : 1080;
+const TAU = Math.PI * 2;
 // In a page the canvas is #out; in a Web Worker the host sets self.OUT_CANVAS (an OffscreenCanvas) before loading the engine.
 const HAS_DOM = typeof document !== 'undefined';
 const canvas = HAS_DOM ? document.getElementById('out') : self.OUT_CANVAS;
@@ -34,7 +38,7 @@ function makeCanvas(w, h) {
   if (!HAS_DOM) return new OffscreenCanvas(w, h);
   const c = document.createElement('canvas'); c.width = w; c.height = h; return c;
 }
-// Render scale: the scene is always authored in 1920×1080 logical units; the canvas holds W·RS × H·RS pixels.
+// Render scale: the scene is authored in logical units, W × H of them; the canvas holds W·RS × H·RS pixels.
 // Set with ?scale= (studio/renderer) or setRenderScale() (embedding pages). A cache drawn at render scale adds a function that empties
 // it to SCALE_HOOKS. (Not a `typeof` check on the cache from here: the site runs a style's scripts as one, where a later script's
 // `const` isn't yet initialized while this one runs, and even `typeof` on it throws.)
@@ -127,6 +131,20 @@ const SHOTS = {};
 function line(verse, n, fn) { SHOTS[`${verse}.${n}`] = fn; }
 // section('C1', fn): the shot for a whole section window (intro, choruses, outro).
 function section(key, fn) { SHOTS[key] = fn; }
+// The vertical video's shots, composed for its 1080×1920 frame: vshot('V2.5', fn) or vshot('C1', fn), keyed by segment like line()'s
+// and section()'s. A segment without one draws its horizontal shot through landscape() (a stand-in while a style's vertical video is
+// being made).
+const VSHOTS = {};
+function vshot(key, fn) { VSHOTS[key] = fn; }
+// landscape(fn, cx, cy, zoom): draws fn(), code written for the 1920×1080 frame (W and H are 1920 and 1080 while it runs), with its
+// point (cx, cy) at the middle of the frame, scaled by zoom (by default, enough for its 1080 height to fill the vertical frame's 1920).
+function landscape(fn, cx = 960, cy = 540, zoom = 1920 / 1080) {
+  const w = W, h = H;
+  ctx.save(); ctx.translate(w / 2, h / 2); ctx.scale(zoom, zoom); ctx.translate(-cx, -cy);
+  W = 1920; H = 1080;
+  try { return fn(); } finally { W = w; H = h; ctx.restore(); }
+}
+const shotAt = key => VERT ? VSHOTS[key] ?? (SHOTS[key] && ((...a) => landscape(() => SHOTS[key](...a)))) : SHOTS[key];
 
 // ---------- per-frame state ----------
 let T = 0;           // current song time
@@ -138,7 +156,7 @@ function renderFrame(t) {
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   ctx.fillStyle = PAL.paper; ctx.fillRect(0, 0, W, H);
   const s = segAt(t);
-  const fn = s && SHOTS[s.key];
+  const fn = s && shotAt(s.key);
   ctx.save();
   try {
     if (fn) fn(clamp((t - s.start) / (s.end - s.start)), t - s.start, s.end - s.start, t, s);
@@ -240,10 +258,63 @@ function captionAt(t, linger = .35) {
 }
 
 // ---------- overlay switches (a shot may call these each frame) ----------
-let _noCaption = false, _noStamp = false, _captionStyle = null;
+let _noCaption = false, _noStamp = false, _captionStyle = null, _stampStyle = null;
 const hideCaption = () => { _noCaption = true; };
 const hideStamp = () => { _noStamp = true; };
-const captionStyle = s => { _captionStyle = s; };  // {color, y}
+const captionStyle = s => { _captionStyle = s; };  // {color, y}; in the vertical video also {size}, and y is the bottom strip's centre
+// (the vertical video) stampStyle({x, y, rot}): where this frame's date stamp sits, x being its right edge (default 950, 318)
+const stampStyle = s => { _stampStyle = s; };
+
+// ---------- the vertical video's caption: the line on label-maker strips, one under another ----------
+// The fewest strips the line fits on, each at most maxW wide, with the words shared out as evenly as they go (a dash stays with the
+// word before it). A word too wide for any strip gets one to itself, and the rest share as few strips as they can. Returns the
+// strips' texts, with the widest one's width as .w.
+const _stripCache = new Map();
+function captionStrips(text, size, maxW = 900) {
+  const key = `${text}|${size}|${maxW}`;
+  let out = _stripCache.get(key);
+  if (out) return out;
+  const words = [];
+  for (const w of String(text).split(/\s+/).filter(Boolean)) /^[—–-]$/.test(w) && words.length ? words[words.length - 1] += ' ' + w : words.push(w);
+  const width = s => textW(s.toUpperCase(), size, 'archivo', size * .12) + size * 1.4;
+  const n = words.length, memo = new Map();
+  // best(i, j): the least possible widest strip setting words i… on j strips, and where they break
+  const best = (i, j) => {
+    const mk = i * 8 + j;
+    if (memo.has(mk)) return memo.get(mk);
+    let r;
+    if (j === 1) r = { w: width(words.slice(i).join(' ')), cuts: [] };
+    else {
+      r = { w: Infinity, cuts: [] };
+      for (let c = i + 1; c <= n - j + 1; c++) {
+        const a = width(words.slice(i, c).join(' ')), b = best(c, j - 1), w = Math.max(a, b.w);
+        if (w < r.w - .5) r = { w, cuts: [c, ...b.cuts] };
+      }
+    }
+    memo.set(mk, r);
+    return r;
+  };
+  // the fewest strips that fit; failing that, the fewest that come as narrow as any number of strips can
+  let pick = null;
+  for (let k = 1; k <= Math.min(4, n); k++) {
+    const b = best(0, k);
+    if (b.w <= maxW) { pick = { k, ...b }; break; }
+    if (!pick || b.w < pick.w - .5) pick = { k, ...b };
+  }
+  const cuts = [0, ...pick.cuts, n];
+  out = cuts.slice(0, -1).map((c, i) => words.slice(c, cuts[i + 1]).join(' '));
+  out.w = pick.w;
+  _stripCache.set(key, out);
+  return out;
+}
+// The caption's layout: its strips and size. 54 units, or for a line that would take four strips at 54 the largest size that sets
+// it on three; and smaller, down to 44, for a word too wide for a strip.
+function captionFit(text, size) {
+  if (size === undefined) for (size = 54; size > 44 && captionStrips(text, size).length > 3; size--);
+  let strips = captionStrips(text, size);
+  if (strips.w > 900) { size = Math.max(44, Math.floor(size * 900 / strips.w)); strips = captionStrips(text, size); }
+  return { size, strips, w: strips.w };
+}
 
 // ---------- date ticker ----------
 // Each verse line carries a date string ("JUN 2017", "NOV 17 2023", "SEP 12 2026"). Choruses keep the last date.
@@ -257,7 +328,9 @@ function dateAt(t) {
 let _grain = null;
 function buildGrain() {
   _grain = []; _grain.rs = RS;
-  const gw = Math.round(960 * clamp(RS, .5, 2)), gh = Math.round(540 * clamp(RS, .5, 2));
+  // (the vertical video's grain is built upright, so that it isn't stretched)
+  const gw = Math.round((VERT ? 540 : 960) * clamp(RS, .5, 2)), gh = Math.round((VERT ? 960 : 540) * clamp(RS, .5, 2));
+  const gl = Math.max(gw, gh);
   for (let v = 0; v < 3; v++) {
     const c = makeCanvas(gw, gh);
     const g = c.getContext('2d'), img = g.createImageData(gw, gh), d = img.data;
@@ -268,7 +341,7 @@ function buildGrain() {
     }
     g.putImageData(img, 0, 0);
     // photocopy edge darkening
-    const vg = g.createRadialGradient(gw / 2, gh / 2, gw * .26, gw / 2, gh / 2, gw * .65);
+    const vg = g.createRadialGradient(gw / 2, gh / 2, gl * .26, gw / 2, gh / 2, gl * .65);
     vg.addColorStop(0, 'rgb(255 255 255 / 0)'); vg.addColorStop(1, 'rgb(150 140 130 / .55)');
     g.fillStyle = vg; g.fillRect(0, 0, gw, gh);
     _grain.push(c);
@@ -278,7 +351,21 @@ function buildGrain() {
 OVERLAYS.push((t, s) => {
   // caption
   const ln = lineAt(t);
-  if (ln && !_noCaption) {
+  if (ln && !_noCaption && VERT) {
+    // the vertical video: the line on strips of tape stacked up from y (the bottom strip's centre), each stuck on a little askew,
+    // the second and third a beat of a hand behind the first; the choruses' and the outro's tape is red
+    const st = _captionStyle || {};
+    const text = ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — ');
+    const { size, strips } = captionFit(text, st.size), age = t - ln.start, gap = size * 1.6 + 14;
+    strips.forEach((s, i) => {
+      const k = easeOut(clamp((age - i * .06) / .12)), j = strips.length - 1 - i;
+      if (k <= 0) return;
+      const r = hash(ln.start * 100 + i * 7);
+      ctx.globalAlpha = k;
+      dymo(s, W / 2 + (strips.length > 1 ? (i % 2 ? 1 : -1) * size * .35 : 0), (st.y ?? 1552) - j * gap + (1 - k) * 24, size, st.color ?? (ln.sec[0] === 'C' || ln.sec === 'outro' ? PAL.red : PAL.ink), { rot: (r - .5) * .045 });
+    });
+    ctx.globalAlpha = 1;
+  } else if (ln && !_noCaption) {
     const st = _captionStyle || {};
     const age = t - ln.start, k = easeOut(clamp(age / .12));
     const size = ln.text.length > 34 ? 30 : 36;
@@ -286,15 +373,17 @@ OVERLAYS.push((t, s) => {
     dymo(ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — '), W / 2, (st.y ?? 1022) + (1 - k) * 20, size, st.color ?? (ln.sec[0] === 'C' ? PAL.red : PAL.ink), { rot: (hash(ln.start * 100) - .5) * .03 });
     ctx.globalAlpha = 1;
   }
-  // date stamp
+  // date stamp (the vertical video's: top right of the frame's safe area, or where stampStyle() puts it)
   const d = dateAt(t);
   if (d && !_noStamp) {
-    const k = clamp(d.age / .18), rot = -.08 + (hstr(d.text) - .5) * .06;
+    const k = clamp(d.age / .18), sv = _stampStyle || {}, rot = sv.rot ?? -.08 + (hstr(d.text) - .5) * .06;
+    const ss = VERT ? 50 : 46, tw = textW(d.text, ss, 'mono', VERT ? ss * .061 : 2.8);
+    const sx = VERT ? (sv.x ?? 950) - tw / 2 - 40 : 1690, sy = VERT ? sv.y ?? 318 : 92;
     // a torn paper tag behind the stamp keeps it legible on dark scenes
     ctx.save(); ctx.globalAlpha = .9 * clamp(k * 3);
-    card(1690, 92, textW(d.text, 46, 'mono', 2.8) + 70, 96, PAL.paper, rot, { torn: 2.5, seed: 1301, shadow: [5, 6] });
+    card(sx, sy, tw + 70 * ss / 46, 96 * ss / 46, PAL.paper, rot, { torn: 2.5, seed: 1301, shadow: [5, 6] });
     ctx.restore();
-    stamp(d.text, 1690, 92, 46, PAL.red, rot, { pop: k, font: 'mono' });
+    stamp(d.text, sx, sy, ss, PAL.red, rot, { pop: k, font: 'mono' });
   }
   // grain
   if (!_grain || _grain.rs !== RS) buildGrain();
@@ -302,7 +391,7 @@ OVERLAYS.push((t, s) => {
   const g = _grain[_boil % 3], ox = (hash(_boil) - .5) * 40, oy = (hash(_boil + 5) - .5) * 30;
   ctx.drawImage(g, -30 + ox, -20 + oy, W + 60, H + 40);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-  _noCaption = false; _noStamp = false; _captionStyle = null;
+  _noCaption = false; _noStamp = false; _captionStyle = null; _stampStyle = null;
 });
 
 ;
@@ -455,7 +544,11 @@ OVERLAYS.length = 0;   // (the zine's caption, stamp and grain overlays: this st
 // =====================================================================================================
 // SCREEN
 // =====================================================================================================
-const SW = 640, SH = 360, SN = SW * SH, PXS = W / SW;   // 1 demo pixel = 3×3 output pixels at 1080p
+// The vertical video (VERT, core.js) runs the demo on a monitor turned to portrait: the framebuffer is 360×640, each pixel still
+// 3×3 output pixels (1080×1920). SW and SH are the screen's, whichever way up; landscapeFB() (bottom of this file) turns them back
+// to 640×360 while it runs code written for the landscape screen. Both hold the same number of pixels, so FB and its kin serve both.
+let SW = VERT ? 360 : 640, SH = VERT ? 640 : 360;
+const SN = 640 * 360, PXS = W / SW;   // 1 demo pixel = 3×3 output pixels at 1080p
 const FB = new Uint8Array(SN);        // palette indices, row-major
 const ZB = new Float32Array(SN);      // 1/z of the nearest 3D surface drawn (0 = nothing)
 const FB2 = new Uint8Array(SN);       // scratch copy for post effects (squash, mirror, wobble)
@@ -467,6 +560,13 @@ const _img = _sg.createImageData(SW, SH), _u32 = new Uint32Array(_img.data.buffe
 // desktop needs the full effects' detail most. Off wherever nothing sets it (the studio page, render mode).
 let LOWQ = false;
 SCALE_HOOKS.push(() => { _upC = null; });
+// The portrait screen's layout, in its demo pixels (×3 for the 1080×1920 frame; VERTICAL.md has the vertical shot list). An organic
+// Reel lays its header over the top ~73 rows, its account name, caption and audio label over the bottom ~90, and its buttons up the
+// right ~40 columns below the middle, so what must be read (the captions, the date, labels, punchlines, faces) stays inside x0–x1,
+// y0–y1; the effects fill the rest, and the bottom fifth carries picture, not padding. The captions (MC Token's scroller, the
+// choruses' lyric rows) end at y1, the lower edge of the safe area. The date plate's top right corner, an in-scene label's top left,
+// the verse scroller's top (its scope runs under it, to y1) and its reading point (a share of the width).
+const VL = { x0: 20, x1: 320, y0: 84, y1: 533, date: [318, 88], label: [22, 90], scroll: 504, read: .4 };
 
 // =====================================================================================================
 // PALETTE: 256 VGA colours. Three 64-shade effect ramps a part loads for itself, and four 16-shade house ramps for type.
@@ -652,8 +752,9 @@ function text8(str, x, y, c, o = {}) {
 }
 
 // ---- text mode: 80 columns of 8×16 cells (the 8×8 font, each row doubled) and the CP437 blocks, shades and box lines ----
-const TMC = 80, TMR = 23;                            // (360 / 16 = 22.5 rows; the 23rd is half off-screen, which a scroll hides)
-const TM = { ch: new Array(TMC * TMR * 4).fill(' '), fg: new Uint8Array(TMC * TMR * 4), bg: new Uint8Array(TMC * TMR * 4), rows: TMR * 4 };
+// (360 / 16 = 22.5 rows; the 23rd is half off-screen, which a scroll hides. On the portrait screen, 45 columns of 40 rows.)
+let TMC = SW / 8, TMR = Math.ceil(SH / 16);
+const TM = { ch: new Array(80 * 23 * 4).fill(' '), fg: new Uint8Array(80 * 23 * 4), bg: new Uint8Array(80 * 23 * 4), rows: TMR * 4 };
 // The 16 text-mode colours (CGA/VGA), loaded at RA while a part draws text mode.
 const CGA = ['#000000', '#0000aa', '#00aa00', '#00aaaa', '#aa0000', '#aa00aa', '#aa5500', '#aaaaaa', '#555555', '#5555ff', '#55ff55', '#55ffff', '#ff5555', '#ff55ff', '#ffff55', '#ffffff'];
 function tmPalette() { CGA.forEach((h, i) => setCol(RA + i, h)); }
@@ -1152,8 +1253,9 @@ function verseScroll(sec, s = 2) {
 // Draw the verse scroller at t. o: y (the text's top), read (the reading point's x), s (scale), ramp (house base, default cyan),
 // amp/freq/speed (the sine), wave (the voice wobble, default on), scope (MC Token's trace under the text, default true), level.
 function drawScroller(sec, t, o = {}) {
-  const V = verseScroll(sec, o.s ?? 2), L = V.L, read = o.read ?? SW * .42, ramp = o.ramp ?? HC;
-  const X = V.X(t) - read, y = o.y ?? 300, amp = o.amp ?? 5, fr = o.freq ?? .018, sp = o.speed ?? 2.2;
+  // (on the portrait screen it crosses the lower middle, VL.scroll, its reading point a little left of centre)
+  const tall = SH > SW, V = verseScroll(sec, o.s ?? 2), L = V.L, read = o.read ?? SW * (tall ? VL.read : .42), ramp = o.ramp ?? HC;
+  const X = V.X(t) - read, y = o.y ?? (tall ? VL.scroll : 300), amp = o.amp ?? 5, fr = o.freq ?? .018, sp = o.speed ?? 2.2;
   // which token is being sung
   let cur = -1; for (let i = 0; i < V.toks.length; i++) { if (V.toks[i].t0 <= t) cur = i; else break; }
   const tok = V.toks[cur], singing = tok && t < tok.t1 + .15;
@@ -1235,8 +1337,8 @@ function softmaxBars(t, x, y, w, h, o = {}) {
       if (nm.length === 1) text8(nm === 'C' ? 'C' + (Math.floor(n / 12) - 1) : nm, bx + bw / 2, y + 3, hk(HM, (nm === 'C' ? .8 : .45) * lv), { align: 'center' });
     }
   }
-  // the piano roll: a block per 30th of a second at the note she sang, rising and fading
-  if (o.roll !== false) for (let k = 0; k < 30; k++) {
+  // the piano roll: a block per 30th of a second at the note she sang, rising and fading (o.rollN of them: 30)
+  if (o.roll !== false) for (let k = 0; k < (o.rollN ?? 30); k++) {
     const tk = t - k / 30, n = smNote(tk), a = vox(tk); if (!n || a < .08) continue;
     const bx = Math.round(x + (Math.round(n) - SM_N0) * bw), yy = Math.round(y - h - 8 - k * 1.6);
     hspan(bx + 2, bx + bw - 2, yy, hk(HM, (1 - k / 32) * (.4 + .6 * clamp(a * 1.5)) * lv));
@@ -1265,7 +1367,8 @@ function _date(t) {
 function drawDate(t) {
   const d = _date(t); if (!d) return;
   const m = d.text.match(/^(.*?)\s*(\d{4})$/), md = m ? m[1] : d.text, yr = m ? m[2] : '';
-  const k = easeOut(clamp(d.age / .12)), x1 = SW - 10, y0 = 10;
+  // (top right; on the portrait screen, the top right of the part Reels leaves clear)
+  const k = easeOut(clamp(d.age / .12)), x1 = SH > SW ? VL.date[0] : SW - 10, y0 = SH > SW ? VL.date[1] : 10;
   // (a solid near-black plate: dimming within the ramp underneath isn't enough on a bright sky)
   rectf(x1 - 74, y0 - 4, 78, 38, hk(HS, .04)); rectf(x1 - 74, y0 + 34, 78, 1, hk(HS, .2));
   text8(md, x1, y0, hk(HS, .7), { align: 'right' });
@@ -1342,6 +1445,47 @@ function wobble(fn) {
   for (let y = 0; y < SH; y++) { const d = Math.round(fn(y)); if (!d) continue; for (let x = 0; x < SW; x++) FB[y * SW + x] = FB2[y * SW + clamp(x - d, 0, SW - 1)]; }
 }
 
+// =====================================================================================================
+// THE PORTRAIT SCREEN: landscape code on it
+// =====================================================================================================
+// The screen's shape, for the vertical video's portrait screen (360×640) and the landscape one (640×360): its size, text mode's grid
+// and the fire's (fx.js), and the clip; landscapeFB() switches it for a moment.
+const FB3 = new Uint8Array(SN);
+function _screenMode(w, h) {
+  SW = w; SH = h; TMC = w / 8; TMR = Math.ceil(h / 16); TM.rows = TMR * 4;
+  FW = w > h ? 160 : 90; FH = w > h ? 92 : 162;
+  noClip();
+}
+// landscapeFB(fn, cx, cy, zoom, o): on the portrait screen, runs fn, code written for the landscape one (a horizontal shot, or a
+// piece of one: SW, SH, text mode, the fire and the camera are the landscape's while it runs), and puts its picture on the portrait
+// screen with its point (cx, cy) at the middle of rows o.y0–o.y1 (default the whole screen), scaled by zoom, nearest-neighbour
+// (default 16/9: its 360 rows fill the 640, the stand-in for a window without a vertical shot; zoom 1 or 2 keeps its pixels square
+// and whole). What the portrait screen held outside those rows, or outside the landscape picture, stays. The palette is the
+// frame's: the ramps fn loads are the ones the whole frame shows (so call it first, or draw the rest with house ramps). A scroller
+// style fn sets is dropped (the portrait overlay draws its own); hideScroller() and hideDate() hold. Returns fn's result.
+function landscapeFB(fn, cx = 320, cy = 180, zoom = 16 / 9, o = {}) {
+  if (SW === 640) return fn();
+  const y0 = Math.max(0, o.y0 ?? 0), y1 = Math.min(SH, o.y1 ?? SH), my = (y0 + y1) / 2, PW = SW;
+  const clipWas = [CX0, CY0, CX1, CY1], cam = [CAM.f, CAM.cx, CAM.cy], style = _scrollerStyle;
+  FB3.set(FB);
+  _screenMode(640, 360); CAM.f = 300; CAM.cx = 320; CAM.cy = 180; FB.fill(0); ZB.fill(0);
+  let r;
+  try { r = fn(); } finally {
+    FB2.set(FB);
+    _screenMode(360, 640); [CAM.f, CAM.cx, CAM.cy] = cam; _scrollerStyle = style; ZB.fill(0);
+    FB.set(FB3);
+    for (let y = y0; y < y1; y++) {
+      const sy = Math.floor(cy + (y + .5 - my) / zoom); if (sy < 0 || sy >= 360) continue;
+      for (let x = 0; x < PW; x++) {
+        const sx = Math.floor(cx + (x + .5 - PW / 2) / zoom);
+        if (sx >= 0 && sx < 640) FB[y * PW + x] = FB2[sy * 640 + sx];
+      }
+    }
+    clip(...clipWas);
+  }
+  return r;
+}
+
 // A frame with no part painted yet: the generic part (see ch/zz_generic.js) draws it.
 let GENERIC = null;
 OVERLAYS.push((t, s) => {
@@ -1388,7 +1532,7 @@ function _blk(x, y, ch, c) {
 function plasma(t, at = RA, o = {}) {
   const ch = o.chunk ?? (LOWQ ? 4 : 2), sc = (o.scale ?? 1) * ch, sp = o.speed ?? 1, cyc = o.cycle ?? 0, alt = o.alt ?? at, gm = o.gamma ?? 1;
   const x0 = o.x0 ?? CX0 - CX0 % ch, y0 = o.y0 ?? CY0 - CY0 % ch, x1 = o.x1 ?? CX1, y1 = o.y1 ?? CY1;
-  const a = t * sp, cxm = SW / 2 + fsin(a * .31) * 160, cym = SH / 2 + fsin(a * .23 + 1) * 90;
+  const a = t * sp, cxm = SW / 2 + fsin(a * .31) * SW * .25, cym = SH / 2 + fsin(a * .23 + 1) * SH * .25;
   const LUT = new Uint8Array(64); for (let i = 0; i < 64; i++) LUT[i] = Math.round(Math.pow(i / 63, gm) * 63);
   for (let y = y0; y < y1; y += ch) {
     const ya = fsin(y * .021 * sc / ch + a * 1.3);
@@ -1409,7 +1553,8 @@ function plasma(t, at = RA, o = {}) {
 // from centre, px), fog (how dark the far end is), at, bright.
 const _tunT = new Map();
 function _tunnelTables(ch) {
-  let T = _tunT.get(ch); if (T) return T;
+  const key = ch + '|' + SW;   // (a table for each chunk size and screen shape)
+  let T = _tunT.get(key); if (T) return T;
   const w = Math.ceil(SW / ch) * 2, h = Math.ceil(SH / ch) * 2, ang = new Uint8Array(w * h), dist = new Uint16Array(w * h), dep = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const dx = (x - w / 2) * ch, dy = (y - h / 2) * ch, r = Math.sqrt(dx * dx + dy * dy) + .5;
@@ -1417,7 +1562,7 @@ function _tunnelTables(ch) {
     dist[y * w + x] = Math.floor(9000 / r) & 65535;
     dep[y * w + x] = clamp(Math.round(r / 3.2), 0, 63);
   }
-  T = { w, h, ang, dist, dep }; _tunT.set(ch, T);
+  T = { w, h, ang, dist, dep }; _tunT.set(key, T);
   return T;
 }
 function tunnel(t, tex, o = {}) {
@@ -1478,7 +1623,9 @@ const texChecker = (n = 32, lo = 12, hi = 48) => texCached('chk' + n + lo + hi, 
 // The classic fire: each cell averages the ones below it and cools. Deterministic: it re-simulates `steps` ticks up to t (from cold),
 // at 160×90 cells, then draws bilinearly to the screen through the fire ramp at `at`. o.fuel(x, y) → heat 0..1 injected per cell (text on
 // fire), o.base (0..1: the bottom rows' heat), o.cool, o.wind, o.steps, o.y0 (screen top), o.over (only draw where hot: over a scene).
-const FW = 160, FH = 92, _fireA = new Float32Array(FW * FH), _fireB = new Float32Array(FW * FH);
+// (on the portrait screen the grid stands up, 90×162 cells: kit.js's _screenMode sets FW and FH with the screen's shape)
+let FW = SW > SH ? 160 : 90, FH = SW > SH ? 92 : 162;
+const _fireA = new Float32Array(160 * 92), _fireB = new Float32Array(160 * 92);
 function fire(t, at = RA, o = {}) {
   // (phones: three quarters of the ticks, cooling faster to keep the flames' height, and drawn in 2×2 blocks)
   const q = LOWQ ? .75 : 1, steps = Math.round((o.steps ?? 48) * q), tick = Math.floor(t * 60), cool = (o.cool ?? .055) / q, base = o.base ?? 1, wind = o.wind ?? 0;
@@ -1520,7 +1667,7 @@ function fire(t, at = RA, o = {}) {
 // A fuel mask (160×92, 0..255) from big text, for fire(): text centred at (cx, cy) in screen pixels.
 const _fuel = new Map();
 function fuelText(str, s, cx, cy) {
-  const key = str + s + cx + cy; let F = _fuel.get(key);
+  const key = str + s + cx + cy + '|' + SW; let F = _fuel.get(key);
   if (F) return F;
   F = new Uint8Array(FW * FH);
   const L = bigLayout(bigForm(str), s), x0 = cx - L.w / 2, y0 = cy - L.h / 2, sx = SW / FW, sy = SH / (FH - 2);
@@ -1561,8 +1708,9 @@ function copperSky(at, k0, k1, o = {}) {
 // 3D stars flying at the viewer. o: n, speed (depth units a second), at (64-ramp), streak (px), cx/cy, spread, seed, z0 (offset).
 function starfield(t, o = {}) {
   const n = o.n ?? 300, sp = o.speed ?? .35, at = o.at ?? RB, cx = o.cx ?? SW / 2, cy = o.cy ?? SH / 2, seed = o.seed ?? 1, f = o.f ?? 220;
+  const ax = SW > SH ? 1 : .6, ay = SW > SH ? .6 : 1;   // (the field's shape: the screen's, landscape or portrait)
   for (let i = 0; i < n; i++) {
-    const x = (hash2(seed, i) - .5) * 2 * (o.spread ?? 1.8), y = (hash2(seed + 1, i) - .5) * 2 * (o.spread ?? 1.8) * .6;
+    const x = (hash2(seed, i) - .5) * 2 * (o.spread ?? 1.8) * ax, y = (hash2(seed + 1, i) - .5) * 2 * (o.spread ?? 1.8) * ay;
     const z = 1 - frac(hash2(seed + 2, i) + t * sp + (o.z0 ?? 0)) * .98;
     const sx = cx + x / z * f * .5, sy = cy + y / z * f * .5; if (sx < 0 || sx >= SW || sy < 0 || sy >= SH) continue;
     const l = clamp((1 - z) * 1.25), c = rk(at, .25 + .75 * l);
@@ -1970,6 +2118,206 @@ function drawPortrait(x, y, o = {}) {
     else if (t < BREATH()) build(t);
     else breath(t);
   });
+
+  // =============================================================================================
+  // THE VERTICAL VIDEO: the demo on a monitor turned to portrait (360×640; VERTICAL.md). The NFO is re-set for the portrait text
+  // mode's 45 columns, and its type line says what the screen is; the crew's three panels stack, one strip each; the copper bars
+  // stack up the tall screen; MC Token's strip takes the screen for his breath. A pivoted CRT's scanlines run down the screen,
+  // so its sync line (and, in verse 1, its switch-off) is a vertical line.
+  // =============================================================================================
+  const box = (title, rows) => [`┌─[ ${title} ]${'─'.repeat(38 - title.length)}┐`, ...rows.map(r => `│ ${r.padEnd(42)}│`), `└${'─'.repeat(43)}┘`];
+  const VNFO_INFO = [
+    ...box('release', ["title ...... We Didn't Start the Scaling", 'artist ..... Softmax feat. MC Token', 'type ....... pc demo · vga 360x640 · pivot', 'covers ..... jun 2017 → sep 2026', 'released ... 22 september 2026']),
+    ...box('crew', ['dj clawd ..... code, gfx, music', 'softmax ...... vocals', 'mc token ..... rap']),
+    ...box('requirements', ['486dx2/66, 8 mb ram, vga, gus/sb16', 'recommended: 100,000 h100s', 'run: scaling.exe']),
+  ];
+  const VB0 = 14, VB1 = 26, VINFO = 30;   // (the banner's top and bottom rows, and the info's first)
+  // A word too wide for the banner's 43 columns, in two rows.
+  const SPLIT = { SCALING: ['SCAL', 'ING'], PREORDAIN: ['PREOR', 'DAIN'], CONTAIN: ['CON', 'TAIN'] };   // (pre·or·dain: ORDAIN alone is a column too wide)
+  const bigCols = s => [...s].reduce((a, ch) => a + glyph(ch).w + 1, -1);
+  // The group's tag in big blocks: each pixel of the 8×8 font two cells wide and one tall (square), shaded down its rows.
+  function tmTag(col, row, str, rowCol) {
+    let x = col;
+    for (const ch of str) {
+      const g = glyph(ch);
+      for (let y = 0; y < 8; y++) for (let gx = 0; gx < g.w; gx++) {
+        if (g.bits[y * g.w + gx]) tmPut(x + gx * 2, row + y, '██', rowCol(ch, y));
+        else if (gx && g.bits[y * g.w + gx - 1]) tmPut(x + gx * 2, row + y, '░', 8);
+      }
+      x += g.w * 2 + 2;
+    }
+  }
+  function vnfo(t) {
+    nfoColours(); tmClear(0);
+    const printed = clamp((t - .06) * 60, 0, 60);
+    tmPut(0, 0, 'C:\\DEMOS\\FC>type scaling.nfo', 7);
+    tmTag(2, 2, 'FC', (ch, y) => ch === 'F' ? [11, 11, 11, 11, 3, 3, 9, 9][y] : [13, 13, 13, 13, 5, 5, 5, 5][y]);
+    const clawd = ['  ▄▄▄▄▄▄▄▄  ', '▐█▀█▀▀▀▀█▀█▌', ' █▄█▄▄▄▄█▄█ ', '  ▀ ▀  ▀ ▀  '];
+    tmPut(33, 3, '  ▄▀▀▀▀▀▀▄  ', 7);
+    clawd.forEach((r, i) => tmPut(33, 4 + i, r, 6));
+    tmPut(2, 11, 'F R O N T I E R   C R E W', 11); tmPut(20, 11, 'C R E W', 13);
+    tmPut(2, 12, '░▒▓█ p r e s e n t s █▓▒░', 7); tmPut(3, 12, '▒▓', 8); tmPut(24, 12, '▓▒', 8);
+    // the banner, where each sung word appears big (a long one in two rows)
+    tmPut(0, VB0, '╔' + '═'.repeat(43) + '╗', 5);
+    for (let r = VB0 + 1; r < VB1; r++) { tmPut(0, r, '║', 5); tmPut(44, r, '║', 5); }
+    tmPut(0, VB1, '╚' + '═'.repeat(43) + '╝', 5);
+    VNFO_INFO.forEach((s, i) => tmPut(0, VINFO + i, s, s[0] === '│' ? 7 : 8));
+    for (let r = VINFO; r < VINFO + VNFO_INFO.length; r++) for (let c = 0; c < TMC; c++) { const k = r * TMC + c; if (TM.ch[k] === '.') TM.fg[k] = 8; }
+    const [L, k] = introWord(t);
+    if (L) {
+      const ws = wordsOf(L), w = ws[k], age = t - w.t0, word = bigForm(w.w), rows = SPLIT[word.replace(/[^A-Z']/g, '')] ?? [word];
+      // the word prints left to right in 70 ms, white-hot, then settles into Softmax's magenta (a two-row word row by row)
+      let shown = Math.max(1, Math.ceil(age / .07 * word.length));
+      const r0 = Math.round((VB0 + VB1) / 2) - (rows.length === 1 ? 2 : 4);
+      rows.forEach((part, i) => {
+        const n = Math.min(part.length, shown); shown -= n;
+        if (n > 0) tmBig(Math.round(22.5 - bigCols(part) / 2), r0 + i * 5, [...part].slice(0, n).join(''), (gx, cy) => age < .09 ? 15 : [15, 13, 13, 5][cy], { shade: 5 });
+      });
+      // the whole line, small, under the banner, sung words lit (a long line in two rows, broken after its comma)
+      const parts = []; let cur = [];
+      ws.forEach((x, i) => { cur.push(i); if (/,$/.test(x.w) && i < ws.length - 1 && ws.map(q => q.w).join(' ').length > 41) { parts.push(cur); cur = []; } });
+      parts.push(cur);
+      parts.forEach((ids, j) => {
+        const str = ids.map(i => ws[i].w.toLowerCase()).join(' ');
+        let c = Math.round(22.5 - str.length / 2);
+        ids.forEach(i => { tmPut(c, VB1 + 1 + j, ws[i].w.toLowerCase(), i < k ? 13 : i === k ? 15 : 8); c += ws[i].w.length + 1; });
+      });
+    }
+    // "…but we can't contain it!": the text-mode plasma breaks out of the banner and floods the screen
+    const L3 = INTRO_LINES[2], tCant = wordsOf(L3)[7].t0, spread = clamp((t - tCant) / (MODE() - .08 - tCant));
+    if (spread > 0) {
+      const chars = [' ', '░', '▒', '▓', '█'], ramp = [0, 5, 13, 15, 11, 3, 1, 0], mid = (VB0 + VB1) / 2;
+      for (let r = 0; r < TM.rows; r++) for (let c = 0; c < TMC; c++) {
+        const dx = (c - 22) * 8, dy = (r - mid) * 16, d = Math.sqrt(dx * dx + dy * dy);
+        const rad = easeIn(spread) * 760 + 40 + 30 * Math.sin(Math.atan2(dy, dx) * 5 + t * 6);
+        if (d > rad) continue;
+        const inBanner = r > VB0 && r < VB1 && c > 0 && c < 44;
+        if (inBanner && TM.ch[r * TMC + c] !== ' ') continue;     // (the sung word stays on top)
+        const v = (Math.sin(c * .21 + t * 3.1) + Math.sin(r * .43 - t * 2.3) + Math.sin((c + r * 2) * .13 + t * 1.7) + 3) / 6;
+        const lv = frac(v * 1.7 + t * .6) * (ramp.length - 1), i0 = Math.floor(lv), f = lv - i0;
+        tmPut(c, r, chars[Math.min(4, Math.floor(f * 5))], ramp[i0 + 1], ramp[i0]);
+      }
+    }
+    // rows not yet printed are blank; the view scrolls down to the info while she breathes between the lines
+    for (let r = Math.floor(printed); r < TM.rows; r++) for (let c = 0; c < TMC; c++) { const q = r * TMC + c; TM.ch[q] = ' '; TM.bg[q] = 0; }
+    const cur = Math.floor(printed);
+    if (printed < VINFO + VNFO_INFO.length) tmPut(0, cur, '_', 7);
+    tmRender(kf(t, [[6.6, 0], [7.4, 112]], ease), { top: 0, blinkOn: frac(t * 1.9) < .6 });
+  }
+  // The pivoted CRT re-syncing: black, and a line down the screen.
+  function vsync() { cls(0); for (let y = 0; y < SH; y++) { pset(SW / 2, y, WHITE); if (y > 40 && y < SH - 40) pset(SW / 2 + 1, y, hk(HS, .6)); } }
+
+  // The crew screen, stacked: under FRONTIER / CREW / PRESENTS, a strip for each of them, lighting one per bar.
+  const VPX = 8, VPW = SW - 16, VPY = [180, 303, 426], VPH = 117;
+  function vcrewPanel(i, t, age, all) {
+    const m = CREW[i], x = VPX, y = VPY[i], w = VPW, h = VPH;
+    if (age < 0) { shadeRect(x, y, w, h, 44); frame(x, y, w, h, HS, .28); return; }
+    shadeRect(x, y, w, h, 50);
+    const reveal = easeOut(clamp(age / .16)), yr = y + Math.round(reveal * h);
+    const hitA = all >= 0 && all < .14, lv = all >= 0 ? .7 + .3 * kick(t, 5) : age < .5 ? 1 : .75 + .25 * kick(t, 6);
+    clip(x + 4, y + 4, x + w - 4, Math.min(yr, y + h - 4));
+    // the member's signal, along the strip under the name
+    if (i === 0) vclawdSignal(t, x + 6, y + 36, w - 12, h - 40);
+    else if (i === 1) vsoftmaxSignal(t, x + 10, y + h - 14, w - 20, 54);
+    else tokenSignal(t, x, y + 32, w, h - 34, 1);
+    // the name, dropping in, the role after it
+    const drop = age < .35 ? Math.round((1 - elasticOut(age / .35)) * -30) : 0, lift = all >= 0 ? Math.round(Math.exp(-all * 9) * 5) : 0;
+    const nw = bigText(m.name, x + 12, y + 9 + drop - lift, { s: 3, ramp: m.ramp, grad: 'chrome', shadow: 8, level: hitA ? 1.1 : 1 }).w;
+    text8(m.role, x + 12 + nw + 8, y + 19 + drop, hk(m.ramp, .75), { n: Math.floor(clamp((age - .12) / .3) * m.role.length), shadow: BLACK });
+    noClip();
+    if (reveal < 1) hspan(x + 1, x + w - 1, yr, WHITE);
+    frame(x, y, w, h, m.ramp, lv, age < .1 || hitA ? 1 : 0);
+  }
+  // DJ Clawd's strip: his tracker channels scrolling a row every sixteenth, the playing row lit, and the mascot at its right end.
+  function vclawdSignal(t, x, y, w, h) {
+    const row = bt(t) * 4, r0 = Math.floor(row), fr = row - r0, lh = 10, cy = y + Math.round(h / 2) - 4, cols = [[0, 26, HS], [1, 58, HS], [3, 90, HO]];
+    const restore = clipIn(x, y, x + w, y + h);
+    copperBar(cy + 4, 11, { house: HO, level: .55, x0: x, x1: x + w });
+    for (let i = -3; i <= 3; i++) {
+      const yy = Math.round(cy + (i - fr) * lh), rr = r0 + i, lvl = Math.abs(yy - cy) < lh / 2 ? 1 : Math.max(.15, .55 - Math.abs(i) * .1);
+      text8(String(rr & 63).padStart(2, '0'), x + 4, yy, hk(HS, lvl * .7), { mono: true });
+      cols.forEach(([ch, cx, r]) => { const c = cellAt(rr, ch); text8(ch === 3 ? c : c.slice(0, 3), x + cx, yy, hk(r, lvl * (r === HO ? 1 : .8)), { mono: true, gap: 0 }); });
+    }
+    // (the channels' VU bars, standing at the strip's right, before the mascot)
+    cols.forEach(([ch, , r], j) => {
+      const v = ch === 0 ? kick(t, 5) : ch === 3 ? .45 + .55 * kick8(t, 4) : .35 + .45 * kick8(t + .1, 6), bh = Math.round((h - 6) * clamp(v));
+      rectf(x + 152 + j * 9, y + 3, 6, h - 6, hk(HS, .12)); rectf(x + 152 + j * 9, y + h - 3 - bh, 6, bh, hk(r, r === HO ? .9 : .6));
+    });
+    restore();
+    const k = kick(t, 8), hop = Math.round(k * 3);
+    djClawd(x + w - 56, y + h, 6, { hop, eyes: k > .5 ? 'happy' : 'open', aL: k * .9, aR: .3 + .5 * kick8(t, 6) });
+  }
+  // Softmax's strip: her bars across it, the note axis's Cs, and her note with the word she's singing at its top right.
+  function vsoftmaxSignal(t, x, y, w, h) {
+    softmaxBars(t, x, y, w, h, { label: false, roll: false });
+    const bw = w / SM_NB;
+    for (let i = 0; i < SM_NB; i++) { const n = SM_N0 + i, nm = SM_NAMES[n % 12]; if ('CEGA'.includes(nm) && nm.length === 1) text8(nm === 'C' ? 'C' + (Math.floor(n / 12) - 1) : nm, x + i * bw + bw / 2, y + 3, hk(HM, nm === 'C' ? .8 : .45), { align: 'center' }); }
+    const note = smNote(t);
+    if (note && vox(t) > .12) {
+      const nn = Math.round(note), word = sungWord(t).toUpperCase(), nm = SM_NAMES[nn % 12] + (Math.floor(nn / 12) - 1);
+      const ww = word ? text8W(word) + 6 : 0;
+      text8(nm, x + w - ww - text8W(nm), y - h - 44 + 14, WHITE, { shadow: BLACK });
+      if (word) text8(word, x + w - ww + 6, y - h - 30, hk(HM, .95), { shadow: BLACK });
+    }
+  }
+  function vcrewScreen(t) {
+    setRamp(RA, RAMPS.magenta); setRamp(RB, RAMPS.cyan);
+    plasma(t, RA, { alt: RB, cycle: t * .45, scale: 1.1, speed: 1.1 });
+    const since = t - MODE();
+    if (since < .09) { vsync(); return; }
+    flash(clamp(1 - (since - .09) / .3) * .6);
+    const hit = t - HIT(); if (hit < 0) return;
+    flash(clamp(1 - hit / .2) * .55);
+    // the group's name drops in, in two rows, and bounces on every kick
+    const drop = hit < .5 ? (1 - elasticOut(hit / .5)) * -170 : 0, bump = Math.round(kick(t, 9) * 3);
+    shadeRect(0, 80 + drop, SW, 96, 44);
+    copperBar(82 + drop, 5, { house: HS, level: .7 }); copperBar(174 + drop, 5, { house: HS, level: .7 });
+    bigText('FRONTIER', SW / 2, 91 + drop - bump, { s: 4, ramp: HS, align: 'center', grad: 'chrome', shadow: 10 });
+    bigText('CREW', SW / 2, 125 + drop - bump, { s: 4, ramp: HS, align: 'center', grad: 'chrome', shadow: 10 });
+    const pres = 'P R E S E N T S', n = Math.floor(clamp((t - B(39)) / .5) * pres.length);
+    text8(pres, SW / 2, 161 + drop, hk(HM, .9), { align: 'center', n, shadow: BLACK });
+    const all = t - B(TOGETHER);
+    CREW.forEach((m, i) => vcrewPanel(i, t, t - B(m.bar), all));
+    if (all >= 0) flash(clamp(1 - all / .15) * .2);
+  }
+  // The build, up the tall screen: a copper bar drops onto the stack on each stab while the voxel SCALING flies out of the stars.
+  function vbuild(t) {
+    setRamp(RA, RAMPS.magenta); setRamp(RB, RAMPS.cyan); setRamp(RC, [BG, '#1c2046', '#4a5696', '#9aa8e0', '#e8ecff', '#ffffff']);
+    cls(0);
+    starfield(t, { at: RB, speed: .25 + (bt(t) - 52) * .06, n: 340, streak: 6 });
+    const b = bt(t) - 52, ramps = [{ at: RA }, { at: RB }, { house: HO }, { house: HS }];
+    for (let i = 0; i < 12; i++) {
+      const age = b - i; if (age < 0) continue;
+      const yT = SH - 24 - i * 51, y = age < .45 ? lerp(-24, yT, easeIn(age / .45)) : yT - Math.round(Math.abs(Math.sin((age - .45) * 9)) * 8 * Math.exp(-(age - .45) * 5));
+      copperBar(y, 30, { ...ramps[i % 4], level: b >= 8 ? .75 + .25 * kick8(t, 5) : 1 });
+    }
+    if (b >= 8) PFX.pump = kick8(t, 6) * 2.2;
+    const la = b - 5;
+    if (la > 0) {
+      const k = clamp(la / 6.5), z = lerp(210, 50, easeOut(k)) - Math.max(0, la - 6.5) * 26, M = textMesh('SCALING', 4);
+      drawMesh(M, rot3(-.25 + Math.sin(t * 1.3) * .12, (1 - easeOut(k)) * 7 + Math.sin(t * 2.1) * .3, Math.sin(t * .7) * .06), [0, -1, z], { at: RC, amb: .25, spec: .5, vshade: letterShade });
+    }
+  }
+  // The breath: MC Token's strip comes back alone, goes live and takes the screen as his scope draws his inhale; the scroller
+  // slides in across the lower middle so "FIRST," lands on the downbeat.
+  function vbreath(t) {
+    cls(0);
+    const a = t - BREATH(), k = easeInOut(clamp((a - .12) / .45)), voice = clamp((a - .2) / .5);
+    const r0 = [VPX, VPY[2], VPW, VPH], r1 = [12, 96, SW - 24, 392];
+    const [x, y, w, h] = r0.map((v, i) => Math.round(lerp(v, r1[i], k)));
+    tokenSignal(t, x, y + 44, w, h - 50, 1, voice);
+    bigText('MC TOKEN', x + w / 2, y + 8, { s: 4, ramp: HC, align: 'center', grad: 'chrome', shadow: 8 });
+    text8('RAP', x + w / 2, y + 30 + Math.round(k * 4), hk(HC, .75 * k), { align: 'center' });
+    frame(x, y, w, h, HC, .75 + .25 * kick(t, 6), a < .1 ? 1 : 0);
+    if (t > B(66.5)) drawScroller('V1', t, {});
+  }
+  vshot('intro', (p, lt, d, t) => {
+    hideDate();
+    if (t < MODE()) vnfo(t);
+    else if (t < BUILD()) vcrewScreen(t);
+    else if (t < BREATH()) vbuild(t);
+    else vbreath(t);
+  });
 })();
 
 ;
@@ -2253,7 +2601,7 @@ function drawPortrait(x, y, o = {}) {
   // V1.10 Weekend chaos, board expired: the infinite checkerboard, spun wildly, then its squares fall away; the days flip on the beats.
   function floor(t, at, o = {}) {
     const hy = o.horizon ?? 110, ang = o.angle ?? 0, ca = Math.cos(ang), sa = Math.sin(ang), gone = o.gone, ch = LOWQ ? 4 : 2;
-    for (let y = hy + 2; y < 286; y += ch) {
+    for (let y = hy + 2; y < (o.y1 ?? 286); y += ch) {
       const z = 900 / (y - hy), fog = clamp(1 - z / 90);
       for (let x = 0; x < SW; x += ch) {
         const wx = (x - SW / 2) * z / 300, u = wx * ca - z * sa + (o.u ?? 0), v = wx * sa + z * ca + (o.v ?? 0);
@@ -2473,6 +2821,371 @@ function drawPortrait(x, y, o = {}) {
     bobs3D(pts, R, [0, -1, 22], { r: 1, fog: [16, 30] });
     bigText('ALPHAFOLD', 22, 22, { s: 3, ramp: HC, grad: 'chrome', shadow: 8 });
   });
+  // ===============================================================================================
+  // THE VERTICAL VIDEO (VERTICAL.md): each line's effect recomposed for the portrait screen, 360×640. The picture keeps above the
+  // scroller, which crosses the lower middle (VL.scroll); the date plate is at the safe area's top right and small in-scene labels
+  // at its top left (VL.label); below the scroller the effect runs on to the bottom edge. Things rise and fall through the tall
+  // screen: the fuse climbs, blades stack, flames tower, a chain hangs, the water mirror lies under the eye.
+  // ===============================================================================================
+  const [LX, LY] = VL.label;
+
+  // V1.1: the fuse climbs the screen from its bottom corner to ATTENTION, and the flames tower over the word.
+  vshot('V1.1', (p, lt, d, t, s) => {
+    setRamp(RA, RAMPS.fire);
+    cls(0);
+    const tLit = wt(s, 1) + .05, cx = SW / 2, cy = 372;
+    const L = bigLayout('ATTENTION', 4), x0 = cx - L.w / 2, foot = cy + L.h / 2 - 3;
+    const fuse = k => [lerp(30, x0 + 8, k) + Math.sin(k * Math.PI * 2.5) * 34 * (1 - k), lerp(SH + 6, foot, k)];
+    const kS = clamp((t - (s.start - .15)) / (tLit - s.start + .15));
+    for (let i = 0; i <= 200; i++) { const k = i / 200, [x, y] = fuse(k); if (k > kS) { pset(x, y, hk(HS, .6)); pset(x + 1, y, hk(HS, .3)); } else pset(x, y, rk(RA, .12)); }
+    if (kS < 1) {
+      const [sx, sy] = fuse(kS);
+      for (let i = 0; i < 22; i++) { const a = hash2(Math.floor(t * 30), i) * TAU, r = 3 + hash2(Math.floor(t * 30) + 7, i) * 16; pset(sx + Math.cos(a) * r, sy + Math.sin(a) * r - 2, rk(RA, .6 + .4 * hash(i))); }
+      bob(sx, sy, 5, RA, 1); flash(.08 * kick8(t, 9));
+    }
+    if (t >= tLit) {
+      fire(t, RA, { fuelMask: fuelText('ATTENTION', 4, cx, cy + 5), base: 0, cool: .036, wind: 1.6, steps: Math.min(56, Math.floor((t - tLit) * 60) + 1), over: true });
+      flash(clamp(1 - (t - tLit) / .15) * .2);
+    }
+    bigText('ATTENTION', cx, cy - L.h / 2 + 2, { s: 4, ramp: t >= tLit ? HO : HS, align: 'center', grad: 'chrome', shadow: 0, level: t >= tLit ? .75 + .25 * kick(t, 5) : .55 });
+    text8('arXiv:1706.03762', LX, LY, hk(HS, .45));
+  });
+
+  // V1.2: the log-log paper fills the tall screen, zooming out decade after decade, the power law falling straight across it.
+  vshot('V1.2', (p, lt, d, t, s) => {
+    setRamp(RA, RAMPS.green);
+    cls(rk(RA, .04));
+    const zoom = lerp(1.25, .36, easeInOut(p)), ang = -.12 + lt * .05, cx = SW / 2, cy = 262;
+    const dec = 118 * zoom, cs = Math.cos(ang), sn = Math.sin(ang);
+    const P = (u, v) => [cx + (u * cs - v * sn) * dec, cy + (u * sn + v * cs) * dec];
+    const span = Math.ceil(3.8 / zoom) + 1;
+    for (let D = -span; D <= span; D++) for (let m = 1; m < 10; m++) {
+      const u = D + Math.log10(m), major = m === 1, c = rk(RA, major ? .5 : .24);
+      const [a, b] = [P(u, -span), P(u, span)], [e, f] = [P(-span, u), P(span, u)];
+      lineP(a[0], a[1], b[0], b[1], c); lineP(e[0], e[1], f[0], f[1], c);
+      if (major && zoom > .6) { const [lx, ly] = P(u, 1.05); text8('10', lx - 6, ly, rk(RA, .5)); text8(String(D + 20), lx + 8, ly - 4, rk(RA, .5)); }
+    }
+    const vOf = u => .38 * u, n = Math.floor(lt / (beatLen() / 2)) + 1;
+    // (the law glows: a dark channel cut round it, then the line, three pixels wide, a white core)
+    for (const [w, c] of [[6, rk(RA, .03)], [3, rk(RA, .55)], [2, rk(RA, .8)], [1, rk(RA, .95)], [0, WHITE]]) for (const sg of [-1, 1]) { const o = sg * w * .0042 / zoom; const [a, b] = [P(-span, vOf(-span) + o), P(span, vOf(span) + o)]; lineP(a[0], a[1], b[0], b[1], c); }
+    for (let i = 0; i < n; i++) { const u = -1.6 + i * .42, [x, y] = P(u, vOf(u) + .03 * Math.sin(i * 3.1)); bob(x, y, 6 + 3 * kick8(t - i * .01), RA, 1); }
+    // (the law's label under the date plate, the full width of the safe area)
+    const ly = LY + 40;
+    shadeRect(LX - 8, ly - 8, 300, 58, 32);
+    const lw = bigText('L ∝ C', LX, ly + 12, { s: 4, ramp: HS, grad: 'chrome', shadow: 8 }).w;
+    bigText('-0.050', LX + lw + 4, ly, { s: 3, ramp: HS, grad: 'chrome', shadow: 6 });
+  });
+
+  // V1.3: the tower stands on the lower middle and grows up the screen, a blade dropping onto it every eighth.
+  vshot('V1.3', (p, lt, d, t, s) => {
+    setRamp(RA, RAMPS.night); setRamp(RB, RAMPS.cyan); setRamp(RC, [BG, '#12162c', '#2a3358', '#56679c', '#a8b6ec', '#f4f6ff']);
+    const half = beatLen() / 2, n = Math.min(12, Math.floor(lt / half) + 2), h = 1.5, CH = 4.2;
+    copperSky(RA, .6, .04);
+    starfield(t, { at: RB, speed: .04, n: 160, spread: 1.4 });
+    const drop = clamp(frac(lt / half) / .2), z = 22 - lt * .8, R = rot3(.2, -.5 + Math.sin(lt * 1.3) * .22, 0), pos = [0, .47 * z, z];
+    drawMesh(boxMesh(-12, 0, -9, 12, .8, 9), R, pos, { at: RA, amb: .35 });
+    drawMesh(boxMesh(-7, -CH + .14, -4, 7, 0, 4), R, pos, { at: RC, amb: .3 });
+    for (let i = 0; i < n; i++) {
+      const fall = i === n - 1 ? (1 - easeIn(drop)) * 9 : 0, y1 = -CH - i * h - fall, y0 = y1 - h + .14;
+      drawMesh(boxMesh(-7, y0, -4, 7, y1, 4), R, pos, { at: RC, amb: .3 });
+      for (let j = 0; j < 7; j++) if (hash2(i * 7 + j, Math.floor(t * 8)) > .3) drawMesh(boxMesh(-6.2 + j * 1.8, y0 + .4, -4.3, -5.3 + j * 1.8, y0 + 1, -4.02), R, pos, { at: RB, amb: .78 });
+    }
+    badge(R, pos, -1.75, -CH + .45, 1.75, -.35, -4.04, .9 + .1 * kick(t, 6));
+  });
+
+  // V1.4: the few-shot prompt as three questions and answers down the screen, the last answer rolling wrong, 29.2% under them.
+  vshot('V1.4', (p, lt, d, t, s) => {
+    setRamp(RA, RAMPS.magenta); setRamp(RC, RAMPS.red);
+    cls(0);
+    rotozoom(TIMES(), { at: RA, angle: lt * .5 - .3, zoom: 1.4 + .2 * Math.sin(lt * 3), u: lt * 40, v: lt * 25, chunk: 2 });
+    shadeRect(14, 166, SW - 28, 192, 44);
+    const Q = [['Q: What is 17 times 25?', 'A: 425'], ['Q: What is 38 times 12?', 'A: 456'], ['Q: What is 23 times 47?', 'A:']];
+    Q.forEach(([q, a], i) => {
+      const n = Math.floor(clamp((lt - i * .12) / .14) * q.length), na = Math.floor(clamp((lt - i * .12 - .14) / .05) * a.length), y = 178 + i * 60;
+      if (n > 0) text8(q, 26, y, i < 2 ? hk(HS, .75) : WHITE, { sc: 2, n, shadow: BLACK });
+      if (na > 0) text8(a, 26, y + 22, i < 2 ? hk(HS, .75) : WHITE, { sc: 2, n: na, shadow: BLACK });
+    });
+    const tA = s.start + beatIn(t, lt, 1), ans = '1071';   // (23 × 47 is 1081)
+    if (t >= tA) {
+      const shown = [...ans].map((c, i) => { const stop = tA + .18 + i * .1; return t >= stop ? c : String(Math.floor(hash2(i, Math.floor(t * 30)) * 10)); }).join('');
+      const done = t >= tA + .48, x = 26 + text8W('A: ', { sc: 2 });
+      text8(shown, x, 320, done ? hk(HM, .95) : hk(HS, .5), { sc: 2, shadow: BLACK });
+      if (done) {
+        const k = easeOut(clamp((t - tA - .48) / .12)), cx = x + 80, cy = 327, r = 9 * k;
+        for (let o = -1; o <= 1; o++) { lineP(cx - r + o, cy - r, cx + r + o, cy + r, rk(RC, .9)); lineP(cx - r + o, cy + r, cx + r + o, cy - r, rk(RC, .9)); }
+        bigText('29.2%', SW / 2, 400 - Math.round((1 - k) * 12), { s: bigW('29.2%', 8) <= SW - 40 ? 8 : 6, ramp: HM, align: 'center', grad: 'chrome', shadow: 12, level: k });
+      }
+    }
+  });
+
+  // V1.5: a tall copper sky turning from night to dawn in one beat, the striped sun climbing it, the users counter racing on top.
+  vshot('V1.5', (p, lt, d, t, s) => {
+    const dawn = easeOut(clamp((lt - beatIn(t, lt, 0)) / .5)), HZN = 440;
+    setRamp(RA, [BG, lerpHex('#0b0f2a', '#3a1450', dawn), lerpHex('#1a2358', '#c2305a', dawn), lerpHex('#34479a', '#ff8a3c', dawn), lerpHex('#34479a', '#ffd88a', dawn)]);
+    setRamp(RB, RAMPS.gold); setRamp(RC, RAMPS.steel);
+    copperSky(RA, .05, 1, { y1: HZN });
+    if (dawn < 1) starfield(t, { at: RC, speed: .03, n: Math.round(220 * (1 - dawn)), cy: 160 });
+    const sy = lerp(HZN + 110, 300, dawn), R = 110;
+    for (let y = Math.ceil(sy - R); y < Math.min(HZN, sy + R); y++) {
+      const band = y > sy - 20 && ((y - Math.floor(t * 20)) % 9 + 9) % 9 < Math.min(8, (y - sy + 20) / 9); if (band) continue;
+      const w = Math.sqrt(Math.max(0, R * R - (y - sy) ** 2)); hspan(SW / 2 - w, SW / 2 + w, y, rk(RB, lerp(1, .55, (y - sy + R) / (2 * R))));
+    }
+    for (let y = HZN; y < SH; y++) hspan(0, SW, y, rk(RC, .05));
+    for (let i = 0; i < 10; i++) { const z = frac(i / 10 - t * .8), y = HZN + (SH - HZN) * (1 - z) ** 2; hspan(0, SW, Math.round(y), rk(RB, .3 + .4 * (1 - z))); }
+    for (let i = -10; i <= 10; i++) lineP(SW / 2 + i * 12, HZN, SW / 2 + i * 150, SH, rk(RB, .35));
+    const users = Math.round(lerp(0, 1e8, easeIn(clamp(lt / (d * .85))))).toLocaleString('en-US');
+    bigText(users, SW / 2, 138, { s: bigW('100,000,000', 4) <= SW - 30 ? 4 : 3, ramp: HS, align: 'center', grad: 'chrome', shadow: 10 });
+  });
+
+  // V1.6: Sydney's messages at the top, the glenz heart big below them, beating, until it shatters on "fright".
+  vshot('V1.6', (p, lt, d, t, s) => {
+    setRamp(RA, RAMPS.red); setRamp(RB, RAMPS.magenta);
+    cls(0); zclear();
+    const tF = wt(s, 5), burst = clamp((t - tF) / .6);
+    starfield(t, { at: RB, speed: .08, n: 150 });
+    const beat = 1 + kick(t, 5) * .14, R = rot3(.18 + Math.sin(t * 1.1) * .12, t * 1.3, Math.sin(t * .9) * .08), pos = [0, -.25, 13];
+    if (burst <= 0) {
+      drawMesh(HEART.A, R, pos, { glenz: 30, noz: true, cull: false, amb: .45, scale: beat });
+      drawMesh(HEART.B, R, pos, { glenz: 14, noz: true, cull: false, amb: .45, scale: beat });
+    } else drawMesh(heartShards(easeOut(burst), t), R, pos, { at: RA, cull: false, amb: .3, spec: .5, fog: [14, 54], scale: beat });
+    // her words, as two chat bubbles (the second in two rows)
+    const msgs = [["I'm Sydney,"], ["and I'm in love", 'with you.']];
+    let y = 98;
+    msgs.forEach((rows, i) => {
+      const t0 = s.start + .05 + i * .55, all = rows.join(' '), n = Math.floor(clamp((t - t0) / .4) * all.length); if (n <= 0) return;
+      const w = Math.max(...rows.map(r => text8W(r, { sc: 2 })));
+      shadeRect(LX, y - 5, w + 14, rows.length * 22 + 4, 30);
+      let left = n;
+      rows.forEach((r, j) => { if (left > 0) text8(r, LX + 7, y + j * 22, hk(HM, .85), { sc: 2, n: left }); left -= r.length + 1; });
+      y += rows.length * 22 + 12;
+    });
+    if (t >= tF) { flash(clamp(1 - (t - tF) / .12) * .4); if (t - tF < .3) wobble(yy => Math.sin(yy * .2 + t * 80) * 6 * (1 - (t - tF) / .3)); }
+  });
+
+  // V1.7: the PAUSE tunnel, its far end above the middle, and the VCR's pause blinking at the top left.
+  vshot('V1.7', (p, lt, d, t, s) => {
+    setRamp(RA, [BG, '#2a1604', '#7a4408', '#e8a020', '#ffe07a', '#fffbe8']);
+    tunnel(t, PAUSE_TEX(), { at: RA, speed: 2.6, spin: .12, fog: .9, cx: Math.sin(t * 1.7) * 24, cy: -20 + Math.cos(t * 1.3) * 22 });
+    if (frac(t * 1.6) < .6) { rectf(LX, LY + 2, 7, 22, WHITE); rectf(LX + 12, LY + 2, 7, 22, WHITE); bigText('PAUSE', LX + 28, LY + 3, { s: 3, ramp: HS, grad: 'flat', shadow: 6 }); }
+  });
+
+  // V1.8: TIME's headline types, then SHUT / IT / ALL / DOWN slam down the screen over siren bars; a shockwave; and the pivoted
+  // CRT switches off, to a line down the screen and then a dot.
+  vshot('V1.8', (p, lt, d, t, s) => {
+    setRamp(RA, RAMPS.red); setRamp(RB, RAMPS.steel);
+    cls(rk(RA, .06));
+    for (let i = 0; i < 10; i++) copperBar(((i * 70 + t * 300) % 700) - 30, 28, { at: RA, level: .55 + .35 * kick8(t, 5) });
+    const w1 = wordT(s, 1), w2 = wordT(s, 2), w3 = wordT(s, 3);
+    shadeRect(0, 86, SW, 410, 34);
+    text8('TIME · MARCH 29, 2023', LX, LY + 4, hk(HS, .7), { shadow: BLACK });
+    text8('ELIEZER YUDKOWSKY', LX, LY + 16, hk(HS, .7), { shadow: BLACK });
+    const h1 = ['PAUSING AI', 'DEVELOPMENTS', "ISN'T ENOUGH."], h2 = 'WE NEED TO', len1 = h1.join(' ').length;
+    let n1 = Math.floor(clamp(lt / ((w1 - s.start) * .62)) * len1);
+    const n2 = Math.floor(clamp((lt - (w1 - s.start) * .66) / ((w1 - s.start) * .3)) * h2.length);
+    h1.forEach((r, i) => { if (n1 > 0) text8(r, SW / 2, 130 + i * 20, hk(HS, .9), { sc: 2, n: n1, align: 'center', shadow: BLACK }); n1 -= r.length + 1; });
+    if (n2 > 0) text8(h2, SW / 2, 194, hk(HS, .9), { sc: 2, n: n2, align: 'center', shadow: BLACK });
+    [['SHUT', w1, 0], ['IT', w2, 1], ['ALL', w3, 2], ['DOWN', w3, 3]].forEach(([str, tw, row]) => {
+      if (t < tw) return;
+      const age = t - tw;
+      bigText(str, SW / 2, 250 + row * 56 - Math.round(Math.exp(-age * 18) * 16), { s: 6, ramp: row < 2 ? HM : HS, align: 'center', grad: 'chrome', shadow: 12 });
+      if (age < .05) flash(.14);
+    });
+    if (t >= w3 + .04) shockwave(SW / 2, 362, (t - w3 - .04) * 1500, 44, 20);
+    const off = clamp((t - (s.end - .13)) / .11);
+    if (off > 0) squash(Math.max(.004, 1 - off * 1.7), 1 - .97 * clamp((off - .5) * 2));
+  });
+
+  // V1.9: SAM / ALTMAN stacked, burning up the tall screen on "fired", un-burning under the VCR's rewind on "rehired". The pivoted
+  // CRT comes back on from V1.8's dot: a line down the screen, opening.
+  const _nameFuel = new Map();
+  function rowsFuel(rows, s, cx, cys) {
+    const key = rows.join('|') + s + cx + cys.join() + '|' + SW; let M = _nameFuel.get(key); if (M) return M;
+    M = new Uint8Array(FW * FH);
+    rows.forEach((r, i) => { const F = fuelText(r, s, cx, cys[i]); for (let j = 0; j < M.length; j++) M[j] = Math.max(M[j], F[j]); });
+    _nameFuel.set(key, M);
+    return M;
+  }
+  vshot('V1.9', (p, lt, d, t, s) => {
+    setRamp(RA, RAMPS.fire);
+    cls(0);
+    const tF = wordT(s, 2), tR = wordT(s, 4), cx = SW / 2, ys = [330, 386];
+    const tf = t < tR ? t : Math.max(tF, tR - (t - tR) * 2.2), burn = t >= tF ? clamp((tf - tF) / (tR - tF + .01)) : 0;
+    if (t >= tF && tf > tF) fire(tf, RA, { fuelMask: rowsFuel(['SAM', 'ALTMAN'], 6, cx, ys.map(y => y + 6)), base: 0, cool: .03, wind: 1.6, steps: Math.min(60, Math.floor((tf - tF) * 60) + 1), over: true });
+    const unburnt = t >= tR ? clamp((t - tR) * 2.2 / (tR - tF + .01)) : 0;
+    ['SAM', 'ALTMAN'].forEach((str, i) => bigText(str, cx, ys[i] - 25, { s: 6, ramp: burn > .05 && unburnt < .95 ? HO : HS, align: 'center', grad: 'chrome', shadow: 0, level: lerp(1, .35, burn) + unburnt * .65 }));
+    if (t >= tR) { const k = clamp((t - tR) / .2); if (k < 1) flash((1 - k) * .15); text8('◀◀', LX, LY, hk(HS, frac(t * 3) < .6 ? .9 : .4), { sc: 3 }); }
+    const on = clamp(lt / .12); if (on < 1) squash(Math.max(.004, on), clamp(on * 3));
+  });
+
+  // V1.10: the day big in a short sky, and the checkerboard running from the horizon to the bottom of the tall screen, spun ever
+  // more wildly, its squares dropping away on "expired".
+  vshot('V1.10', (p, lt, d, t, s) => {
+    setRamp(RA, [BG, '#1a0c38', '#4a2690', '#9a6ee8', '#e0d0ff', '#ffffff']); setRamp(RB, RAMPS.night);
+    cls(0);
+    const HY = 216;
+    copperSky(RB, .05, .45, { y1: HY + 2 });
+    starfield(t, { at: RB, speed: .05, n: 80, cy: 90 });
+    const tE = wordT(s, 3), chaos = 1 + 2.5 * p;
+    floor(t, RA, { horizon: HY, y1: SH, angle: Math.sin(t * 2.3) * .5 * chaos + t * .4, u: Math.sin(t * 3.1) * 20 * chaos, v: t * 40, gone: t >= tE ? (iu, iv, z) => hash2(iu * 7 + 3, iv) < (t - tE) * 3.2 - z / 120 : null });
+    const days = ['FRI', 'SAT', 'SUN', 'MON', 'TUE'], k = clamp(Math.floor(bt(t) - bt(s.start) + .3), 0, 4);
+    bigText(days[k], SW / 2 - 18, 136, { s: 8, ramp: HS, align: 'center', grad: 'chrome', shadow: 10 });   // (clear of the date plate)
+  });
+
+  // V1.11: the Amiga water mirror, standing up: the eye high in a copper sky, the still water filling the screen below it, the
+  // reflection's pupil holding the one bright point that flares on the second "saw".
+  vshot('V1.11', (p, lt, d, t, s) => {
+    const HZ = 276, SQ = 1.3, cx = SW / 2, cy = 160, ew = 166, eh = 48, ix = cx, iy = cy + 26, ir = 46;
+    setRamp(RA, [BG, '#06222a', '#0c5a66', '#1ea8b4', '#8cf0ee', '#effffe']);
+    setRamp(RB, [BG, '#040e1c', '#08243a', '#0e4658', '#1c7682', '#7cd4cc', '#effff8']);
+    cls(0);
+    const sky = new Uint8Array(HZ);
+    for (let y = 0; y < HZ; y++) sky[y] = rk(RB, .08 + .55 * (y / HZ) ** 2.2);
+    for (const [yb, hb, k] of [[66 + Math.sin(t * .9) * 12, 12, .42], [222 + Math.sin(t * .7 + 2) * 10, 16, .6]]) for (let j = 0; j < hb; j++) { const y = Math.round(yb - hb / 2 + j); if (y >= 0 && y < HZ) sky[y] = Math.max(sky[y], rk(RB, k * (1 - Math.abs((j + .5) / hb * 2 - 1)) ** .7)); }
+    for (let y = 0; y < HZ; y++) hspan(0, SW, y, sky[y]);
+    for (let i = 0; i < 40; i++) { const x = hash2(11, i) * SW, y = hash2(12, i) * HZ * .4; if (frac(t * .7 + hash(i)) < .85) pset(x, y, rk(RB, .6 + .4 * hash(i + 3))); }
+    const top = x => cy - eh * Math.pow(Math.sin(clamp((x - cx + ew) / (2 * ew)) * Math.PI), .75), bot = x => cy + eh * .82 * Math.pow(Math.sin(clamp((x - cx + ew) / (2 * ew)) * Math.PI), .75);
+    const inEye = (x, y) => x > cx - ew && x < cx + ew && y > top(x) && y < bot(x);
+    for (let x = cx - ew; x < cx + ew; x++) for (let y = Math.ceil(top(x)); y < bot(x); y++) {
+      const dx = (x - ix) / ew, dy = (y - cy) / eh;
+      FB[y * SW + x] = hk(HS, clamp(.95 - dx * dx * .7 - Math.max(0, -dy) * .25));
+    }
+    for (let y = iy - ir; y <= iy + ir; y++) for (let x = ix - ir; x <= ix + ir; x++) {
+      const r = Math.hypot(x - ix, y - iy); if (r > ir || !inEye(x, y)) continue;
+      FB[y * SW + x] = rk(RA, .1 + .28 * (r / ir) + .06 * Math.sin(Math.atan2(y - iy, x - ix) * 18));
+    }
+    for (let r = 0; r < 4; r++) for (let i = 0; i < 20; i++) {
+      const a = i / 20 * TAU + t * (r % 2 ? .5 : -.4), rr = 22 + r * 7, x = ix + Math.cos(a) * rr, y = iy + Math.sin(a) * rr;
+      if (inEye(x, y - 2) && inEye(x, y + 2)) bob(x, y, 3 - r * .3, RA, .95 - r * .12);
+    }
+    circf(ix, iy, 15 + 3 * kick(t, 4), BLACK);
+    circf(ix - 12, iy - 13, 3, WHITE);
+    for (let y = iy - ir - 4; y <= iy + ir + 4; y++) for (let x = ix - ir - 4; x <= ix + ir + 4; x++) if (y >= 0 && y < HZ && !inEye(x, y)) FB[y * SW + x] = sky[y];
+    for (let x = cx - ew; x < cx + ew; x++) { const yt = Math.round(top(x)), yb = Math.round(bot(x)); pset(x, yt, WHITE); pset(x, yt - 1, hk(HS, .7)); pset(x, yb, hk(HS, .6)); }
+    for (let i = 1; i < 12; i++) { const x = cx - ew + i * ew / 6, yt = top(x), a = (x - cx) / ew * .9; lineP(x, yt - 1, x + Math.sin(a) * 7, yt - 8, hk(HS, .75)); }
+    for (let y = HZ; y < SH; y++) {
+      const dep = y - HZ, off = ripple(dep, t);
+      const sy = clamp(Math.round(HZ - 1 - dep * SQ + Math.sin(dep * .9 + t * 3) * .7), 0, HZ - 1), T = DIMT[Math.min(44, 14 + (dep >> 3))], row = y * SW, src = sy * SW;
+      for (let x = 0; x < SW; x++) FB[row + x] = T[FB[src + clamp(x - off, 0, SW - 1)]];
+      if ((dep + Math.floor(t * 9)) % 7 === 0) for (let x = 0; x < SW; x++) if (hash2(y, (x >> 3) + Math.floor(t * 4)) > .93) FB[row + x] = LITT[6][FB[row + x]];
+    }
+    hspan(0, SW, HZ, rk(RB, .7));
+    const rdep = (HZ - 1 - iy) / SQ, ry = Math.round(HZ + rdep), rx = ix + ripple(Math.round(rdep), t);
+    const tSaw = wordT(s, 4), fl = t >= tSaw ? Math.exp(-(t - tSaw) * 1.4) * clamp((t - tSaw) / .06) : 0, tw = .5 + .5 * Math.sin(t * 9);
+    const arm = Math.round(2 + tw * 2 + fl * 120), armV = Math.round(1 + fl * 40);
+    for (let i = 1; i <= arm; i++) { const k = 1 - i / (arm + 1), c = hk(HS, .35 + .65 * k); pset(rx - i, ry, c); pset(rx + i, ry, c); }
+    for (let i = 1; i <= armV; i++) { const k = 1 - i / (armV + 1), c = hk(HS, .35 + .65 * k); pset(rx, ry - i, c); pset(rx, ry + i, c); }
+    rectf(rx - 1, ry - 1, 3, 3, WHITE);
+    if (fl > .2) { circf(rx, ry, 2 + fl * 4, WHITE); for (let i = 0; i < 40; i++) { const a = i / 40 * TAU, r = 8 + fl * 16; pset(rx + Math.cos(a) * r * 1.6, ry + Math.sin(a) * r * .5, hk(HS, .5 * fl + .3)); } }
+    flash(fl * .1);
+  });
+
+  // V1.12: the ring of twelve stars tilting up high on the blue sky, and the Act's first page typing under it.
+  vshot('V1.12', (p, lt, d, t, s) => {
+    setRamp(RA, [BG, '#061040', '#0a2a8e', '#1846c8', '#5a86f0']); setRamp(RB, RAMPS.gold);
+    copperSky(RA, .95, .45);
+    CAM.cy = 262;
+    const tilt = lerp(1.1, .25, easeOut(clamp(lt / .6))), R = rot3(tilt, t * .7, 0), pts = [];
+    for (let i = 0; i < 12; i++) { const a = i / 12 * TAU; pts.push([Math.cos(a) * 5.2, Math.sin(a) * 5.2, 0]); }
+    pts.map(q => [R[0] * q[0] + R[1] * q[1] + R[2] * q[2], R[3] * q[0] + R[4] * q[1] + R[5] * q[2], R[6] * q[0] + R[7] * q[1] + R[8] * q[2] + 15.5])
+      .sort((a, b) => b[2] - a[2]).forEach(([x, y, z], i) => { const [sx, sy] = proj(x, y, z); const r = 210 / z; star(sx + 2, sy + 2, r, t * 2 + i, rk(RB, .12)); star(sx, sy, r, t * 2 + i, rk(RB, clamp(1.3 - z / 20))); });
+    const tDoc = wordT(s, 3);
+    if (t >= tDoc) {
+      const lines = ['REGULATION (EU) 2024/1689', 'LAYING DOWN HARMONISED RULES', 'ON ARTIFICIAL INTELLIGENCE', 'ARTICLE 5 · PROHIBITED AI PRACTICES', 'PARLIAMENT 523–46 · COUNCIL 21 MAY 2024'];
+      shadeRect(22, 402, SW - 44, 86, 40);
+      lines.forEach((str, i) => text8(str, SW / 2, 410 + i * 15, i ? hk(HS, .7) : WHITE, { align: 'center', n: Math.floor(clamp((t - tDoc - i * .07) / .2) * str.length) }));
+    }
+  });
+
+  // V1.13: the chain of thought hangs from the top of the screen, a link forged every eighth, the strawberry swinging at its end;
+  // the question, the thinking and the answer down the left.
+  vshot('V1.13', (p, lt, d, t, s) => {
+    setRamp(RA, RAMPS.green); setRamp(RB, RAMPS.red); setRamp(RC, RAMPS.steel);
+    for (let y = 0; y < SH; y++) hspan(0, SW, y, hk(HS, lerp(.2, 0, y / SH)));
+    starfield(t, { at: RC, speed: .03, n: 100 });
+    const half = beatLen() / 2, n = Math.min(7, Math.floor(lt / half) + 1), grow = easeOut(clamp(frac(lt / half) / .25));
+    // (the chain hangs from a peg just under the date plate)
+    CAM.cy = 322;
+    const swing = Math.sin(t * 3.2) * .14, R0 = rot3(0, 0, swing), Z = 18, step = 2.15, X = 7.2;
+    { const [px, py] = proj(X, -11.2, Z); rectf(px - 30, py - 4, 60, 6, hk(HS, .55)); hspan(px - 30, px + 30, py - 4, hk(HS, .9)); rectf(px - 3, py + 2, 6, 6, hk(HS, .4)); }
+    let endY = -9;
+    for (let i = 0; i < n; i++) {
+      const y = -9 + i * step, g = i === n - 1 ? grow : 1;
+      const Rl = mmul(R0, i % 2 ? rot3(0, Math.PI / 2, Math.PI / 2) : rot3(Math.PI / 2, 0, 0));
+      drawMesh(LINK, mmul(Rl, rot3(0, 0, t * .3)), [R0[1] * y + X, R0[4] * y, Z], { at: RC, amb: .3, spec: .7, scale: g });
+      endY = y + step * g;
+    }
+    const by = endY + 2.2;
+    drawMesh(BERRY, mmul(R0, rot3(Math.PI, t * 1.4, 0)), [R0[1] * by + X, R0[4] * by, Z], { at: RB, amb: .3, spec: .5, gouraud: true });
+    const [bx, byS] = proj(R0[1] * by + X, R0[4] * by, Z);
+    for (let i = 0; i < 26; i++) { const a = hash(i) * TAU, rr = Math.sqrt(hash(i + 40)); pset(bx + Math.cos(a + t * 1.4) * rr * 30, byS + Math.sin(a) * rr * 34 - 4, hk(HO, .95)); }
+    for (let i = 0; i < 5; i++) { const a = -Math.PI / 2 + (i - 2) * .5; polyf([[bx, byS - 38], [bx + Math.cos(a - .3) * 20, byS - 34], [bx + Math.cos(a) * 34, byS - 26 + Math.abs(i - 2) * 3], [bx + Math.cos(a + .3) * 20, byS - 30]], rk(RA, .55 + .1 * (i % 2))); }
+    text8('o1-preview', LX, LY, hk(HS, .45));
+    const Q = ['How many', "r's are in", '"strawberry"?'], tA = wt(s, 2);
+    let left = Math.floor(clamp((lt - .02) / .4) * Q.join(' ').length);
+    Q.forEach((q, i) => { if (left > 0) text8(q, LX, 106 + i * 20, WHITE, { sc: 2, n: left }); left -= q.length + 1; });
+    if (t < tA) { if (lt > .34) text8('Thinking' + '.'.repeat(1 + Math.floor(t * 4) % 3), LX, 178, hk(HS, .5), { sc: 2 }); }
+    else {
+      const a = t - tA;
+      bigText('3', LX + 30, 170 - Math.round(Math.exp(-a * 16) * 12), { s: 8, ramp: RB + 36, align: 'center', grad: 'chrome', shadow: 10 });
+      let x = LX; const rs = [2, 7, 8];
+      [...'STRAWBERRY'].forEach((c, i) => {
+        const k = rs.indexOf(i), lit = k >= 0 && a > k * .07;
+        x += bigText(c, x, 246 - (lit && a - k * .07 < .1 ? 4 : 0), { s: 3, ramp: lit ? RB + 36 : HS, grad: lit ? 'chrome' : 'flat', shadow: 6, level: lit ? 1 : .55 }).w + 1;
+      });
+    }
+  });
+
+  // V1.14: the bill, a portrait page already, spins in to fill the screen; VETO slams over it; the governor's cursor under it.
+  vshot('V1.14', (p, lt, d, t, s) => {
+    setRamp(RA, [BG, '#1c2034', '#5a6078', '#b8bccc', '#f4f2ea']); setRamp(RB, RAMPS.gold);
+    copperSky(RB, .14, .02);
+    const tV = wordT(s, 1), inK = easeOut(clamp(lt / .35)), out = t > tV + .55 ? easeIn(clamp((t - tV - .55) / .45)) : 0;
+    rotozoom(BILL(), { at: RA, angle: (1 - inK) * 4 + out * 3 - .06, zoom: lerp(.3, 1.4, inK) * (1 - out * .8), u: 128, v: 128, cx: SW / 2 - out * 170, cy: 284 - out * 140, transparent: true, wrap: false });
+    if (t >= tV && out < .8) {
+      const age = t - tV;
+      bigText('VETO', SW / 2 - out * 170, 252 - Math.round(Math.exp(-age * 16) * 30) - out * 140, { s: 8, ramp: HM, align: 'center', grad: 'chrome', shadow: 12 });
+      if (age < .08) flash(.2);
+    }
+    text8('GOV >', SW / 2 - 40, 462, hk(HS, .6), { sc: 2 }); rectf(SW / 2 + 40, 462, 12, 16, WHITE);
+  });
+
+  // V1.15: the gold medal spinning big over the sunburst, NOBEL under it; on "scolds" it stops dead, red, a warning beside it.
+  vshot('V1.15', (p, lt, d, t, s) => {
+    const tS = wordT(s, 4), stop = t >= tS, red = stop ? clamp((t - tS) / .12) : 0;
+    setRamp(RA, [BG, lerpHex('#1a1206', '#2a0404', red), lerpHex('#4a3208', '#7a0a0a', red), lerpHex('#a8741a', '#d02020', red), lerpHex('#f0c860', '#ff8a70', red), '#fffbe8']);
+    setRamp(RB, RAMPS.night);
+    copperSky(RB, .3, .02);
+    sunburst(t, RB, { n: 24, cx: SW / 2, cy: 280, spin: stop ? 0 : .08, lo: .06, hi: .2, fall: 460 });
+    const spin = stop ? (tS - s.start) * 5.2 : lt * 5.2;
+    drawMesh(MEDAL, rot3(Math.PI / 2, 0, 0), [0, 0, 0], { cull: false, scale: 0 });
+    drawMesh(MEDAL, mmul(rot3(0, spin, 0), rot3(Math.PI / 2, 0, 0)), [0, -2.2, 16], { at: RA, gouraud: true, spec: .8, amb: .25 });
+    bigText('NOBEL', SW / 2, 404, { s: 4, ramp: HO, align: 'center', grad: 'chrome', shadow: 8 });
+    if (stop) {
+      const k = .6 + .4 * kick8(t, 4), cx = 292, cy = 186, r = 30;
+      polyf([[cx, cy - r], [cx + r * .95, cy + r * .7], [cx - r * .95, cy + r * .7]], rk(RA, .95 * k));
+      polyf([[cx, cy - r + 9], [cx + r * .7, cy + r * .55], [cx - r * .7, cy + r * .55]], BLACK);
+      rectf(cx - 3, cy - 11, 6, 19, rk(RA, .95 * k)); rectf(cx - 3, cy + 11, 6, 6, rk(RA, .95 * k));
+    }
+  });
+
+  // V1.16: the chain of 150 bobs hangs straight down the screen, then folds into AlphaFold's helices and sheets.
+  vshot('V1.16', (p, lt, d, t, s) => {
+    setRamp(RA, [BG, '#061a52', '#0b4ad0', '#57a8ff', '#c8e6ff']); setRamp(RB, [BG, '#3a2a04', '#b07a08', '#ffc41a', '#ffe68a']); setRamp(RC, [BG, '#401404', '#b04410', '#ff7a2a', '#ffc49a']);
+    cls(0);
+    starfield(t, { at: RA, speed: .04, n: 140 });
+    CAM.cy = 316;
+    const k = easeInOut(clamp((lt - .1) / (d * .7)));
+    const pts = FOLD.map((q, i) => {
+      const f = clamp(k * 1.6 - (i / FOLD.length) * .6), at = q.conf > .8 ? RA : q.conf > .45 ? RB : RC;
+      return [lerp(Math.sin(i * .4 + t * 3) * .15, q.fold[0], f), lerp(-12.5 + i * 25 / FOLD.length, q.fold[1], f), lerp(0, q.fold[2], f), .46, at];
+    });
+    const R = rot3(.2, t * .8, 0);
+    const P = pts.map(q => { const X = R[0] * q[0] + R[1] * q[1] + R[2] * q[2], Y = R[3] * q[0] + R[4] * q[1] + R[5] * q[2], Z = R[6] * q[0] + R[7] * q[1] + R[8] * q[2] + 22; return proj(X, Y, Z); });
+    for (let i = 0; i + 1 < P.length; i++) lineP(P[i][0], P[i][1], P[i + 1][0], P[i + 1][1], hk(HS, .3));
+    bobs3D(pts, R, [0, 0, 22], { r: 1, fog: [16, 30] });
+    bigText('ALPHAFOLD', LX, LY + 2, { s: 3, ramp: HC, grad: 'chrome', shadow: 8 });
+  });
+
 })();
 
 ;
@@ -2505,9 +3218,10 @@ function drawPortrait(x, y, o = {}) {
   const KEXP = 6.5, UMAX = 1.25;   // (past u = 1 the curve leaves its chart: that's the break-out)
   const _curves = new Map();
   // The exponential in a chart rectangle R = [x0, yAxis, x1, yTop], as a polyline with arc lengths; L is the arc length at u = 1.
-  function curveOf(R) {
-    const key = R.join(); let C = _curves.get(key); if (C) return C;
-    const [x0, y0, x1, y1] = R, at = u => [x0 + u * (x1 - x0), y0 - (Math.exp(KEXP * u) - 1) / (Math.exp(KEXP) - 1) * (y0 - y1)];
+  // (kx: how steeply it climbs; a tall chart takes a gentler one, so that its words climb across it rather than up its edge)
+  function curveOf(R, kx = KEXP) {
+    const key = R.join() + '|' + kx; let C = _curves.get(key); if (C) return C;
+    const [x0, y0, x1, y1] = R, at = u => [x0 + u * (x1 - x0), y0 - (Math.exp(kx * u) - 1) / (Math.exp(kx) - 1) * (y0 - y1)];
     const P = [], n = 640; let s = 0, L = 0;
     for (let i = 0; i <= n; i++) { const u = i / n * UMAX, p = at(u); if (i) s += Math.hypot(p[0] - P[i - 1][0], p[1] - P[i - 1][1]); P.push([p[0], p[1], s]); if (u <= 1) L = s; }
     C = { R, P, L }; _curves.set(key, C);
@@ -2523,10 +3237,11 @@ function drawPortrait(x, y, o = {}) {
   // The arc length where the curve first rises to height y.
   function arcAtY(C, y) { const p = C.P.find(q => q[1] <= y); return p ? p[2] : C.P.at(-1)[2]; }
   // The chart: a faint grid, the years across, and its label.
-  function chart(R, lv = 1) {
+  // (step: the years between labels, 2 or, on a narrow chart, 4)
+  function chart(R, lv = 1, step = 2) {
     const [x0, y0, x1, y1] = R;
     for (let i = 0; i <= 6; i++) { const y = Math.round(y0 - i / 6 * (y0 - y1)); for (let x = x0; x <= x1; x += 2) pset(x, y, hk(HM, (i ? .2 : .55) * lv)); }
-    for (let yr = 2010; yr <= 2026; yr += 2) {
+    for (let yr = 2010; yr <= 2026; yr += step) {
       const x = Math.round(x0 + (yr - 2010) / 16 * (x1 - x0));
       for (let y = y1; y <= y0; y += 2) pset(x, y, hk(HM, .2 * lv));
       for (let y = y0; y <= y0 + 3; y++) pset(x, y, hk(HM, .55 * lv));
@@ -2696,6 +3411,107 @@ function drawPortrait(x, y, o = {}) {
     hudBand();
     softmaxBars(t, 40, 350, SW - 80, 54);
   });
+
+  // ===============================================================================================
+  // THE VERTICAL VIDEO (VERTICAL.md): her lines are the captions: they build row by row with their foot on the captions' line
+  // (VL.y1), the picture over them; her bars are the bottom fifth's picture (VBASE, where the modern engine's HUD sits too:
+  // VMOD.hud), the screen darkening behind them. The curve stands tall, so its steep end is most of the chart and "gaining" climbs
+  // it; on "contain" it bursts up through the border's top.
+  // ===============================================================================================
+  const VBASE = 624, VBH = 48;
+  // (a scrim that fades in from nothing and runs to the screen's foot: no edge across the picture)
+  function vhudBand() { for (let y = 520; y < SH; y++) shadeRect(0, y, SW, 1, Math.round(lerp(0, 36, clamp((y - 520) / 50)))); }
+  const VR2 = [34, 470, 326, 100], VR4 = [40, 482, 318, 128], VWY0 = 118;
+  // (a slam's rows centred so that the last one's foot is on the captions' line)
+  const footY = (rows, s, lead = 6) => VL.y1 - 2 - rows * (8 * s + lead) / 2;
+  vshot('C1', (p, lt, d, t, s) => {
+    hideDate();
+    const L = linesOf('C1'), [l1, l2, l3, l4] = L;
+    const w2 = words(l2)[0].t0, w3 = words(l3)[0].t0, w4 = words(l4)[0].t0, deep = words(l4).at(-1).t1;
+    setRamp(RA, RAMPS.magenta); setRamp(RB, RAMPS.cyan); setRamp(RC, MAG_CHROME);
+
+    if (t < w2 - .02) {
+      // "We didn't start the": two rows high up; on "scaling" the voxel logo spins up out of the plasma under them
+      plasma(t, RA, { alt: RB, cycle: t * .5, scale: 1.2 });
+      shadeRect(0, 0, SW, SH, 20);
+      const ws = words(l1), tS = ws[4].t0;
+      slam(l1, t, { s: 4, y: footY(2, 4), breaks: [2], ramp: HM, upto: 3, maxW: SW - 30 });
+      if (t >= tS) {
+        const a = t - tS, z = lerp(14, 50, easeOut(clamp(a / .35)));
+        flash(clamp(1 - a / .2) * .5);
+        CAM.cy = 270;
+        drawMesh(textMesh('SCALING', 5), rot3(-.18 + Math.sin(t * 2) * .12, Math.sin(t * 1.6) * .55 + (1 - easeOut(clamp(a / .5))) * 3, 0), [0, 0, z], { at: RC, amb: .35, spec: .5, vshade: letterShade });
+      }
+    } else if (t < w3 - .02) {
+      // "It was always training, and the curves kept gaining": the chart stands tall; her words ride the curve up its steep end
+      plasma(t, RA, { alt: RB, cycle: t * .5, scale: .8 });
+      shadeRect(0, 0, SW, SH, 18);
+      const [x0, y0, x1, y1] = VR2;
+      shadeRect(x0 - 14, y1 - 14, x1 - x0 + 28, y0 - y1 + 32, 40);
+      hspan(x0 - 14, x1 + 14, y1 - 14, hk(HM, .5)); hspan(x0 - 14, x1 + 14, y0 + 17, hk(HM, .5));
+      chart(VR2, 1, 4);
+      rideWords(t, curveOf(VR2, 4.2), l2);
+    } else if (t < w4 - .02) {
+      // the hook again: a word to a row, five rows slamming in down the screen
+      plasma(t, RA, { alt: RB, cycle: t * .9, scale: 1.4 });
+      // (her rows' scrim fades in over 40 rows and runs on down into the bars' band, so it draws no line across the plasma)
+      shadeRect(0, 0, SW, SH, 16);
+      for (let y = VL.y1 - 330; y < SH; y++) shadeRect(0, y, SW, 1, Math.round(22 * clamp((y - (VL.y1 - 330)) / 40)));
+      const k = wordAt(l3, t), ws = words(l3);
+      if (k >= 0) { slam(l3, t, { s: 6, y: footY(5, 6), breaks: [1, 2, 3, 4], ramp: HM, maxW: SW - 20 }); flash(clamp(1 - (t - ws[k].t0) / .1) * .25); }
+    } else if (t < deep) {
+      // "No, we didn't preordain it, but we can't contain it!": the tall chart in a window, the curve's tip against the border's
+      // top; on "can't" the edge strains, on "contain" the curve bursts up through it and the picture breaks out into the border
+      const ws = words(l4), tCant = ws[7].t0, tCont = ws[8].t0, br = easeOut(clamp((t - tCont) / .35));
+      const C = curveOf(VR4), cr = t >= tCant ? clamp((t - tCant) / (tCont - tCant)) : 0;
+      const sh = cr > 0 && br < 1 ? Math.round(Math.sin(t * 90) * 3 * cr) : 0;
+      const wx0 = lerp(22, -8, br) + sh, wy0 = lerp(VWY0, -8, br), wx1 = lerp(SW - 22, SW + 8, br) + sh, wy1 = lerp(518, SH + 8, br);
+      plasma(t, RA, { alt: RB, cycle: t * .6, scale: 1.3 });
+      shadeRect(0, 0, SW, SH, 34);
+      chart(VR4, .9, 4);
+      const aEdge = arcAtY(C, VWY0 + 2), out = t >= tCont ? easeIn(clamp((t - tCont) / .3)) : 0;
+      glowCurve(t, C, out > 0 ? lerp(aEdge, C.P.at(-1)[2], out) : lerp(C.L, aEdge, cr));
+      slam(l4, t, { s: 3, x: 168, y: 250, breaks: [2, 3, 5, 7, 8], ramp: HM, maxW: 260 });
+      setRamp(RC, [BG, '#1c1a5e', '#3a36a8', '#7a74e8', '#c8c4ff', '#ffffff']);
+      const tx = atArc(C, aEdge)[0];
+      if (br < 1) {
+        const top = new Float32Array(SW);
+        for (let x = 0; x < SW; x++) top[x] = wy0 - (br > 0 ? 0 : cr * 10 * Math.exp(-(((x - tx) / 12) ** 2)));
+        for (let y = 0; y < SH; y++) {
+          const c = rk(RC, .4 + .25 * Math.max(0, Math.sin(y * .09 - t * 7)) ** 6), row = y * SW;
+          if (y < wy0 - 12 || y >= wy1) { hspan(0, SW, y, c); continue; }
+          hspan(0, wx0, y, c); hspan(wx1, SW, y, c);
+          if (y < wy0) for (let x = Math.max(0, Math.ceil(wx0)); x < Math.min(SW, wx1); x++) if (y < top[x]) FB[row + x] = c;
+        }
+        if (cr > 0 && br === 0) for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + (hash2(i, Math.floor(t * 24)) - .5) * 2.4, r = 3 + hash2(i + 7, Math.floor(t * 24)) * 16 * cr; pset(tx + Math.cos(a) * r, wy0 - 8 * cr + Math.sin(a) * r, i % 3 ? WHITE : hk(HM, .9)); }
+      }
+      if (t >= tCont) {
+        const a = t - tCont, rr = a * 560;
+        if (a < .35) for (let i = 0; i < 90; i++) { const q = i / 90 * TAU; pset(tx + Math.cos(q) * rr * .6, VWY0 + Math.sin(q) * rr, a < .2 ? WHITE : hk(HM, .8)); }
+        for (let i = 0; i < 64; i++) {
+          const vx = (hash(i) - .5) * 300, vy = -120 - hash(i + 40) * 420, x = tx + vx * a, y = VWY0 + vy * a + 640 * a * a;
+          if (y > SH) continue;
+          const sz = 3 + Math.floor(hash(i + 80) * 6);
+          rectf(x, y, sz, sz, i % 5 ? rk(RC, .45 + .35 * hash(i + 3)) : WHITE); hspan(x, x + sz, y, rk(RC, .95));
+        }
+        flash(clamp(1 - a / .2) * .3); PFX.pump = kick8(t, 5) * 1.6;
+      }
+    } else {
+      // "Deep, deep, deep…": the stutters stack down the blue tunnel into DeepSeek
+      setRamp(RA, RAMPS.blue);
+      const hits = [72.82, 73.26, 73.68, 73.90, 74.12, 74.33, 74.55];
+      let n = -1; hits.forEach((h, i) => { if (t >= h) n = i; });
+      tunnel(t, texCached('deep', () => { const T = tex(); for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) T.px[y * 256 + x] = ((x >> 5) + (y >> 5)) & 1 ? 10 : 22; for (let i = 0; i < 8; i++) texText(T, 'DEEP', 4 + (i & 1) * 128, i * 32 + 12, 2, 50); return T; }), { at: RA, speed: 1.5 + Math.max(0, n) * .8, spin: .1, cy: -44 });
+      if (n >= 0) {
+        const age = t - hits[n];
+        for (let j = 0; j <= n; j++) { const r = n - j; bigText('DEEP', SW / 2, 248 - r * 13 + (r ? 0 : Math.round(Math.exp(-age * 14) * 12)), { s: [8, 6, 4, 3, 2, 2, 1, 1][r], ramp: HC, align: 'center', grad: 'chrome', shadow: r ? 4 : 12, level: 1 - r * .11 }); }
+        flash(clamp(1 - age / .08) * .35);
+      }
+    }
+    vhudBand();
+    softmaxBars(t, 20, VBASE, SW - 40, VBH, { rollN: 16 });
+  });
+
 })();
 
 ;
@@ -2741,6 +3557,9 @@ function drawPortrait(x, y, o = {}) {
     cls(0); starfield(t, { at: RB, speed: .2 });
   };
   for (const s of SEGS) if (!SHOTS[s.key]) SHOTS[s.key] = (p, lt, d, t, seg) => GENERIC(t, seg);
+  // In the vertical video, a window without a vertical shot (vshot()) shows its horizontal one through landscapeFB() (kit.js): the
+  // middle of the landscape screen scaled to fill the portrait one's height, a stand-in while the vertical video is being made.
+  if (VERT) for (const s of SEGS) if (!VSHOTS[s.key]) { const h = SHOTS[s.key]; VSHOTS[s.key] = Object.assign((...a) => landscapeFB(() => h(...a)), { standIn: true }); }
 })();
 
 ;
@@ -2956,6 +3775,8 @@ out vec4 oC;
 uniform vec2 uRes;
 uniform float uT, uFx, uSeed;
 uniform vec3 uRo, uTa; uniform float uFov, uRoll;
+// (the lens shifted, in frame heights: the vertical video's verse pictures sit lower in the frame, F.lens; (0, 0) otherwise)
+uniform vec2 uLens;
 uniform vec3 uSkyA, uSkyB, uAcc; uniform float uFogD;
 uniform float uFloorOn, uGrid, uFloorMode, uFloorTile, uWater; uniform vec3 uFloorCol, uFloorCol2; uniform vec2 uFloorOff;
 uniform float uSkyMode, uSkyK, uSkyT; uniform vec3 uSkyC;
@@ -3541,7 +4362,7 @@ vec3 volumetric(vec3 ro, vec3 rd, float tMax, vec2 fc) {
 // reached, the depth in its alpha channel (400 for the sky, where the scene pass marches 40).
 uniform sampler2D uDepth;
 void main() {
-  vec2 fc = vUV * uRes, p = (fc - .5 * uRes) / uRes.y;
+  vec2 fc = vUV * uRes, p = (fc - .5 * uRes) / uRes.y + uLens;
   vec3 f = normalize(uTa - uRo), r = normalize(cross(f, vec3(0, 1, 0))), u = cross(r, f);
   float cr = cos(uRoll), sr = sin(uRoll);
   vec2 q = vec2(p.x * cr - p.y * sr, p.x * sr + p.y * cr);
@@ -3551,7 +4372,7 @@ void main() {
 }
 #else
 void main() {
-  vec2 fc = vUV * uRes, p = (fc - .5 * uRes) / uRes.y;
+  vec2 fc = vUV * uRes, p = (fc - .5 * uRes) / uRes.y + uLens;
   vec3 f = normalize(uTa - uRo), r = normalize(cross(f, vec3(0, 1, 0))), u = cross(r, f);
   float cr = cos(uRoll), sr = sin(uRoll);
   vec2 q = vec2(p.x * cr - p.y * sr, p.x * sr + p.y * cr);
@@ -3736,6 +4557,8 @@ in vec2 vUV; out vec4 oC;
 uniform sampler2D uScene; uniform sampler2D uBloom; uniform sampler2D uUI; uniform sampler2D uVol;
 uniform float uBloomK, uFx, uCA, uGrain, uVig, uSeed, uExposure, uFlash, uFlareK, uSat, uDof, uFocus, uVolK, uCompose;
 uniform vec2 uSceneRes, uFlare; uniform vec3 uFlareCol, uFlashCol;
+// (the frame's shape against the landscape one's: (1, 1), or (256 / 81, 1) for the vertical video's 9:16)
+uniform vec2 uAspK;
 // (loops from ZERO, as in the scene shader, so that the HLSL compiler keeps them loops)
 uniform int uZero;
 #ifndef ZERO
@@ -3760,7 +4583,7 @@ void main() {
       // ANGLE's HLSL run the whole depth of field on every pixel, whether it was on or not)
       for (int i = ZERO; i < 24; i++) {
         float a = float(i) * 2.39996, r = sqrt((float(i) + .5) / 24.);
-        vec2 o = vec2(cos(a), sin(a)) * r * coc * vec2(9. / 16., 1.);
+        vec2 o = vec2(cos(a), sin(a)) * r * coc * (vec2(9. / 16., 1.) * uAspK);
         vec4 sm = textureLod(uScene, uv + o, 0.);
         float sc = min(.016, uDof * abs(sm.a - uFocus) / max(sm.a, .05)), w = smoothstep(r * coc * .6, r * coc, sc + .0004);
         acc += sm.rgb * w; ws += w;
@@ -3773,7 +4596,7 @@ void main() {
   c += texture(uBloom, uv).rgb * uBloomK;
   // a 90s lens flare: rings and hexes strung from the light through the centre
   if (uFlareK > 0.) {
-    vec2 asp = vec2(16. / 9., 1.);
+    vec2 asp = vec2(16. / 9., 1.) / uAspK;
     for (int i = ZERO; i < 6; i++) {
       float f = float(i) / 5. * 1.6 - .2;
       vec2 pos = mix(uFlare, vec2(1) - uFlare, f);
@@ -4552,7 +5375,7 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
   // draw only.
   const pages = [], ATLAS = new Map();   // (key → {page, x, y, w, h, o, a0} or, in a texture of its own, {tex, …})
   let tick = 0, bigBytes = 0;
-  const stats = { own: 0, rasters: 0, evictions: 0 }, recent = [];   // (and the keys of the sprites made lately, for looking into what a frame uploads)
+  const stats = { own: 0, rasters: 0, evictions: 0, images: 0 }, recent = [];   // (and the keys of the sprites made lately, for looking into what a frame uploads)
   function newPage() {
     const t = gl.createTexture(); upload(t, null, 0, 0, 0, 0, [PAGE, PAGE]); gl.bindTexture(gl.TEXTURE_2D, t); setNearest();
     const P = { tex: t, shelves: [], top: 0, keys: new Set(), last: 0 }; pages.push(P); return P;
@@ -4655,7 +5478,7 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
     const w = img.width | 0, h = img.height | 0;
     if (!w || !h) return null;
     const v = img.__v | 0;
-    if (!r) { r = { tex: gl.createTexture(), w: 0, h: 0, v: -1, id: nextId++, fr: 0 }; IMGS.set(img, r); }
+    if (!r) { r = { tex: gl.createTexture(), w: 0, h: 0, v: -1, id: nextId++, fr: 0 }; IMGS.set(img, r); stats.images++; }
     if (r.w !== w || r.h !== h || r.v !== v) {
       if (r.fr === frameNo && r.w) {
         const tex = gl.createTexture(); upload(tex, img, 0, 0, w, h, [w, h]); frameTemps.push(tex);
@@ -5238,6 +6061,10 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
       L.w = w; L.h = h;
     };
     L.target = () => tgt;
+    // bounds(): what the layer's drawing this frame covers, [x0, y0, x1, y1] in its pixels (y down), outside which its texture is clear;
+    // null if it drew nothing (for a host that composites the layer over just that part of the frame)
+    let box = null;
+    L.bounds = () => L.rec !== recording ? null : box;
     // flush(): the texture the layer's drawing this frame is in (empty if it wasn't drawn on this frame)
     L.flush = () => {
       init();
@@ -5280,6 +6107,14 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
       const unchanged = tgt && tgt.w === L.w && tgt.h === L.h && last && same(U, prev.U) && same(meta, prev.meta) && same(PU, prev.PU) && same(new Uint32Array(PT.buffer), prev.PT);
       prev = { U: U.slice(), meta, PU: PU.slice(), PT: new Uint32Array(PT.buffer) };
       if (unchanged) return;
+      // (the bounds of what's drawn, in the layer's pixels: outside them its target is clear; see L.bounds())
+      let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+      for (const it of items) {
+        const I = inst, o = it.o, x = I[o], y = I[o + 1], ux = I[o + 2], uy = I[o + 3], vx = I[o + 4], vy = I[o + 5];
+        bx0 = Math.min(bx0, x, x + ux, x + vx, x + ux + vx); bx1 = Math.max(bx1, x, x + ux, x + vx, x + ux + vx);
+        by0 = Math.min(by0, y, y + uy, y + vy, y + uy + vy); by1 = Math.max(by1, y, y + uy, y + vy, y + uy + vy);
+      }
+      box = bx0 < bx1 && by0 < by1 ? [Math.max(0, Math.floor(bx0)), Math.max(0, Math.floor(by0)), Math.min(L.w, Math.ceil(bx1)), Math.min(L.h, Math.ceil(by1))] : null;
       // (every sprite the items draw with, looked up, and those not in the atlas made; then each item told where its sprites are)
       const { got, temps } = settle(reqs);
       const skip = new Set();
@@ -5439,7 +6274,15 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
   function makeLayer(...a) { const L = layer(...a); allLayers.push(L); return L; }
   // (called once a frame's layers are drawn: images uploaded for that frame alone go)
   function endFrame() { frameNo++; if (gl) for (const t of frameTemps.splice(0)) gl.deleteTexture(t); }
-  return { layer: makeLayer, endFrame, stats: () => ({ pages: pages.length, sprites: ATLAS.size, ...stats }), recent: () => recent.splice(0) };
+  // forget(img): an image that won't be drawn again (a picture let go of, a canvas freed): its texture goes now, or with the frame's
+  // own if this frame has drawn with it, rather than whenever the image is collected
+  function forget(img) {
+    const r = IMGS.get(img);
+    if (!r) return;
+    IMGS.delete(img);
+    if (r.fr === frameNo) frameTemps.push(r.tex); else gl?.deleteTexture(r.tex);
+  }
+  return { layer: makeLayer, endFrame, forget, stats: () => ({ pages: pages.length, sprites: ATLAS.size, ...stats }), recent: () => recent.splice(0) };
 })();
 
 ;
@@ -5450,29 +6293,45 @@ void main() { vec4 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); oC = c.a > 0
 // card, 3 a 2000s shader demo, 4 a modern 64k intro), with the UI layer (MC Token's scroller, the date, Softmax's HUD, labels) on
 // top, and puts the result on core.js's canvas. Scenes register with mline()/msection() (below). Everything is a pure function of
 // song time. STYLE.md ("The modern engine") has the frame description and the helpers.
+// The vertical frame's layout for the modern engine's overlays (1080 × 1920 units: kit.js's VL, the 1996 part's, three times over):
+// MC Token's scroller's baseline (its scope under it ends at the captions' foot, y ≈ 1600) and reading point (a share of the width)
+// and size, the date plate's top right corner, and Softmax's HUD's left and right ends, baseline, height and how many steps of her
+// melody's trail rise over it: the HUD is the bottom fifth's picture, under the choruses' lyric rows. VERTICAL.md has the zones.
+// lens: how far (in frame heights) a verse line's picture sits lower than its scene composed it: wire.js shifts its 3D picture (F.lens)
+// and its UI together, rigidly, into the room the captions' lowering gave; MOD.VLENS[key] overrides it for a line.
+const VMOD = { scroll: 1542, read: VL.read, size: 60, date: [VL.date[0] * 3, VL.date[1] * 3 - 12], hud: [60, 1020, 1872, 130, 30], lens: 120 / 1920 };
 const MOD = (() => {
-  const LW = 1920, LH = 1080;
+  // LW × LH is the landscape frame the scenes were written in (MOD.LW, MOD.LH); FRW × FRH the frame itself, 1080 × 1920 in the
+  // vertical video (core.js's VERT), where a vertical scene (mvline(), below) draws its UI in that frame's units, and a scene
+  // without one is a stand-in, its UI mapped onto the frame as core.js's landscape() maps a picture (uiLandscape()).
+  const LW = 1920, LH = 1080, FRW = W, FRH = H;
   const RENDER_MODE = HAS_DOM && /[?&]render\b/.test(location.search);   // (a script capturing frames: see modern/canvas.js)
   const SCENES = {};   // key ('V2.5', 'C1', 'intro', 'outro') → scene function (t, seg, E) → F
+  const VSCENES = {};  // (the vertical video's: the same, composed for the 1080 × 1920 frame)
+  const VLENS = {};    // (a vertical verse line's own lens shift, where VMOD.lens doesn't suit it)
   const FONT_T = '"Rubik Mono One"', FONT_M = '"Space Mono"';
   // ---------- 2D layers ----------
   // The UI (the canvas's size) and the three panels, which scenes draw on with the 2D API: draw2d.js records their drawing and draws
   // it with WebGL into textures the GPU samples, from sprites uploaded once, so that a frame uploads only what's new in it. Scenes
   // must draw on them only through what uiBegin() and panel() return, each a context in its default state, emptied: a frame's
   // drawing starts with the UI's, and a panel it doesn't draw on is empty.
-  const UI = D2.layer('ui', LW, LH, { frame: true });
+  const UI = D2.layer('ui', FRW, FRH, { frame: true });
   const PAN = [D2.layer('p0', 2048, 1024, { panel: true }), D2.layer('p1', 1024, 512, { panel: true }), D2.layer('p2', 1024, 512, { panel: true })];   // the panels' three textures (a panel picks one with tex: 0..2)
   let _uiScale = 1;
-  // (an older era's UI is coarser: `scale` is its share of the 1920 × 1080 frame, never more than the canvas has)
+  // (an older era's UI is coarser: `scale` is its share of the 1920 × 1080 frame (or 1080 × 1920), never more than the canvas has)
   function uiBegin(scale) {
-    const w = Math.max(64, Math.round(scale < 1 ? Math.min(canvas.width, LW * scale) : canvas.width * scale)), h = Math.max(36, Math.round(w * canvas.height / canvas.width));
+    const w = Math.max(64, Math.round(scale < 1 ? Math.min(canvas.width, FRW * scale) : canvas.width * scale)), h = Math.max(36, Math.round(w * canvas.height / canvas.width));
     UI.size(w, h);
-    _uiScale = w / LW;
+    _uiScale = w / FRW;
     const g = UI.begin();
     g.setTransform(_uiScale, 0, 0, _uiScale, 0, 0);
     return g;
   }
   const panel = i => PAN[i].begin();
+  // (the vertical video's stand-in for a scene with no vertical one: its UI, drawn in the landscape frame's units, mapped so that
+  // the landscape frame's middle is the vertical frame's and its height fills it, as the 3D picture's does at the same fov)
+  function uiLandscape(g) { const z = FRH / LH, k = _uiScale; g.setTransform(k * z, 0, 0, k * z, k * (FRW / 2 - LW / 2 * z), k * (FRH / 2 - LH / 2 * z)); }
+  const uiFrame = g => g.setTransform(_uiScale, 0, 0, _uiScale, 0, 0);
 
   // ---------- distance-field shapes (extruded in 3D by the scene shader) ----------
   // A mask canvas → an 8-bit signed distance texture (0.5 at the edge, ±RANGE texels at 0 and 1), by an exact Euclidean
@@ -5563,7 +6422,7 @@ const MOD = (() => {
   function project(F, p) {
     const f = norm(sub(F.ta, F.ro)), r = norm(cross(f, [0, 1, 0])), u = cross(r, f), d = sub(p, F.ro);
     const z = dot(d, f); if (z <= 0) return null;
-    return [.5 + dot(d, r) / z * F.fov * LH / LW, .5 + dot(d, u) / z * F.fov];
+    return [.5 + dot(d, r) / z * F.fov * FRH / FRW, .5 + dot(d, u) / z * F.fov];
   }
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   const norm = a => { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
@@ -5602,19 +6461,20 @@ const MOD = (() => {
     _scr.set(key, V);
     return V;
   }
+  // (in the vertical frame it crosses the lower middle, by default: VMOD.scroll, its reading point a little left of centre)
   function scroller(g, sec, t, o = {}) {
-    const size = o.size ?? 58, V = scrollLayout(sec, g, size), read = o.read ?? LW * .42, X = V.X(t) - read, by = o.y ?? 985;
+    const size = o.size ?? (VERT ? VMOD.size : 58), V = scrollLayout(sec, g, size), read = o.read ?? FRW * (VERT ? VMOD.read : .42), X = V.X(t) - read, by = o.y ?? (VERT ? VMOD.scroll : 985);
     let cur = -1; V.toks.forEach((k, i) => { if (!k.sep && k.t0 <= t) cur = i; });
     const amp = o.amp ?? 9, v = vox(t);
     // his scope, under the type
     g.save(); g.strokeStyle = 'rgba(90,230,255,.85)'; g.lineWidth = 2.2; g.beginPath();
     const note = voxNote(t) || 50, fq = .02 + (note - 40) * .0012;
-    for (let x = 0; x <= LW; x += 6) { const env = Math.sin(Math.PI * x / LW), y = by + 34 + v * 26 * env * (Math.sin(x * fq - t * 31) * .6 + Math.sin(x * fq * 2.03 + t * 17) * .3); x ? g.lineTo(x, y) : g.moveTo(x, y); }
+    for (let x = 0; x <= FRW; x += 6) { const env = Math.sin(Math.PI * x / FRW), y = by + 34 + v * 26 * env * (Math.sin(x * fq - t * 31) * .6 + Math.sin(x * fq * 2.03 + t * 17) * .3); x ? g.lineTo(x, y) : g.moveTo(x, y); }
     g.stroke(); g.restore();
     g.save(); g.font = `${size}px ${FONT_T}`; g.textBaseline = 'alphabetic'; g.lineJoin = 'round';
     const sung = chrome(g, by - size, by, ['#ffffff', '#9ef4ff', '#18b8ea', '#0b5c9e']);
     V.toks.forEach((k, i) => {
-      if (k.x1 - X < -40 || k.x0 - X > LW + 40) return;
+      if (k.x1 - X < -40 || k.x0 - X > FRW + 40) return;
       if (k.sep) { const cx = (k.x0 + k.x1) / 2 - X, cy = by - size * .38 + amp * Math.sin(cx * .006 - t * 2.2); g.fillStyle = '#5ae6ff'; g.beginPath(); g.moveTo(cx, cy - 12); g.lineTo(cx + 12, cy); g.lineTo(cx, cy + 12); g.lineTo(cx - 12, cy); g.fill(); return; }
       const state = i < cur ? 0 : i === cur && t < k.t1 + .15 ? 1 : i === cur ? 0 : 2;
       const pop = state === 1 ? Math.exp(-(t - k.t0) * 10) * 10 : 0;
@@ -5633,11 +6493,13 @@ const MOD = (() => {
   function datePlate(g, t) {
     const d = dateSeg(t); if (!d) return;
     const m = d.text.match(/^(.*?)\s*(\d{4})$/), md = m ? m[1] : d.text, yr = m ? m[2] : '', k = easeOut(clamp(d.age / .2));
+    // (top right; in the vertical frame, the top right of what Reels leaves clear: VMOD.date is the plate's top right corner)
+    const [px, py] = VERT ? [VMOD.date[0] - 240, VMOD.date[1]] : [1650, 26];
     g.save();
     g.fillStyle = 'rgba(8,10,22,.62)'; g.strokeStyle = 'rgba(160,200,255,.28)'; g.lineWidth = 1.5;
-    g.beginPath(); g.roundRect(1650, 26, 240, 100, 10); g.fill(); g.stroke();
-    text(g, md, 1866, 62, { size: 26, align: 'right', color: '#9fb4e8' });
-    text(g, yr, 1866, 110 - (1 - k) * 12, { size: 44, font: FONT_T, align: 'right', color: '#ffffff', alpha: .4 + .6 * k });
+    g.beginPath(); g.roundRect(px, py, 240, 100, 10); g.fill(); g.stroke();
+    text(g, md, px + 216, py + 36, { size: 26, align: 'right', color: '#9fb4e8' });
+    text(g, yr, px + 216, py + 84 - (1 - k) * 12, { size: 44, font: FONT_T, align: 'right', color: '#ffffff', alpha: .4 + .6 * k });
     g.restore();
   }
   // Softmax's HUD: her voice as a softmax over pitch, with a note axis, her note named over the peak and her melody's trail rising
@@ -5652,7 +6514,7 @@ const MOD = (() => {
     return c ? s / c : 0;
   }
   function softmaxHUD(g, t, o = {}) {
-    const x0 = o.x0 ?? 150, x1 = o.x1 ?? 1770, base = o.y ?? 1040, hMax = o.h ?? 150, bw = (x1 - x0) / NB, lv = o.level ?? 1;
+    const x0 = o.x0 ?? (VERT ? VMOD.hud[0] : 150), x1 = o.x1 ?? (VERT ? VMOD.hud[1] : 1770), base = o.y ?? (VERT ? VMOD.hud[2] : 1040), hMax = o.h ?? (VERT ? VMOD.hud[3] : 150), bw = (x1 - x0) / NB, lv = o.level ?? 1;
     g.save(); g.globalAlpha = lv;
     // the band: the mix's spectrum, 16 bands spread across
     spectrum(t, spec);
@@ -5674,7 +6536,7 @@ const MOD = (() => {
       text(g, nm === 'C' ? 'C' + (Math.floor(n / 12) - 1) : nm, bx + bw / 2, base + 22, { alpha: lv, size: nm === 'C' ? 17 : 13, align: 'center', color: nm === 'C' ? '#ffd2f0' : 'rgba(255,200,240,.55)' });
     }
     // her melody, as a piano roll rising above the bars: a block per 30th of a second at the note she sang, fading as it rises
-    for (let k = 0; k < 64; k++) {
+    for (let k = 0; k < (o.rollN ?? (VERT ? VMOD.hud[4] : 64)); k++) {
       const tk = t - k / 30, n = voiceNote(tk), a = vox(tk); if (!n || a < .08) continue;
       const bx = x0 + (Math.round(n) - N0) * bw, y = base - hMax * .9 - 16 - k * 4;
       g.fillStyle = `rgba(255,${k ? 110 : 230},${k ? 205 : 245},${(1 - k / 64) * (.35 + .65 * clamp(a * 1.5))})`;
@@ -5911,7 +6773,7 @@ const MOD = (() => {
     // (an older era's picture is its grid in the 1920 × 1080 frame, the 1998 card's 640 × 360, say, but never finer than the
     // canvas has pixels: a player shown small draws at its own size, not a third of it; the 2026 era's is a share of its picture's
     // size, picW())
-    const sw = Math.max(32, Math.round(F.fx > 3.4 ? picW(Wd) * res : Math.min(Wd, LW * res))), sh = Math.max(18, Math.round(sw * Hd / Wd));
+    const sw = Math.max(32, Math.round(F.fx > 3.4 ? picW(Wd) * res : Math.min(Wd, FRW * res))), sh = Math.max(18, Math.round(sw * Hd / Wd));
     const waited = waitForLast();
     // the 2D layers, each drawn into its texture if it was drawn on this frame (the panels first: the UI can draw one)
     const T = {};
@@ -5944,7 +6806,7 @@ const MOD = (() => {
     const L = F.light;
     const U = {
       uRes: [sw, sh], uT: T0, uFx: F.fx, uSeed: (T0 * 60) % 997,
-      uRo: F.ro, uTa: F.ta, uFov: F.fov, uRoll: F.roll,
+      uRo: F.ro, uTa: F.ta, uFov: F.fov, uRoll: F.roll, uLens: [0, F.lens ?? 0],
       uSkyA: hex(F.skyA), uSkyB: hex(F.skyB), uAcc: hex(F.acc), uFogD: F.fog,
       uFloorOn: F.floor ? 1 : 0, uGrid: F.grid, uFloorCol: hex(F.floorCol),
       uFloorMode: { checker: 1, water: 2 }[F.floorMode] ?? 0, uFloorTile: F.floorTile ?? 1, uWater: F.water ?? .06, uFloorCol2: hex(F.floorCol2 ?? '#ffffff'), uFloorOff: F.floorOff ?? [0, 0],
@@ -5983,7 +6845,8 @@ const MOD = (() => {
       GL.pass(GL.program('up'), u1, { uTexel: [1 / u2.w, 1 / u2.h] }, { uHi: b1, uLo: u2 });
       bloom = u1;
     }
-    const fl = F.flarePos ?? [.5, .7];
+    // (a lens shifted down takes the flare down with the picture: flarePos is where MOD.project put the light, unshifted)
+    const fl = F.lens ? [(F.flarePos ?? [.5, .7])[0], (F.flarePos ?? [.5, .7])[1] - F.lens] : F.flarePos ?? [.5, .7];
     // (an older era at reduced resolution shows its pixels: nearest-neighbour up to the screen)
     const pix = F.fx < 3.95 && sw < Wd - 1, gl = GL.gl;
     const filt = (tex, f) => { gl.bindTexture(gl.TEXTURE_2D, tex); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f); };
@@ -5994,7 +6857,7 @@ const MOD = (() => {
     GL.pass(GL.program('final'), pic, {
       uBloomK: E.bloom, uFx: F.fx, uCA: E.ca, uGrain: E.grain, uVig: E.vig, uSeed: (T0 * 60) % 991, uExposure: F.exposure, uFlash: F.flash,
       uFlashCol: hex(F.flashCol ?? '#ffffff').map(v => v ** (1 / 2.2)), uFlareK: E.flare * (F.flare ?? 0), uFlare: fl, uFlareCol: hex(F.flareCol ?? '#ffd9a0'), uSat: E.sat * F.sat, uSceneRes: [sw, sh],
-      uDof: modern && tier < 1 && F.dof ? F.dof.k ?? .02 : 0, uFocus: F.dof?.focus ?? 8, uVolK: vol ? 1 : 0, uCompose: compose ? 1 : 0,
+      uDof: modern && tier < 1 && F.dof ? F.dof.k ?? .02 : 0, uFocus: F.dof?.focus ?? 8, uVolK: vol ? 1 : 0, uCompose: compose ? 1 : 0, uAspK: [FRW > FRH ? 1 : 256 / 81, 1],
     }, { uScene: scene, uBloom: bloom, uUI: T.ui, uVol: vol });
     if (compose) { filt(pic.tex, pix ? gl.NEAREST : gl.LINEAR); GL.pass(GL.program('compose'), null, { uGrain: E.grain, uSeed: (T0 * 60) % 991 }, { uPic: pic, uUI: T.ui }); }
     if (pix) { filt(scene.tex, gl.LINEAR); filt(T.ui.tex, gl.LINEAR); }
@@ -6047,7 +6910,7 @@ const MOD = (() => {
   function picW(Wd) {
     if (RENDER_MODE) return Wd;
     const css = self.STYLE_DPR ? Wd / Math.max(1, self.STYLE_DPR) : HAS_DOM && canvas.clientWidth ? canvas.clientWidth : Wd;
-    return Math.min(Wd, css, LW);
+    return Math.min(Wd, css, FRW);
   }
   let level = 0, tier = 0, resK = 1, usedGL = false, last = null;
   function setLevel(l) { level = clamp(Math.round(l), 0, LEVELS.length - 1); [tier, resK] = LEVELS[level]; }
@@ -6068,12 +6931,16 @@ const MOD = (() => {
     for (let i = 0; i < n; i++) { lastPasses(); GL.sync(); }
     return (performance.now() - a) / n;
   }
-  return { render, presentVGA, warm, prepare, prepareEras, prepared, eraPrograms, oneOffs: () => oneOffs, eraDefines: () => ({ older: defsOf(ERA_FEATURES.older), modern: defsOf(ERA_FEATURES.modern), 'modern god rays': defsOf(volFeatures(ERA_FEATURES.modern)) }), variants: () => variants, defines: (F, tr = null, vol = false) => variantOf({ ...DEF, ...F }, tr, vol), startup: () => ({ warmMs, compileMs, variants: variants.size, compiles: compiles.map(c => ({ key: c.key, ms: c.v.ms ?? null, draw: c.v.drawMs ?? null, at: c.at, by: c.by })) }), setT, gpuBench, setLevel, finish, level: () => level, tier: () => tier, last: () => last, perf: () => perf, project, clawd, bitmap, SCENES, uiBegin, panel, PAN, UI, text, chrome, scroller, datePlate, softmaxHUD, shapeG, shapeText, shapePath, shapeHeart, rotYX, v3, add, sub, mul, mix3, norm, hex, eraMix, ERA, FONT_T, FONT_M, LW, LH };
+  return { render, presentVGA, warm, prepare, prepareEras, prepared, eraPrograms, oneOffs: () => oneOffs, eraDefines: () => ({ older: defsOf(ERA_FEATURES.older), modern: defsOf(ERA_FEATURES.modern), 'modern god rays': defsOf(volFeatures(ERA_FEATURES.modern)) }), variants: () => variants, defines: (F, tr = null, vol = false) => variantOf({ ...DEF, ...F }, tr, vol), startup: () => ({ warmMs, compileMs, variants: variants.size, compiles: compiles.map(c => ({ key: c.key, ms: c.v.ms ?? null, draw: c.v.drawMs ?? null, at: c.at, by: c.by })) }), setT, gpuBench, setLevel, finish, level: () => level, tier: () => tier, last: () => last, perf: () => perf, project, clawd, bitmap, SCENES, VSCENES, VLENS, uiBegin, uiLandscape, uiFrame, panel, PAN, UI, text, chrome, scroller, datePlate, softmaxHUD, shapeG, shapeText, shapePath, shapeHeart, rotYX, v3, add, sub, mul, mix3, norm, hex, eraMix, ERA, FONT_T, FONT_M, LW, LH };
 })();
 // mline('V2', 5, (t, seg, E) => F): the modern scene for verse 2, line 5; msection('C1', fn): for a whole section.
 // E = { fx, res, uiRes }: the era the version draws this window at (return fx: E.fx, res: E.res in F).
 const mline = (sec, n, fn) => { MOD.SCENES[`${sec}.${n}`] = fn; };
 const msection = (key, fn) => { MOD.SCENES[key] = fn; };
+// mvline('V2', 5, fn) and mvsection('C2', fn): the vertical video's scenes, the same but composed for its 1080 × 1920 frame (the UI
+// in that frame's units; the camera's fov is still the frame's height, so the picture is as tall as the landscape one and narrower).
+const mvline = (sec, n, fn) => { MOD.VSCENES[`${sec}.${n}`] = fn; };
+const mvsection = (key, fn) => { MOD.VSCENES[key] = fn; };
 
 ;
 // ---- styles/demoscene/modern/m00_intro.js ----
@@ -7820,7 +8687,7 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     return e0 + (t - t0) * 14;
   }
   const commas = s => s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  function epochCounter(ui, t, x, y, alpha) {
+  function epochCounter(ui, t, x, y, alpha, o = {}) {
     const e = epochExp(t); if (e < 0) return;
     const f = Math.floor(t * 60), n = Math.floor(e + 1e-9) + 1;
     let digits;
@@ -7829,13 +8696,13 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     // (digits whose place turns over faster than ~25 a second blur)
     const de = Math.max(1e-6, (epochExp(t + .01) - e) / .01), fast = Math.floor(e + Math.log10(Math.LN10 * de / 25));
     // (the number shrinks to fit the frame, down to 34 px; past that it wraps, its earlier rows pushed up above it)
-    const str = commas(digits), label = 'EPOCH ', avail = 1920 - 140, chars = label.length + str.length;
+    const str = commas(digits), label = 'EPOCH ', avail = o.avail ?? 1920 - 140, left = o.left ?? 70, big = o.max ?? 64, chars = label.length + str.length;
     ui.save(); ui.globalAlpha = alpha; ui.textBaseline = 'middle';
-    ui.font = `64px ${MOD.FONT_M}`;
-    const size = Math.max(34, Math.min(64, Math.floor(64 * avail / (chars * ui.measureText('0').width))));
+    ui.font = `${big}px ${MOD.FONT_M}`;
+    const size = Math.max(o.min ?? 34, Math.min(big, Math.floor(big * avail / (chars * ui.measureText('0').width))));
     ui.font = `${size}px ${MOD.FONT_M}`;
     const cw = ui.measureText('0').width, perRow = Math.floor(avail / cw), rows = Math.ceil(chars / perRow), lh = size * 1.18;
-    const x0 = rows > 1 ? 70 : Math.max(70, x - chars * cw / 2);
+    const x0 = rows > 1 ? left : Math.max(left, x - chars * cw / 2);
     ui.fillStyle = 'rgba(4,2,12,.78)';
     const pad = (size * 1.44 - lh) / 2, top = y - (rows - 1) * lh - lh / 2 - pad;
     if (rows > 1) ui.fillRect(x0 - 24, top, perRow * cw + 48, (rows - 1) * lh);
@@ -8058,6 +8925,543 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     }
     return F;
   });
+
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (VERTICAL.md): C2, C3 and C4 composed for the 1080 × 1920 frame, as C1's 1996 one is. Her words build in rows
+  // down the frame on glass sheets (the hook a word to a row); the chart stands tall, its curve climbing the right side, and the
+  // camera tilts up it after the tip; every "contain" bursts up through the chart's top and off the top of the frame. Softmax's
+  // HUD is the bottom fifth's picture (wire.js draws it, at VMOD.hud). Her building rows are the captions: capPanel() holds their sheet
+  // in front of the camera with the rows' foot on the captions' line (y ≈ 1590), and each picture's subject keeps above them; the
+  // words that ride a curve or sit in the chart's corner are the picture's own.
+  // =====================================================================================================
+  // A portrait sheet: a panel's 2:1 texture stood on its end, so a tall sheet keeps the texture's full resolution. Its context draws
+  // upright in a virtual canvas VW × VH (by default the texture's own, 1024 × 2048 for tex 0 and 512 × 1024 for 1 and 2; another
+  // shape is squeezed onto it); tall(c, h) is the 1:2 sheet, h its half-width and 2h its half-height, facing down +z, and
+  // tallP(c, hw, hh) one of any shape. vWorld() is a point on it from the virtual canvas, vScreen() a world point on the frame.
+  function portrait(i, VW, VH) { const g = MOD.panel(i), P = MOD.PAN[i]; g.setTransform(0, P.h / (VW ?? P.h), -P.w / (VH ?? P.w), 0, P.w, 0); return g; }
+  const tallP = (c, hw, hh, o = {}) => ({ c, u: [0, hh, 0], v: [-hw, 0, 0], ...o });
+  const tall = (c, h, o = {}) => tallP(c, h, 2 * h, o);
+  const vWorld = (P, x, y, VW = P.vw ?? 1024, VH = P.vh ?? 2048) => add(add(P.c, mul(P.u, 1 - y / (VH / 2))), mul(P.v, 1 - x / (VW / 2)));
+  const vScreen = (F, p) => { const q = MOD.project(F, p); return q && [q[0] * W, (1 - q[1]) * H]; };
+  // a landscape sheet (1024 × 512), h its half-width
+  const wide = (c, h, o = {}) => ({ c, u: [h, 0, 0], v: [0, h / 2, 0], ...o });
+  // Her words in rows down a sheet (rows: word indices; a row shows once its first word is sung), each centred on x, the rows
+  // `pitch` apart about cy, all at one size: `size`, or less, so that the widest of the rows (or of o.fit's) fits maxW. The newest
+  // word's row is chrome and pops; the rest her pink. Returns the word being sung.
+  // (rowsFoot: the last call's rows' foot, in its sheet's pixels, for capPanel())
+  let rowsFoot = 0;
+  function vrows(g, t, ws, rows, o) {
+    const cur = curOf(ws, t), str = r => r.map(i => ws[i].w.toUpperCase()).join(' ');
+    g.save(); g.font = `100px ${MOD.FONT_T}`;
+    const widest = Math.max(...(o.fit ?? rows).map(r => g.measureText(str(r)).width));
+    const size = Math.min(o.size, o.maxW / widest * 100), pitch = o.pitch ?? size * 1.14, y0 = o.cy - (rows.length - 1) / 2 * pitch;
+    rowsFoot = y0 + (rows.length - 1) * pitch + size * .55;
+    g.font = `${size}px ${MOD.FONT_T}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    rows.forEach((r, li) => {
+      const shown = r.filter(i => i <= cur && ws[i].w !== '—'); if (!shown.length) return;
+      const now = r.includes(cur), pop = now ? Math.exp(-(t - ws[cur].t0) * 12) : 0, s = str(shown), y = y0 + li * pitch - pop * size * .12;
+      g.lineWidth = size * .12; g.strokeStyle = 'rgba(25,0,20,.9)'; g.strokeText(s, o.x, y);
+      g.fillStyle = now ? MOD.chrome(g, y - size / 2, y + size / 2, o.chrome ?? MAGC) : (o.dim ?? '#ff9ad8'); g.fillText(s, o.x, y);
+    });
+    g.restore();
+    return cur;
+  }
+  // capPanel(F, kind, tex, footTex, hw, o): the captions' sheet, a wide() (1024 × 512) or tall() (1024 × 2048, stood on end) one,
+  // held in front of F's camera at depth o.z (2.6), level whatever its roll, centred across the frame, hw UI units half-wide, so
+  // that its row footTex (the rows' foot, rowsFoot) lands on the frame's row o.foot (the captions' line, CAP_FOOT). The rest of o
+  // is the panel's (alpha, gain, glass).
+  const CAP_FOOT = VL.y1 * 3 - 10;
+  const crs = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  function capPanel(F, kind, tex, footTex, hw, o = {}) {
+    const { z = 2.6, foot = CAP_FOOT, ...rest } = o, fov = F.fov ?? 1.6, f = MOD.norm(MOD.sub(F.ta, F.ro)), r0 = MOD.norm(crs(f, [0, 1, 0])), u0 = crs(r0, f);
+    const cr = Math.cos(F.roll ?? 0), sr = Math.sin(F.roll ?? 0), r = add(mul(r0, cr), mul(u0, sr)), u = add(mul(r0, -sr), mul(u0, cr));
+    const cy = foot - (footTex - (kind === 'wide' ? 256 : 1024)) * hw / 512, w = z / fov / H;
+    const c = add(add(F.ro, mul(f, z)), mul(u, (H / 2 - cy) * w));
+    return kind === 'wide' ? { c, u: mul(r, hw * w), v: mul(u, hw * w / 2), tex, ...rest } : { c, u: mul(u, 2 * hw * w), v: mul(r, -hw * w), tex, ...rest };
+  }
+
+  // The tall chart, on tex 0 stood on end (VCW × VCH, 1024 × 2048), for her words to ride: the curves' box VX0…VX1 × VY0 (its
+  // foot) … VY1; and the chart seen whole (SQ: 1024 × 1060, squeezed onto it), which fills the frame's width above Softmax's HUD.
+  // vchart() draws either (o.box, o.size; the tall one by default): years along the foot, a square grid, the frame round the
+  // canvas (red as it strains, broken where a curve got out), and the curves as chart()'s.
+  const VX0 = 80, VX1 = 950, VY0 = 1960, VY1 = 90, VCW = 1024, VCH = 2048;
+  const vpoly = (k, o = {}) => poly({ k, x0: VX0, x1: VX1, y0: VY0, y1: VY1, ...o });
+  const SQ = { size: [1024, 1060], box: [90, 960, 940, 70] }, sqpoly = (k, o = {}) => poly({ k, x0: SQ.box[0], y0: SQ.box[1], x1: SQ.box[2], y1: SQ.box[3], ...o });
+  // (its sheet: hw its half-width; it carries its canvas's size for vWorld())
+  const sqSheet = (c, hw, o = {}) => tallP(c, hw, hw * SQ.size[1] / SQ.size[0], { vw: SQ.size[0], vh: SQ.size[1], ...o });
+  const sqCanvas = () => portrait(0, ...SQ.size);
+  function vchart(g, t, o) {
+    const th = THEME[o.theme ?? 'c3'], [VCW, VCH] = o.size ?? [1024, 2048], [VX0, VY0, VX1, VY1] = o.box ?? [80, 1960, 950, 90];
+    g.fillStyle = th.bg; g.fillRect(0, 0, VCW, VCH);
+    g.lineWidth = 2;
+    for (let yr = 2010; yr <= 2026; yr += 2) {
+      const x = VX0 + (yr - 2010) / 16 * (VX1 - VX0);
+      g.strokeStyle = th.grid; g.beginPath(); g.moveTo(x, VY1 - 20); g.lineTo(x, VY0); g.stroke();
+      if (yr % 4 === 2) text(g, String(yr), x, VY0 + 50, { size: 34, align: 'center', color: th.label });
+    }
+    g.globalAlpha = .7;
+    const rows = Math.round((VY0 - VY1) / ((VX1 - VX0) / 8));
+    for (let i = 0; i <= rows; i++) { const y = VY0 - i / rows * (VY0 - VY1); g.strokeStyle = th.grid; g.beginPath(); g.moveTo(VX0, y); g.lineTo(VX1, y); g.stroke(); }
+    g.globalAlpha = 1;
+    const st = o.strain ?? 0;
+    g.lineWidth = 10; g.strokeStyle = st ? `rgba(255,${Math.round(90 - 60 * st)},90,${.6 + .4 * st})` : th.frame;
+    g.beginPath();
+    if (o.broken === 'corner') { g.moveTo(VCW - 230, 5); g.lineTo(5, 5); g.lineTo(5, VCH - 5); g.lineTo(VCW - 5, VCH - 5); g.lineTo(VCW - 5, 330); }
+    else if (o.broken) { const bx = o.broken; g.moveTo(bx - 60, 5); g.lineTo(5, 5); g.lineTo(5, VCH - 5); g.lineTo(VCW - 5, VCH - 5); g.lineTo(VCW - 5, 5); g.lineTo(Math.min(VCW - 5, bx + 52), 5); }
+    else g.rect(5, 5, VCW - 10, VCH - 10);
+    g.stroke();
+    if (o.broken && o.broken !== 'corner') {
+      g.lineWidth = 3; g.strokeStyle = 'rgba(255,220,245,.55)';
+      for (let i = 0; i < 7; i++) {
+        let x = o.broken + (hash(i * 5 + 1) - .5) * 40, y = 7, a = Math.PI * (.15 + .7 * hash(i * 5 + 2));
+        g.beginPath(); g.moveTo(x, y);
+        for (let j = 0; j < 4; j++) { const l = 30 + 60 * hash2(i, j); a += (hash2(j, i + 9) - .5) * .9; x += Math.cos(a) * l; y += Math.sin(a) * l; g.lineTo(x, y); }
+        g.stroke();
+      }
+    }
+    const tips = [];
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    for (const c of o.curves ?? []) {
+      const end = Math.min(c.arc, c.P.len), cols = c.cols ?? MAGLINE, w = c.w ?? 1;
+      [[30, 0], [13, 1], [5, 2]].forEach(([lw, ci]) => {
+        g.lineWidth = lw * w; g.strokeStyle = cols[ci]; g.beginPath();
+        for (const p of c.P) { if (p[2] > end) break; p[2] ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); }
+        const tp = atArc(c.P, end); g.lineTo(tp[0], tp[1]); g.stroke();
+      });
+      const tip = atArc(c.P, end);
+      if (c.dot !== false) { g.fillStyle = '#fff'; g.beginPath(); g.arc(tip[0], tip[1], (14 + 6 * kick(t, 6)) * w, 0, TAU); g.fill(); }
+      tips.push(tip);
+    }
+    return tips;
+  }
+  // (a curve's word-by-word growth, as the horizontal choruses have it: the tip runs `ahead` past the last sung word's last letter)
+  function growArc(P, R, ws, t, tFrom, ahead) {
+    const cur = curOf(ws, t), endOf = i => i === ws.length - 1 ? P.len : i < 0 ? 110 : R.filter(c => c.wi <= i).at(-1).s + ahead;
+    return lerp(cur < 1 ? 40 : endOf(cur - 1), endOf(cur), easeOut(clamp((t - (cur >= 0 ? ws[cur].t0 : tFrom)) / (cur === ws.length - 1 ? .7 : .35))));
+  }
+  // the camera after a tip climbing the tall chart PN: close enough that her riding words read, tilting up with the tip, and banking
+  // into the climb as the curve steepens past ~50°, so the words on its steep end lean toward the diagonal rather than stand up
+  function tipCam(F, PN, tip, o = {}) {
+    const tw = vWorld(PN, tip[0], tip[1]), ta = add(mix3(PN.c, tw, o.k ?? .8), [o.dx ?? 0, o.dy ?? -.1, 0]), ro = add(ta, o.off ?? [-.65, -.3, 4.1]);
+    ro[1] = Math.max(.45, ro[1]);
+    F.ta = ta; F.ro = ro; F.fov = 1.4; F.roll = (o.bank ?? .85) * Math.max(0, -tip[2] - .88);
+    return tw;
+  }
+  // vector bobs riding a curve on a tall sheet, behind its tip (bobsOn()'s, the sheet's scale)
+  function vbobs(out, P, PN, arc, n, col, t, o = {}) {
+    for (let i = 0; i < n; i++) {
+      const s = arc - i * (o.gap ?? 52); if (s < 0) break;
+      const [x, y] = atArc(P, s), p = vWorld(PN, x, y), r = (i ? .046 : .08) * (1 + .18 * kick(t, 6)) * (o.k ?? 1), jit = o.jit ?? 0;
+      out.push([p[0] + Math.sin(t * 97 + i) * jit, p[1] + Math.cos(t * 83 + i * 2) * jit, p[2] + .12, r, col]);
+    }
+  }
+  // escapeLine()'s, from a tall sheet onto the vertical frame
+  function vescape(ui, F, P, PN, u0, u1, cols = MAGLINE, wk = 1) {
+    const pts = [];
+    for (let i = 0; i <= 90; i++) { const [x, y] = curveAt(P, lerp(u0, u1, i / 90)), q = vScreen(F, vWorld(PN, x, y)); if (q) pts.push(q); }
+    if (pts.length < 2) return null;
+    ui.save(); ui.lineCap = 'round'; ui.lineJoin = 'round';
+    [[30, 0], [11, 1], [4, 2]].forEach(([w, c]) => { ui.lineWidth = w * wk; ui.strokeStyle = cols[c]; ui.beginPath(); pts.forEach((p, i) => i ? ui.lineTo(p[0], p[1]) : ui.moveTo(p[0], p[1])); ui.stroke(); });
+    const e = pts.at(-1), gr = ui.createRadialGradient(e[0], e[1], 0, e[0], e[1], 60 * wk);
+    gr.addColorStop(0, 'rgba(255,255,255,.95)'); gr.addColorStop(.3, cols[1]); gr.addColorStop(1, 'rgba(255,60,170,0)');
+    ui.fillStyle = gr; ui.beginPath(); ui.arc(e[0], e[1], 60 * wk, 0, TAU); ui.fill();
+    ui.restore();
+    return pts;
+  }
+  // the extruded SCALING sized to a share of the frame's width at distance d (fov 1.35–1.5): its half-height
+  const scalingHy = (d, fov, share = .82) => share * .5625 * d / fov / (2 * MOD.shapeText('SCALING').aspect);
+
+  // ---------- C2 vertical ----------
+  // (both curves on the tall chart: compute, and capabilities just below and behind it)
+  const VPC = () => vpoly(3.6), VPK = () => poly({ k: 3.6, x0: VX0 + 55, x1: VX1 + 55, y0: VY0 + 40, y1: VY1 + 110 });
+  // (and on the chart seen whole)
+  const SPC = () => sqpoly(4.4), SPK = () => poly({ k: 4.4, x0: SQ.box[0] + 50, x1: SQ.box[2] + 50, y0: SQ.box[1] + 34, y1: SQ.box[3] + 70 });
+  // the MOLTs, on the pivoted CRT: its text mode is 45 × 40 cells of 8 × 16 on a 360 × 640 canvas, shown ×3; its scanlines run down
+  // the screen, so its hold rolls it sideways, it tears in columns, and it collapses to a vertical line
+  let _vtm = null;
+  const vtmCanvas = () => _vtm ?? (_vtm = (() => { const c = makeCanvas(360, 640); return { c, g: c.getContext('2d') }; })());
+  function vblitTM(ui, c, x, y, sx, sy) { ui.imageSmoothingEnabled = false; ui.drawImage(c, 0, 0, 360, 640, x, y, 1080 * sx, 1920 * sy); ui.imageSmoothingEnabled = true; }
+  const tmBigW = s => [...s].reduce((a, ch) => a + (glyph(ch).w + 1) * 8, -8);
+  function vmolts(t, E, ui) {
+    ui.save(); ui.fillStyle = '#000'; ui.fillRect(0, 0, 1080, 1920);
+    const TM = vtmCanvas(), g = TM.g; g.fillStyle = '#000'; g.fillRect(0, 0, 360, 640);
+    const F = { fx: E.fx, res: E.res, floor: false, skyA: '#000000', skyB: '#000000', exposure: 0, hud: false, flare: 0 };
+    const RED = { 4: '#c4221c', 12: '#ff5a3c', 13: '#ff45b0', 5: '#a01880', 15: '#ffffff' }, mx = Math.round((360 - tmBigW('MOLT')) / 2);
+    if (t >= MOLT) { tmBigText(g, 'MOLT', mx, 132, [RED[12], RED[12], RED[4], RED[4]]); vblitTM(ui, TM.c, 0, 0, 1, 1); ui.restore(); return F; }
+    let i = 0; MOLTS.forEach((m, k) => { if (t >= m) i = k; });
+    const a = t - MOLTS[i], life = i === 0 ? MOLTS[1] - MOLTS[0] - .01 : .12;
+    // (the sync line runs down the screen)
+    const sync = () => { ui.fillStyle = '#ffffff'; ui.fillRect(538, 0, 4, 1920); ui.fillStyle = 'rgba(170,170,170,.8)'; ui.fillRect(542, 180, 3, 1560); };
+    if (a < .034) { sync(); ui.restore(); return F; }
+    if (a > life) { if (a - life < .05) { ui.fillStyle = '#aaaaaa'; ui.fillRect(538, 840, 4, 240); } ui.restore(); return F; }
+    const fg = [[15, 13, 13, 5], [13, 13, 5, 5], [12, 13, 5, 4], [12, 12, 4, 4]][i].map(c => RED[c]);
+    const shown = Math.max(1, Math.ceil((a - .034) / .05 * 4));
+    tmBigText(g, 'MOLT'.slice(0, shown), mx, 288, fg);
+    if (Math.floor(a * 8) % 2 === 0) tmLine(g, 1, 6, '_', '#aaaaaa');
+    const k = (a - .034) / (life - .034);
+    if (i === 0) {
+      // the hold goes: the picture rolls sideways, faster and faster, then collapses to a line down the screen
+      const roll = easeIn(clamp(k / .8)) * 1260 % 1080;
+      if (k < .8) { vblitTM(ui, TM.c, roll - 1080, 0, 1, 1); vblitTM(ui, TM.c, roll, 0, 1, 1); }
+      else { const sx = Math.max(.004, 1 - (k - .8) / .2); vblitTM(ui, TM.c, 540 - 540 * sx, 0, sx, 1); }
+    } else if (i === 1) {
+      // it tears: columns slide up and down
+      for (let x = 0; x < 360; x += 6) { const dy = Math.sin(x * .07 + a * 90) * 40 * k * 3 + (x > 180 ? 72 : 0); ui.drawImage(TM.c, x, 0, 6, 640, x * 3, dy, 18, 1920); }
+    } else if (i === 2) {
+      // wrong palette: the colours come up scrambled, every other column dark
+      vblitTM(ui, TM.c, 0, 0, 1, 1);
+      ui.globalCompositeOperation = 'difference'; ui.fillStyle = '#5ab04a'; ui.fillRect(0, 0, 1080, 1920); ui.globalCompositeOperation = 'source-over';
+      ui.fillStyle = 'rgba(0,0,0,.85)'; for (let x = 3; x < 1080; x += 6) ui.fillRect(x, 0, 3, 1920);
+    } else {
+      // squashed to a line down the screen
+      const sx = Math.max(.01, 1 - k), sy = 1 + k * .4;
+      vblitTM(ui, TM.c, 540 - 540 * sx, 960 - 960 * sy, sx, sy);
+    }
+    ui.restore();
+    return F;
+  }
+  mvsection('C2', (t, s, E, ui) => {
+    if (t >= MOLTS[0]) return vmolts(t, E, ui);
+    const L1 = Wd('C2', 1), L2 = Wd('C2', 2), L3 = Wd('C2', 3), L4 = Wd('C2', 4);
+    const tL2 = L2[0].t0 - .06, tL3 = L3[0].t0 - .12, tL4 = L4[0].t0 - .08, tCant = L4[7].t0, tContain = L4[8].t0;
+    const F = {
+      fx: E.fx, res: E.res, skyA: '#04030c', skyB: '#0e0726', acc: '#ff3aa6', fog: .025, floorCol: '#030208', grid: .3,
+      light: { p: [0, 3.6, -4.5], c: '#b06cff', k: 6, vol: .6 }, panels: [], spheres: [], flare: 0,
+    };
+    const inTunnel = (speed, o = {}) => Object.assign(F, {
+      floor: false, sky: null, skyA: '#010004', skyB: '#030010', fog: .06,
+      ro: [0, 0, 0], ta: [Math.sin(t * .7) * .3, Math.cos(t * .5) * .3, -6], fov: 1.35, roll: t * .35,
+      tunnel: { key: 'dots', src: dotTex(), r: 2.6, scroll: t * speed, twist: .022, col: '#ffffff', gain: 2.1 },
+      light: { p: [0, 0, -14], c: '#ff6cc8', k: 9, vol: .7 }, ...o,
+    });
+    if (t < tL2) {
+      // "We didn't start the scaling": the dot tunnel spirals; her words in two rows over its mouth; SCALING flies up it at us and
+      // bursts out under them on "scaling"
+      inTunnel(.55, { ta: [Math.sin(t * .7) * .12, Math.cos(t * .5) * .15, -6] });
+      vrows(MOD.panel(1), t, L1, [[0, 1], [2, 3]], { x: 512, cy: 256, size: 150, maxW: 940 });
+      F.panels.push(capPanel(F, 'wide', 1, rowsFoot, 480, { alpha: 1, gain: 1.9, glass: 0 }));
+      const tS = L1[4].t0, lt = t - s.start, hy = scalingHy(6.4, 1.35);
+      const z = t < tS ? lerp(-40, -13, easeInOut(clamp(lt / (tS - s.start)))) : lerp(-13, -6.4, easeOut(clamp((t - tS) / .3)));
+      const spin = Math.sin(t * 1.5) * .3 + (t >= tS ? (1 - easeOut(clamp((t - tS) / .45))) * TAU : 0);
+      F.shape = { ...scalingLogo(t, -99, { hy, y: -.2, z }), rot: rotYX(spin, -.12, F.roll) };
+      F.shape.p = level({ c: F.shape.p, u: [0, 0, 0], v: [0, 0, 0] }, F.roll).c;
+      if (t >= tS) { F.flash = clamp(1 - (t - tS) / .15) * .22; F.flashCol = '#ff9ad8'; F.flarePos = [.5, .45]; F.flare = .6 * clamp(1 - (t - tS) / .5); }
+    } else if (t < tL3) {
+      // "It was always training, and the curves kept gaining": the tall chart; the two curves climb together, bobs at their heads,
+      // her words riding the upper one, and the camera tilts up after them
+      const P1 = VPC(), P2 = VPK(), ln = lineAt('C2', 2), g = portrait(0), R = rideLayout(g, ln, 47, 50);
+      const arc = growArc(P1, R, L2, t, tL2, 150), u = atArc(P1, arc)[3], arc2 = arcAtU(P2, u), cur = curOf(L2, t);
+      const [, tip] = vchart(g, t, { theme: 'c2', curves: [{ P: P2, arc: arc2, cols: CYANLINE }, { P: P1, arc }] });
+      ride(g, t, { P: P1, ln, size: 47, s0: 50 });
+      const CV = tall([0, 2.9, -.5], 1.3);
+      F.panels.push({ ...CV, alpha: 1, gain: 1.5 });
+      vbobs(F.spheres, P1, CV, arc, 10, '#ff4fb4', t); vbobs(F.spheres, P2, CV, arc2, 10, '#35c2f2', t);
+      if (cur === 6 && t - L2[6].t0 < .2) { F.flash = (1 - (t - L2[6].t0) / .2) * .12; F.flashCol = '#ffb0e0'; }
+      const tw = tipCam(F, CV, tip, { dy: -.42 });
+      F.sky = { mode: 'rays', k: .4, col: '#2a1a6a' }; F.acc = '#6a1a5c';
+      F.flarePos = MOD.project(F, add(tw, [0, 0, .2])) ?? [.5, .6]; F.flare = .12;
+    } else if (t < tL4) {
+      // the hook again, back in the tunnel, faster: a word to a row, slamming in down the frame; on "scaling" the logo flies
+      // through the screen under them
+      inTunnel(1.4, { roll: t * .6, ta: [Math.sin(t * .7) * .1, Math.cos(t * .5) * .12, -6] });
+      const cur = vrows(portrait(0), t, L3, [[0], [1], [2], [3]], { x: 512, cy: 740, size: 230, maxW: 880, pitch: 200 });
+      F.panels.push(capPanel(F, 'tall', 0, rowsFoot, 470, { alpha: cur >= 0 ? 1 : 0, gain: 2, glass: 0 }));
+      const tS = L3[4].t0;
+      if (t >= tS) {
+        const k = clamp((t - tS) / (tL4 - tS)), z = lerp(-16, 1.2, k ** 1.5);
+        F.shape = { ...scalingLogo(t, -99, { hy: scalingHy(5, 1.35), y: -.3, z }), rot: rotYX(Math.sin(t * 2) * .3, -.1, F.roll) };
+        F.shape.p = level({ c: F.shape.p, u: [0, 0, 0], v: [0, 0, 0] }, F.roll).c;
+        if (z > -2.2) { F.flash = .14; F.flashCol = '#ffb0e0'; }
+        F.flarePos = [.5, .4]; F.flare = .5 * k;
+      }
+    } else {
+      // "No, we didn't preordain it, but we can't contain it!": the chart seen whole, filling the frame's width; both curves press its
+      // top edge, strain it on "can't", and on "contain" break out up through it and off the top of the frame, while every bob
+      // bursts off the chart at us into the stars; the camera tilts up after them, her words rising with it
+      const P1 = SPC(), P2 = SPK(), strain = t >= tCant && t < tContain ? clamp((t - tCant) / (tContain - tCant)) : 0, out = t >= tContain, a = t - tContain;
+      const P1e = poly({ ...P1.o, u1: uTop(P1) - .003 }), P2e = poly({ ...P2.o, u1: Math.min(uTop(P2) - .003, (SQ.size[0] - 14 - P2.o.x0) / (P2.o.x1 - P2.o.x0)) });
+      vchart(sqCanvas(), t, { ...SQ, theme: 'c2', curves: [{ P: P2e, arc: 1e9, cols: CYANLINE }, { P: P1e, arc: 1e9 }], strain, broken: out ? curveAt(P1, uTop(P1))[0] : 0 });
+      const lt = t - tL4, push = out ? easeInOut(clamp(a / 1.4)) : 0;
+      vrows(MOD.panel(1), t, L4, [[0, 1], [2], [3], [4, 5, 6], [7], [8, 9]], { x: 470, cy: 256, size: 96, maxW: 820, pitch: 84 });
+      const CV = sqSheet([.05, 3.0, -.5], 1.25);
+      F.panels.push({ ...CV, alpha: out ? lerp(1, .45, easeOut(clamp(a / .6))) : 1, gain: 1.45 }, wide([0, 3.35 + push * 1.4, 1.6], .82, { alpha: 1, gain: 1.9, glass: .6, tex: 1 }));
+      const shake = strain > 0 ? [Math.sin(t * 91) * .035 * strain, Math.cos(t * 77) * .035 * strain, 0] : [0, 0, 0];
+      F.ro = add([lerp(.3, .15, clamp(lt / 3)), 2.7 + push * 1.3, 6.1 - lt * .05 + push * .5], shake); F.ta = add([.05, 2.78 + push * 2.2, -.5], shake); F.fov = 1.42;
+      if (!out) {
+        vbobs(F.spheres, P1e, CV, P1e.len, 16, '#ff4fb4', t, { gap: 60, jit: strain * .03 });
+        vbobs(F.spheres, P2e, CV, P2e.len, 16, '#35c2f2', t, { gap: 60, jit: strain * .03 });
+      } else {
+        // the bobs fly out at us and past, into the stars
+        const sp = [];
+        vbobs(sp, P1e, CV, P1e.len, 16, '#ff4fb4', t, { gap: 60 }); vbobs(sp, P2e, CV, P2e.len, 16, '#35c2f2', t, { gap: 60 });
+        sp.forEach((b, i) => {
+          const d = MOD.norm([b[0] - .1 + (hash(i) - .5) * .8, b[1] - 3.0 + (hash(i + 40) - .5) + 1.4, 1.2 + hash(i + 80) * 2.5]), v = 2.5 + 4.5 * hash(i + 120);
+          F.spheres.push([b[0] + d[0] * v * a, b[1] + d[1] * v * a, b[2] + d[2] * v * a, b[3] * 1.6, b[4]]);
+        });
+        F.sky = { mode: 'stars', k: .8 + 4 * easeIn(clamp(a / 1.2)), col: '#ffd6f2' }; F.skyA = '#020108'; F.skyB = '#0a0418';
+        F.flash = clamp(1 - a / .25) * .3; F.flashCol = '#ff7ac8'; F.exposure = pump(t);
+        F.light = { p: [1, 7, -2], c: '#ff5cc0', k: 8, vol: 1 };
+        vescape(ui, F, P2, CV, P2e.at(-1)[3], P2e.at(-1)[3] + .2 * easeOut(clamp(a / .8)), CYANLINE, .9);
+        vescape(ui, F, P1, CV, uTop(P1) - .003, uTop(P1) + .16 * easeOut(clamp(a / .7)));
+      }
+      const edge = vScreen(F, vWorld(CV, ...curveAt(P1, uTop(P1))));
+      if (strain > 0 && edge) sparks(ui, t, edge[0], edge[1], .6 + strain);
+    }
+    return F;
+  });
+
+  // ---------- C3 vertical ----------
+  // (its curves: on the tall chart for her words to ride, and on the chart seen whole, the steepest yet, as C3's horizontal one is)
+  const VP3 = () => vpoly(4), SP3 = () => sqpoly(5.4);
+  mvsection('C3', (t, s, E, ui) => {
+    const L1 = C3W1(), L2 = wordsOf(C3(2)), L3 = wordsOf(C3(3)), L4 = wordsOf(C3(4));
+    const tL2 = L2[0].t0 - .06, tL3 = L3[0].t0 - .12, tL4 = L4[0].t0 - .08, tCant = L4[7].t0, tContain = L4[8].t0;
+    const F = {
+      fx: E.fx, res: E.res, skyA: '#070310', skyB: '#1c0714', acc: '#ff3aa6', fog: .02, grid: .12,
+      floorMode: 'checker', floorCol: '#06030c', floorCol2: '#2c1452', floorTile: 1.1,
+      light: { p: [0, 3.6, -4.5], c: '#ff5cc0', k: 6, vol: .8 }, panels: [], flare: .8,
+    };
+    const P = SP3(), CS = sqSheet([0, 1.55, -.5], 1.25);
+    if (t < tL2) {
+      // "We didn't start the scaling": the empty chart stands on the violet checkerboard, the floor filling the lower frame; her
+      // words in two rows over it; then SCALING rises in chrome in front of it
+      vchart(sqCanvas(), t, { ...SQ, curves: [{ P, arc: 0, dot: t >= L1[0].t0 }] });
+      vrows(MOD.panel(1), t, L1, [[0, 1], [2, 3]], { x: 512, cy: 256, size: 150, maxW: 940 });
+      const lt = t - s.start, up = t >= L1[4].t0 ? easeOut(clamp((t - L1[4].t0) / .25)) : 0;
+      if (t >= L1[4].t0) { F.shape = scalingLogo(t, L1[4].t0, { y: 1.7, z: 1.8, hy: scalingHy(6.9, 1.5, .8) }); F.flash = clamp(1 - (t - L1[4].t0) / .2) * .18; F.flashCol = '#ff9ad8'; }
+      // (looking a little low, so the chart stands above her rows and its reflection runs under them)
+      F.ro = [Math.sin(lt * .4) * .15, 2.7, 8.6 - lt * .25]; F.ta = [0, 1.0, 0]; F.fov = 1.5;
+      F.panels.push({ ...CS, alpha: .9, gain: 1.3 }, capPanel(F, 'wide', 1, rowsFoot, 480, { alpha: 1, gain: 1.8, glass: 0, foot: CAP_FOOT - up * 12 }));
+    } else if (t < tL3) {
+      // "It was always training, and the curves kept gaining": the tall chart on the checkerboard; the curve climbs, her words ride
+      // it up and burn, and its tip catches fire; the camera tilts up after it, banking into the climb
+      const PT = VP3(), g = portrait(0), R = rideLayout(g, C3(2), 47, 50);
+      const arc = growArc(PT, R, L2, t, tL2, 150), [tip] = vchart(g, t, { curves: [{ P: PT, arc }] });
+      ride(g, t, { P: PT, ln: C3(2), size: 47, s0: 50, lift: 42, burn: true });
+      flames(g, t, tip[0], tip[1], clamp((tip[3] - .3) / .5) * 1.25);
+      const CV = tall([0, 2.95, -.5], 1.3);
+      F.panels.push({ ...CV, alpha: 1, gain: 1.5 });
+      const tw = tipCam(F, CV, tip, { dy: -.42 });
+      F.light = { p: add(tw, [0, 1.2, -1]), c: '#ff7a5c', k: 5 + 6 * clamp(tip[3]), vol: .9 };
+    } else if (t < tL4) {
+      // the hook again: a word to a row down the frame, the burning curve behind; SCALING rises under them
+      const g = sqCanvas(), [tip] = vchart(g, t, { ...SQ, curves: [{ P, arc: 1e9 }] });
+      flames(g, t, tip[0], tip[1], 1.1);
+      const fit = [[0], [1], [2], [3]];
+      const cur = vrows(MOD.panel(1), t, L3, [[0], [1]], { x: 512, cy: 256, size: 200, maxW: 900, pitch: 200, fit }), f1 = rowsFoot;
+      vrows(MOD.panel(2), t, L3, [[2], [3]], { x: 512, cy: 256, size: 200, maxW: 900, pitch: 200, fit });
+      // (SCALING rises over the four rows, on "scaling")
+      if (cur === 4) { F.shape = scalingLogo(t, L3[4].t0, { y: 3.55, z: 2.0, hy: scalingHy(6.6, 1.5, .84) }); F.flash = clamp(1 - (t - L3[4].t0) / .15) * .12; F.flashCol = '#ff9ad8'; }
+      const lt = t - tL3;
+      F.ro = [.18 - lt * .15, 2.75, 8.6 - lt * .25]; F.ta = [0, 2.75, 0]; F.fov = 1.5;
+      // (the chart high and smaller, behind SCALING, clear of her four rows)
+      F.panels.push({ ...sqSheet([0, 3.9, -1], 1.12), alpha: .75, gain: 1.2 },
+        capPanel(F, 'wide', 1, f1, 470, { alpha: cur >= 0 ? 1 : 0, gain: 2, glass: 0, foot: CAP_FOOT - 200 * 470 / 512 * 2 }), capPanel(F, 'wide', 2, rowsFoot, 470, { alpha: cur >= 2 ? 1 : 0, gain: 2, glass: 0 }));
+    } else {
+      // "No, we didn't preordain it, but we can't contain it!": the chart seen whole, the burning curve pressing its top edge; on
+      // "contain" it breaks out through the corner and runs on up its own exponential, off the top of the frame, a beam of light
+      // along its last stretch; the camera tilts up after it, her words rising with it
+      const strain = t >= tCant ? clamp((t - tCant) / (tContain - tCant)) : 0, out = t >= tContain;
+      const g = sqCanvas(), [tip] = vchart(g, t, { ...SQ, curves: [{ P, arc: 1e9 }], strain: out ? 0 : strain, broken: out ? 'corner' : 0 });
+      flames(g, t, tip[0], tip[1], 1.1 + strain * .5 + (out ? .5 : 0));
+      vrows(MOD.panel(1), t, L4, [[0, 1], [2], [3], [4, 5, 6], [7], [8, 9]], { x: 470, cy: 256, size: 96, maxW: 820, pitch: 84 });
+      const shake = strain > 0 && !out ? [Math.sin(t * 91) * .03 * strain, Math.cos(t * 77) * .03 * strain, 0] : [0, 0, 0];
+      const up = out ? easeInOut(clamp((t - tContain) / 1.4)) : 0, lt = t - tL4;
+      F.panels.push({ ...CS, alpha: out ? .85 : 1, gain: out ? 1.7 : 1.4 }, wide([up * .3, 2.85 + up * 1.15, 1.6], .82, { alpha: 1, gain: 1.9, glass: .6, tex: 1 }));
+      // (the camera rises and tilts up after it as far as keeps the chart's broken corner in the frame's foot)
+      F.ro = add([lerp(-.25, .2, clamp(lt / 5)) + up * .25, 2.2 + up * .9, 6.0 - lt * .04 + up * .3], shake); F.ta = add([lerp(-.1, .1, clamp(lt / 5)) + up * .4, 2.3 + up * 1.4, -.5], shake); F.fov = 1.42;
+      if (out) {
+        const a = t - tContain, ue = 1 + .16 * easeOut(clamp(a / .7));
+        const e = vWorld(CS, ...curveAt(P, ue)), e2 = vWorld(CS, ...curveAt(P, ue + .01)), d = MOD.norm(MOD.sub(e2, e));
+        const pts = vescape(ui, F, P, CS, 1, ue, MAGLINE, 1.35), head = pts?.at(-1);
+        if (head && head[1] > -60) flames(ui, t, head[0], head[1], 1.1);   // (the fire rides the head out)
+        F.beam = { x: e[0], z: e[2] + .05, y0: e[1], x1: e[0] + d[0] * 40, z1: e[2] + .05 + d[2] * 40, y1: e[1] + d[1] * 40, r: .07 + .04 * kick(t, 5), k: (3.2 + 2 * kick(t, 4)) * clamp((ue - 1.06) / .04), col: '#ff4fb4' };
+        F.flash = clamp(1 - a / .25) * .3; F.flashCol = '#ff7ac8';
+        F.light = { p: add(e, [0, 1, -1]), c: '#ff5cc0', k: 9, vol: 1.3 };
+      }
+    }
+    return F;
+  });
+
+  // ---------- C4 vertical ----------
+  // the date plate, at the vertical frame's (VMOD.date: the safe area's top right)
+  function vstamp(ui, md, yr, age) {
+    const k = easeOut(clamp(age / .2)), px = VMOD.date[0] - 240, py = VMOD.date[1];
+    ui.save();
+    ui.fillStyle = 'rgba(8,10,22,.62)'; ui.strokeStyle = 'rgba(160,200,255,.28)'; ui.lineWidth = 1.5;
+    ui.beginPath(); ui.roundRect(px, py, 240, 100, 10); ui.fill(); ui.stroke();
+    text(ui, md, px + 216, py + 36, { size: 26, align: 'right', color: '#9fb4e8' });
+    text(ui, yr, px + 216, py + 84 - (1 - k) * 12, { size: 44, font: MOD.FONT_T, align: 'right', color: '#ffffff', alpha: .4 + .6 * k });
+    ui.restore();
+  }
+  // starfield()'s, streaming out of the vertical frame's middle, spread up and down it
+  function vstarfield(ui, D, v) {
+    ui.save(); ui.lineCap = 'round';
+    for (let i = 0; i < 420; i++) {
+      const a = hash(i * 3 + 1) * TAU, z = 1 - frac(hash(i * 3 + 2) + D * .09), r0 = 40 / Math.max(.02, z), r1 = 40 / Math.max(.02, z + Math.min(.6, v * .012 + .004));
+      if (r1 > 1300) continue;
+      const c = Math.cos(a), s = Math.sin(a) * 1.4, br = clamp((1 - z) * 1.4);
+      ui.strokeStyle = i % 5 ? `rgba(255,236,250,${br})` : `rgba(255,120,210,${br})`; ui.lineWidth = 1.2 + 2.4 * (1 - z);
+      ui.beginPath(); ui.moveTo(540 + c * r1, 960 + s * r1); ui.lineTo(540 + c * r0 + .1, 960 + s * r0); ui.stroke();
+    }
+    ui.restore();
+  }
+  // the last hook's picture, and the little scene the dot grows back into: plasma, the chart seen whole with both curves, SCALING,
+  // and behind it all the machine that trains on
+  function vfinalScene(F, t, tS) {
+    const [tip] = vchart(sqCanvas(), t, { ...SQ, theme: 'c4', curves: [{ P: SPK(), arc: 1e9, cols: CYANLINE }, { P: SPC(), arc: 1e9 }] });
+    // (the chart and SCALING a little high, clear of the last hook's rows under them)
+    F.panels.push({ ...sqSheet([0, 3.1, -1.6], 1.4), alpha: .95, gain: 1.4 });
+    if (t >= tS) F.shape = scalingLogo(t, tS, { y: 2.9, z: 1.2, hy: scalingHy(8.4, 1.5, .86), spin: 1.2 });
+    Object.assign(F, { sky: { mode: 'plasma', k: .9, col: '#4a1a9a' }, acc: '#a0145e', skyA: '#0a0214', skyB: '#240824', grid: .35 });
+    F.light = { p: [0, 2.2, -.4], c: '#ff5cc0', k: 7, vol: 1.3 };
+    F.world = { kind: 'fractal', p: [3.4, -.4, .25, .45 + .5 * kick(t, 6)], col: '#2a2030', glowCol: '#ff4fb4', at: [0, 4.4, -21], metal: .7 };
+    F.dof = { k: .012, focus: 10.5 };
+    return tip;
+  }
+  // "But when we log off… will it still train on?": her line in four rows, the captions, their foot on the captions' line, each word
+  // as she sings it
+  function vlastLine(ui, t, alpha) {
+    const ws = wordsOf(lineAt('C4', 6)).map((w, i) => i === 9 ? { ...w, t0: ON_Q } : w), cur = curOf(ws, t);
+    [[0, 1, 2], [3, 4], [5, 6, 7], [8, 9]].forEach((r, li) => {
+      const shown = r.filter(i => i <= cur); if (!shown.length) return;
+      text(ui, shown.map(i => ws[i].w.toUpperCase()).join(' '), 540, CAP_FOOT - 12 - (3 - li) * 92, { size: 72, font: MOD.FONT_T, align: 'center', color: '#ffd0ef', alpha, stroke: 10 });
+    });
+  }
+  mvsection('C4', (t, s, E, ui) => {
+    if (t >= C4_TAIL) { const F = MOD.VSCENES.outro(t, segByKey('outro'), E, ui); F.hud = false; return F; }
+    const W = n => Wd('C4', n), L1 = W(1), L2 = W(2), L3 = W(3), L4 = W(4), L5 = W(5), L6 = W(6);
+    const tStar = L4[0].t0 - .06, tHook = L5[0].t0 - .02, tOff = L6[4].t1 - .25;
+    const F = {
+      fx: E.fx, res: E.res, skyA: '#08020f', skyB: '#1c0620', acc: '#ff2a9a', fog: .02, floorCol: '#040108', grid: .3,
+      light: { p: [0, 3.6, -4.5], c: '#ff5cc0', k: 6, vol: .6 }, panels: [], spheres: [],
+    };
+    if (t < tStar) {
+      // ---------- the megamix, a line to a scene ----------
+      const cut2 = L2[0].t0 - .06, cut3 = L3[0].t0 - .06;
+      if (t < cut2) {
+        // "We didn't start the scaling": looking up a tall colonnade, her words over it; on "scaling" the chrome SCALING rises in
+        // the aisle under them, the light raking between the columns
+        const lt = t - s.start, tS = L1[4].t0;
+        vrows(MOD.panel(1), t, L1, [[0, 1], [2, 3]], { x: 512, cy: 256, size: 150, maxW: 940 });
+        if (t >= tS) F.shape = scalingLogo(t, tS, { y: 3.45, z: 0, hy: scalingHy(8.6, 1.42, .8), spin: .8 });   // (over her rows, clear of them)
+        Object.assign(F, {
+          sky: { mode: 'rays', k: .7, col: '#6a1a4a' }, acc: '#8a1060', skyA: '#0c0212', skyB: '#2a0620',
+          world: { kind: 'hall', p: [2.6, 1.7, 7.2, 1.5 + 1.5 * kick(t, 6)], col: '#2a1a28', glowCol: '#ff4fb4', at: [0, 0, -1.3], metal: .6 },
+          light: { p: [0, 2.6, -3.2], c: '#ff7ad0', k: 11, vol: 2.2 },
+          ro: [Math.sin(lt * .6) * .12, 1.0 + lt * .15, 8.6 - lt * .45], ta: [0, 2.9 + lt * .2, 0], fov: 1.42, flare: 1,
+        });
+        F.panels.push(capPanel(F, 'wide', 1, rowsFoot, 480, { alpha: 1, gain: 1.9, glass: 0 }));
+      } else if (t < cut3) {
+        // "It was always training, and the curves kept gaining,": the whole line rides the tall chart's curve as she sings it,
+        // chrome bobs streaming up behind her words; the camera tilts up after the tip
+        const g = portrait(0), P = vpoly(3.6), ln = lineAt('C4', 2), R = rideLayout(g, ln, 47, 50);
+        const arc = growArc(P, R, L2, t, cut2, 150), [tip] = vchart(g, t, { theme: 'c4', curves: [{ P, arc }] });
+        ride(g, t, { P, ln, size: 47, s0: 50 });
+        const CV = tall([0, 2.9, -.5], 1.3);
+        F.panels.push({ ...CV, alpha: 1, gain: 1.45 });
+        for (let i = 0; i < 24; i++) {
+          const q = frac(i / 24 + t * .22), [x, y] = atArc(P, q * arc), p = vWorld(CV, x, y);
+          F.spheres.push([p[0], p[1], p[2] + .1, .018 + .055 * q ** 2 * (1 + .2 * kick(t, 6)), i % 3 ? '#ff4fb4' : '#ffc4ea']);
+        }
+        tipCam(F, CV, tip, { dy: -.42 });
+        Object.assign(F, { skyA: '#0a0214', skyB: '#240624', acc: '#b0186a', sky: { mode: 'plasma', k: .9, col: '#4a1a9a' }, light: { p: [2, 5, -2], c: '#ff5cc0', k: 7, vol: .5 } });
+      } else {
+        // "We didn't start the scaling": looking down on the checkerboard spinning under us, her words building over it; SCALING
+        // lands on it on "scaling"
+        const tS = L3[4].t0, a = t * 1.5, ro = [Math.sin(a) * 5, 6.2, Math.cos(a) * 5], ta = [0, .2, 0];
+        Object.assign(F, { ro, ta, fov: 1.45, floorMode: 'checker', floorCol: '#080108', floorCol2: '#5a0a44', floorTile: 1.3, floorOff: [0, t * 3], grid: 0, sky: { mode: 'plasma', k: 1.4, col: '#ff2a9a' }, light: { p: [0, 5, 0], c: '#ff5cc0', k: 5, vol: 0 } });
+        vrows(MOD.panel(1), t, L3, [[0, 1], [2, 3]], { x: 512, cy: 256, size: 150, maxW: 940 });
+        F.panels.push(capPanel(F, 'wide', 1, rowsFoot, 480, { z: 4.2, alpha: 1, gain: 2, glass: 0 }));
+        if (t >= tS) { const land = easeOut(clamp((t - tS) / .15)); F.shape = { ...scalingLogo(t, tS, { y: lerp(3.4, .55, land), z: 0, hy: scalingHy(7.4, 1.45, .8) }), rot: rotYX(Math.atan2(ro[0], ro[2]), -.62) }; }
+      }
+      const since = Math.min(...[cut2, cut3].map(c => t >= c ? t - c : 9));
+      if (since < .07) { F.flash = .2; F.flashCol = '#ff9ad8'; }
+      F.exposure = 1 + .16 * kick8(t, 6);
+    } else if (t < tHook) {
+      // ---------- "Now we swear we'll try to pace it — but we'd rather race it!": the starfield's speed is the song's pace ----------
+      const tPace = L4[6].t0, tBut = L4[9].t0, tRace = L4[12].t0;
+      const v = starSpeed(t, L4), D = travelled(x => starSpeed(x, L4), tStar, t) + 40;
+      MOD.setT(D / v);
+      Object.assign(F, { floor: false, skyA: '#010008', skyB: '#05020f', sky: { mode: 'stars', k: v, col: '#ffe0f6' }, ro: [0, 0, 0], ta: [Math.sin(t * .6) * .06, Math.cos(t * .5) * .08, -6], fov: 1.4, light: { p: [0, 0, -12], c: '#ff5cc0', k: 4, vol: 0 } });
+      F.world = { kind: 'gates', p: [6, 2.6, .18, 1.2 + clamp(v / 6) * 3], col: '#1e1020', glowCol: '#ff6ac8', at: [0, 0, (D * .45) % 6], metal: .8 };
+      vstarfield(ui, D, v);
+      // (her line in two phrases, split at its dash, in rows down the frame)
+      const g = portrait(0);
+      if (t < tBut) vrows(g, t, L4, [[0, 1], [2], [3, 4], [5, 6, 7]], { x: 512, cy: 780, size: 170, maxW: 900 });
+      else vrows(g, t, L4, [[9, 10], [11], [12, 13]], { x: 512, cy: 780, size: 200, maxW: 900 });
+      const hyper = clamp((t - tRace) / .3);
+      F.panels.push(capPanel(F, 'tall', 0, rowsFoot, 470, { alpha: 1, gain: 1.9, glass: 0, foot: CAP_FOOT + hyper * 60 }));
+      if (t >= tBut && t < tRace) {
+        const k = (t - tBut) / (tRace - tBut), ph = (t - tBut) * .6 + 2.2 * k * k * (tRace - tBut) / 2;
+        F.halo = { p: [0, 0, -1 - (1 - frac(ph)) * 16], n: [0, 0, 1], R: 1.2, r: .045, k: .6 + 2.2 * k, col: '#ff6ac8' };
+      }
+      if (t >= tRace) { F.flash = clamp(1 - (t - tRace) / .15) * .25; F.flashCol = '#ffd0f0'; F.exposure = 1 + .3 * kick8(t, 5); F.roll = Math.sin(t * 40) * .02 * clamp(1 - (t - tRace) / .4); }
+      if (t >= tPace) vstamp(ui, t < tRace ? 'SEP 12' : 'SEP 22', '2026', t < tRace ? t - tPace : t - tRace);
+    } else if (t < tOff) {
+      // ---------- the last hook: out of hyperspace onto the plasma, the chart, SCALING in god rays; "But when we log off…" ----------
+      const tS = L5[4].t0, tBut = L6[0].t0 - .04, lt = t - tHook;
+      vfinalScene(F, t, tS);
+      if (t < tBut) {
+        vrows(MOD.panel(1), t, L5, [[0, 1], [2, 3]], { x: 512, cy: 256, size: 150, maxW: 940 });
+        F.caption = rowsFoot;   // (placed once the camera is, below)
+      } else vlastLine(ui, t, 1);
+      if (lt < .3) { F.flash = (1 - lt / .3) * .3; F.flashCol = '#ffffff'; }
+      if (t >= tS && t - tS < .2) { F.flash = Math.max(F.flash ?? 0, (1 - (t - tS) / .2) * .22); F.flashCol = '#ff9ad8'; }
+      F.ro = [Math.sin(lt * .35) * .5, 2.4 + lt * .04, 9.6 - lt * .2]; F.ta = [0, 2.75, 0]; F.fov = 1.5;
+      if (F.caption !== undefined) { F.panels.push(capPanel(F, 'wide', 1, F.caption, 480, { z: 6.4, alpha: 1, gain: 1.9, glass: 0 })); delete F.caption; }
+      F.exposure = 1 + .12 * kick8(t, 6);
+    } else {
+      // ---------- the pivoted CRT switches off, to a line down the screen and then a dot… and the dot doesn't go out: it trains on ----------
+      const a = t - tOff, cx = 540, cy = 800;   // (the dot over her line, the EPOCH counter between)
+      vfinalScene(F, t, L5[4].t0);
+      const lt = t - tHook; F.ro = [Math.sin(lt * .35) * .5, 2.4 + lt * .04, 9.6 - lt * .2]; F.ta = [0, 2.75, 0];
+      if (a < .25) {
+        // the picture collapses sideways to a line down the screen, then the line to a dot, brightening as it goes
+        const w = a < .1 ? lerp(1080, 5, easeIn(a / .1)) : 5, h = a < .1 ? 1920 : lerp(1920, 14, easeIn(clamp((a - .1) / .13)));
+        F.fov = 1.5; F.exposure = 1 + a * 10; F.flash = clamp(a / .25) * .45; F.flashCol = '#ffffff';
+        ui.save(); ui.fillStyle = '#000'; ui.beginPath(); ui.rect(0, 0, 1080, 1920); ui.rect(cx - w / 2, cy - h / 2, w, h); ui.fill('evenodd');
+        if (w < 60) { const gr = ui.createLinearGradient(cx - 24, 0, cx + 24, 0); gr.addColorStop(0, 'rgba(255,120,220,0)'); gr.addColorStop(.5, 'rgba(255,255,255,.95)'); gr.addColorStop(1, 'rgba(255,120,220,0)'); ui.fillStyle = gr; ui.fillRect(cx - 24, cy - h / 2, 48, h); }
+        vlastLine(ui, t, 1);
+        ui.restore();
+        F.hudLevel = lerp(1, .4, clamp(a / .25));
+        return F;
+      }
+      // the dot, and the little picture it grows back into (the same frame, seen through it at a wider angle)
+      let R = 5, pulse = 0, prevR = 5;
+      for (const [to, r] of [[ONS[0], 30], [ONS[1], 56], [ONS[2], 92], [ONS[3], 140]]) {
+        if (t < to) break;
+        R = lerp(prevR, r, elasticOut(clamp((t - to) / .4))); prevR = r; pulse = Math.max(pulse, Math.exp(-(t - to) * 6));
+      }
+      if (t > ONS_END) R += easeInOut(clamp((t - ONS_END) / (C4_TAIL - ONS_END))) * 60;
+      F.fov = 1.5 * clamp(2 * R / 1920, .004, 1);
+      F.ro = [Math.sin(t * .4) * .8, 1.9, 8.6]; F.ta = [0, 2.75, 0];
+      F.exposure = 1 + pulse * .6;
+      ui.save();
+      ui.fillStyle = '#000'; ui.beginPath(); ui.rect(0, 0, 1080, 1920); ui.arc(cx, cy, R, 0, TAU, true); ui.fill('evenodd');
+      ui.strokeStyle = `rgba(255,110,210,${.35 + .35 * kick(t, 6) + pulse * .3})`; ui.lineWidth = 3 + pulse * 4; ui.beginPath(); ui.arc(cx, cy, R + 2, 0, TAU); ui.stroke();
+      const glow = clamp(1 - (R - 8) / 70);
+      if (glow > 0) {
+        const gr = ui.createRadialGradient(cx, cy, 0, cx, cy, R + 40 + pulse * 30);
+        gr.addColorStop(0, `rgba(255,255,255,${glow})`); gr.addColorStop(.25, `rgba(255,170,235,${glow * .8})`); gr.addColorStop(1, 'rgba(255,60,170,0)');
+        ui.fillStyle = gr; ui.beginPath(); ui.arc(cx, cy, R + 40 + pulse * 30, 0, TAU); ui.fill();
+      }
+      // each "on" echoes out of the dot
+      for (const [i, o] of ONS.entries()) {
+        const e = t - o; if (e < 0 || e > .9) continue;
+        const ang = [-.55, .55, -.95, .95][i] * Math.PI / 2, rr = 60 + e * 260;
+        text(ui, 'ON', cx + Math.sin(ang) * rr * .8, cy - Math.cos(ang) * rr * .9, { size: 72, font: MOD.FONT_T, align: 'center', color: '#ff8fd6', alpha: clamp(1 - e / .9), stroke: 7 });
+      }
+      if (t < ONS_END + .8) vlastLine(ui, t, clamp(1 - (t - ONS_END) / .8));
+      epochCounter(ui, t, cx, Math.min(1130, cy + R + 110), clamp((t - ON_Q) / .15), { avail: 920, left: 80, max: 72, min: 44 });
+      const fade = clamp((t - (C4_TAIL - .42)) / .38);
+      if (fade > 0) { ui.fillStyle = `rgba(0,0,0,${fade})`; ui.fillRect(0, 0, 1080, 1920); F.exposure *= 1 - fade; }
+      ui.restore();
+      F.hudLevel = .4 * (1 - fade);
+      if (fade > .85) F.hud = false;
+    }
+    return F;
+  });
 })();
 
 ;
@@ -8215,6 +9619,82 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     return F;
   });
 
+  // V2.1 in the vertical video (VERTICAL.md): the tags hang as hang tags do, point and hole at the top, so the wallpaper of them
+  // zooming into one fills the tall frame, and the last one hangs there, as tall as the picture, under the fireworks.
+  function tagPathV(g, x, y, w, h) {
+    const n = w * .36, r = w * .14;
+    g.beginPath(); g.moveTo(x + w / 2, y); g.lineTo(x + w, y + n); g.lineTo(x + w, y + h - r); g.arcTo(x + w, y + h, x + w - r, y + h, r);
+    g.lineTo(x + r, y + h); g.arcTo(x, y + h, x, y + h - r, r); g.lineTo(x, y + n); g.closePath();
+  }
+  function drawTagV(g, x, y, w, h, o, lines) {
+    g.save();
+    tagPathV(g, x, y, w, h);
+    g.fillStyle = MOD.chrome(g, y, y + h, [o.hi, o.col, o.lo]); g.fill();
+    g.lineJoin = 'round'; g.lineWidth = w * .03; g.strokeStyle = o.edge; g.stroke();
+    const hx = x + w / 2, hy = y + w * .24, hr = w * .07;
+    g.globalCompositeOperation = 'destination-out'; g.beginPath(); g.arc(hx, hy, hr, 0, TAU); g.fill(); g.globalCompositeOperation = 'source-over';
+    g.lineWidth = w * .025; g.beginPath(); g.arc(hx, hy, hr, 0, TAU); g.stroke();
+    g.setLineDash([w * .06, w * .045]); g.lineWidth = w * .018; g.strokeStyle = o.dash;
+    g.beginPath(); g.roundRect(x + w * .1, y + w * .46, w * .8, h - w * .58, w * .06); g.stroke(); g.setLineDash([]);
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    for (const L of lines) {
+      fitFont(g, L.s, L.size, L.font, w * .74);
+      if (L.stroke) { g.lineWidth = L.stroke; g.strokeStyle = 'rgba(4,8,40,.6)'; g.strokeText(L.s, x + w / 2, y + h * L.y); }
+      g.fillStyle = L.color; g.fillText(L.s, x + w / 2, y + h * L.y);
+    }
+    g.restore();
+  }
+  let TILE_V = null, TILE_V_PAT = null;
+  function tagTileV() {
+    if (TILE_V) return TILE_V;
+    const c = makeCanvas(640, 1100), g = c.getContext('2d');
+    const one = (x, y) => drawTagV(g, x, y, 280, 500, DS_TAG, [
+      { s: '$5.6M', size: 96, font: FT, color: '#ffffff', y: .5, stroke: 8 },
+      { s: 'FINAL', size: 30, font: FM, color: '#e8eeff', y: .71 },
+      { s: 'TRAINING RUN', size: 30, font: FM, color: '#e8eeff', y: .79 }]);
+    one(20, 30); one(340, 580); one(340, -520);
+    return (TILE_V = c);
+  }
+  mvline('V2', 1, (t, s, E, ui) => {
+    const lt = t - s.start, d = s.end - s.start;
+    const k = easeOut(clamp(lt / (d * .85))), zoom = .14 * (1.95 / .14) ** k, ang = (1 - k) * 4.6 + Math.sin(t * 2) * .04 - .05;
+    // the tag's panel stands tall (u × v = .82 × 1.42), so its texture is drawn through fit(): a virtual canvas the panel's shape;
+    // it hangs in the picture's part of the frame, above the scroller
+    const TP = { c: [0, 3.3, 0], u: [.82, 0, 0], v: [0, 1.42, 0] }, FP = { c: [0, 5.2, -7], u: [4.2, 0, 0], v: [0, 6.3, 0] };
+    const g0 = MOD.panel(0), VW0 = fit(g0, PW(0), PH(0), .82, 1.42);
+    if (!TILE_V_PAT) TILE_V_PAT = g0.createPattern(tagTileV(), 'repeat');
+    g0.save(); g0.translate(VW0 / 2, PH(0) / 2); g0.rotate(ang); g0.scale(zoom, zoom); g0.translate(-160, -280);
+    const R = 1500 / zoom; g0.fillStyle = TILE_V_PAT; g0.fillRect(160 - R, 280 - R, 2 * R, 2 * R);
+    g0.restore();
+    const g1 = MOD.panel(1), VW1 = fit(g1, PW(1), PH(1), 4.2, 6.3), fw = fireworks(g1, t, VW1, PH(1));
+    const F = {
+      ro: [Math.sin(lt * .6) * .3, 2.6, 8.3 - lt * .35], ta: [0, 2.9, 0], fov: 1.45, roll: Math.sin(lt * .8) * .02,
+      skyA: '#16020a', skyB: '#4a0a16', acc: '#ffc94a', fog: .012, floorMode: 'water', water: .05, floorCol: '#0a0206',
+      panels: [{ ...FP, alpha: 1, gain: 2.4, glass: 0, tex: 1 }, { ...TP, alpha: 1, gain: 1.35, glass: .35, tex: 0 }],
+      light: { p: [0, 5, 4], c: '#ffd9a0', k: 4, vol: .4 },
+    };
+    if (fw) { const q = MOD.project(F, onP(FP, fw.x / (VW1 / 2) - 1, 1 - fw.y / (PH(1) / 2))); if (q) { F.flare = clamp(1 - (t - fw.te) / .5); F.flarePos = q; F.flareCol = '#ffd27a'; } }
+    // once the zoom has settled on one tag, its string, up out of the frame from the hole
+    const hole = MOD.project(F, onP(TP, 0, 1 - 2 * (.08 + 280 * .24 / 500 * .92))), sk = clamp((k - .92) / .08);
+    if (hole && sk > 0) { ui.save(); ui.globalAlpha = sk; ui.strokeStyle = '#efe6c8'; ui.lineWidth = 4; ui.beginPath(); ui.moveTo(hole[0] * W + Math.sin(t * 1.3) * 6, -400); ui.lineTo(hole[0] * W, (1 - hole[1]) * H); ui.stroke(); ui.restore(); }
+    // the shock, a week later: the badge at the safe area's top left (the date plate has its top right)
+    ui.save(); ui.font = `44px ${FT}`; const nw = ui.measureText('NVDA').width, pw = ui.measureText('≈$600B').width;
+    ui.fillStyle = 'rgba(10,2,6,.62)'; ui.beginPath(); ui.roundRect(60, 252, nw + pw + 110, 84, 10); ui.fill();
+    ui.fillStyle = '#ff4a4a'; ui.beginPath(); ui.moveTo(104 + nw, 282); ui.lineTo(136 + nw, 282); ui.lineTo(120 + nw, 310); ui.fill(); ui.restore();
+    text(ui, 'NVDA', 84, 312, { size: 44, font: FT, color: '#ffffff' });
+    text(ui, '≈$600B', 152 + nw, 312, { size: 44, font: FT, color: '#ff5a5a' });
+    return F;
+  });
+
+  // The vertical scenes' helpers: a world point in the vertical frame's units (null behind the camera), and a gold counter centred
+  // under the date plate, its size fitted once to its widest value so that it doesn't change size as it rolls.
+  const toV = (F, p) => { const q = MOD.project(F, p); return q ? [q[0] * W, (1 - q[1]) * H] : null; };
+  function counterV(ui, str, y, size, widest, maxW = 880) {
+    ui.save(); const sz = fitFont(ui, widest, size, FT, maxW); ui.restore();
+    text(ui, str, W / 2, y, { size: sz, font: FT, align: 'center', color: MOD.chrome(ui, y - sz * .78, y, ['#fff8dc', '#ffd24a', '#b06a08']), stroke: 12 });
+    return sz;
+  }
+
   // ---------- V2.2 "Half a trillion Stargate talk": the gate's nine chevrons lock one per sixteenth, the kawoosh fires on "Stargate",
   // and the pledge rolls to $100,000,000,000 and flips to $500,000,000,000 on "trillion" ----------
   function gate(g, dial, locked, t, t0, e16) {
@@ -8296,6 +9776,44 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     }
     return F;
   });
+  // V2.2 vertical: the gate is round, so it fills the width: big in the picture's middle, the pledge over it under the date plate,
+  // PLEDGED stamped across the gate's top chevron, and the kawoosh blasting out at the camera through the scroller.
+  mvline('V2', 2, (t, s, E, ui) => {
+    const lt = t - s.start, Wd = words(s), tFlip = Wd[2].t0, tK = Wd[3].t0, e16 = beatLen() / 4, t0 = s.start + .06;
+    const locked = clamp(Math.floor((t - t0) / e16) + 1, 0, 9), kAge = t - tK;
+    let dial = 0; for (let i = 0; i < 9; i++) { const a = t0 + i * e16, b = a + e16; if (t <= a) break; dial += (i % 2 ? -1 : 1) * (Math.min(t, b) - a) * 5.5; }
+    if (t > t0 + 9 * e16) dial += (t - t0 - 9 * e16) * .4;
+    const C = [0, 2.45, 0], GR = 2.05;
+    const gg = MOD.panel(0); fit(gg, 2048, 1024, 1, 1); gg.translate(204.8, 204.8); gg.scale(.6, .6); gate(gg, dial, locked, t, t0, e16);
+    const panels = [{ c: C, u: [GR / .6, 0, 0], v: [0, GR / .6, 0], alpha: 1, gain: 1.5, glass: 0, tex: 0 }];
+    let halo = { p: [C[0], C[1], C[2] - .02], n: [0, 0, 1], R: GR * .66, r: .05, k: .25 + 1.4 * locked / 9 * (1 + .5 * kick8(t, 9)), col: '#ffb040' };
+    let flash = 0;
+    if (kAge > 0) {
+      const burst = Math.sin(Math.PI * clamp(kAge / .5)), gh = MOD.panel(1); fit(gh, 1024, 512, 1, 1); gh.translate(166.4, 166.4); gh.scale(.35, .35); horizon(gh, t, burst);
+      const rr = GR * .66 * (1 + .8 * burst) / .35;
+      panels.unshift({ c: [C[0], C[1] - burst * .5, C[2] - .05 + burst * 4.2], u: [rr, 0, 0], v: [0, rr, 0], alpha: 1, gain: 1.6 + 1.2 * burst, glass: 0, tex: 1 });
+      halo = { ...halo, k: 2.2 + 1.5 * Math.exp(-kAge * 6), col: '#7fd0ff' };
+      flash = clamp(1 - kAge / .12) * .1;
+    }
+    const F = {
+      ro: [Math.sin(lt * .5) * .5, 2.15, 14.4 - lt * .45], ta: [0, 2.0, 0], fov: 1.5,
+      skyA: '#02030a', skyB: '#070d22', acc: '#ffb040', fog: .01, floorCol: '#030408', sky: { mode: 'stars', k: .25, col: '#9fb8ff' },
+      panels, spheres: [], sphCol: '#8ad8ff', halo,
+      light: { p: [0, 4.5, 5], c: kAge > 0 ? '#9ad8ff' : '#ffc080', k: 5, vol: .6 },
+      flash, flashCol: '#bfe8ff',
+    };
+    if (kAge > 0) { F.flare = clamp(1.3 - kAge); F.flarePos = MOD.project(F, C) ?? [.5, .5]; F.flareCol = '#a8dcff'; }
+    const v = t < tFlip ? lerp(0, 1e11, easeOut(clamp(lt / (tFlip - s.start - .08)))) : lerp(1e11, 5e11, easeOut(clamp((t - tFlip) / .14)));
+    counterV(ui, money(v), 446, 84, '$500,000,000,000');
+    if (t >= tFlip + .1) {
+      const k = backOut(clamp((t - tFlip - .1) / .18), 2.4);
+      ui.save(); ui.translate(W / 2, 530); ui.rotate(-.06); ui.scale(1.6 - .6 * k, 1.6 - .6 * k); ui.globalAlpha = clamp(k * 2);
+      ui.lineWidth = 8; ui.strokeStyle = '#ff6a3a'; ui.strokeRect(-200, -46, 400, 92);
+      text(ui, 'PLEDGED', 0, 22, { size: 60, font: FT, align: 'center', color: '#ff7a4a', stroke: 8 });
+      ui.restore();
+    }
+    return F;
+  });
 
   // ---------- V2.3 "Hit "Accept All," never ask": diffs rain up a tilted screen too fast to read; the button is hit on every beat ----------
   const CODE = ['export async function run(task) {', 'const plan = await agent.plan(task);', 'for (const step of plan.steps) {', 'await tools.call(step.tool, step.args);',
@@ -8349,6 +9867,51 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       panels: [{ c: [0, 2.9, -3.2], u: [6.4, 0, 0], v: [0, 2.9, -1.3], alpha: 1, gain: 1.25, glass: .3, tex: 0 },
         { c: [0, 2.2, 2.3 - press], u: [2.5, 0, 0], v: [0, 1.25, 0], alpha: 1, gain: 1.6 + (down ? .5 : 0), glass: .4, tex: 1 }],
       light: { p: [0, 5, 4], c: '#b8ffc8', k: 4 + 4 * kb, vol: .4 }, flash: down ? .035 * kb : 0, flashCol: '#c8ffd4',
+    };
+    return F;
+  });
+  // V2.3 vertical: the editor stands tall, from under the date plate to past the bottom edge, its unified diff pouring up it like a
+  // feed; his words fill its title bar in three rows; the ACCEPT ALL button floats big in front of its lower part, pressed on every beat.
+  function buttonTex(t) {
+    const kb = kick(t, 12), down = kb > .45, o = down ? 10 : 0, b = MOD.panel(1);
+    b.fillStyle = 'rgba(0,0,0,.55)'; b.beginPath(); b.roundRect(60 + 16, 140 + 16, 904, 232, 40); b.fill();
+    b.fillStyle = MOD.chrome(b, 140 + o, 372 + o, down ? ['#b8ffc8', '#28c060', '#0a5a24'] : ['#8affa4', '#18a848', '#064a1c']);
+    b.beginPath(); b.roundRect(60 + o, 140 + o, 904, 232, 40); b.fill();
+    b.lineWidth = 6; b.strokeStyle = down ? '#ffffff' : '#c8ffd4'; b.stroke();
+    b.font = `100px ${FT}`; b.textAlign = 'center'; b.textBaseline = 'middle'; b.lineJoin = 'round';
+    b.lineWidth = 12; b.strokeStyle = 'rgba(0,40,10,.7)'; b.strokeText('ACCEPT ALL', 512 + o, 258 + o);
+    b.fillStyle = '#ffffff'; b.fillText('ACCEPT ALL', 512 + o, 258 + o);
+    const cx = 830 + o + Math.sin(t * 3) * 6, cy = 300 + o;
+    if (down) { b.lineWidth = 5; b.strokeStyle = `rgba(255,255,255,${kb})`; b.beginPath(); b.arc(cx, cy, 30 + (1 - kb) * 60, 0, TAU); b.stroke(); }
+    cursorArrow(b, cx, cy, 2.4);
+    return { kb, down };
+  }
+  mvline('V2', 3, (t, s, E, ui) => {
+    const lt = t - s.start, EP = { c: [0, 2.72, 0], u: [1.5, 0, 0], v: [0, 2.5, -.3] };
+    const g = MOD.panel(0), VW = fit(g, PW(0), PH(0), 1.5, Math.hypot(2.5, .3)), TB = 214, RH = 31;
+    const rows = lt * 30 + lt * lt * 14, r0 = Math.floor(rows), off = (rows - r0) * RH;
+    g.fillStyle = 'rgba(4,10,6,.92)'; g.fillRect(0, 0, VW, 1024);
+    g.font = `19px ${FM}`; g.textBaseline = 'middle';
+    for (let r = 0; r < 28; r++) {
+      const L = r0 - r, h = hash(L * 13 + 7), kind = h < .44 ? '+' : h < .74 ? '-' : h < .93 ? ' ' : '@', y = 1024 - RH / 2 - (r * RH + off);
+      if (kind === '@') { const a = 1 + Math.floor(hash(L) * 400); g.fillStyle = 'rgba(40,120,160,.3)'; g.fillRect(0, y - RH / 2, VW, RH); g.fillStyle = '#6fd6ff'; g.fillText(`@@ -${a},${6 + (L % 5)} +${a},${8 + (L % 7)} @@`, 14, y); continue; }
+      if (kind !== ' ') { g.fillStyle = kind === '+' ? 'rgba(40,190,80,.34)' : 'rgba(220,40,60,.34)'; g.fillRect(0, y - RH / 2, VW, RH - 2); }
+      const code = CODE[Math.floor(hash(L * 7 + 1) * CODE.length)], ind = '  '.repeat(Math.floor(hash(L * 3) * 3));
+      g.fillStyle = kind === '+' ? '#8dffa8' : kind === '-' ? '#ff8a9a' : 'rgba(200,220,210,.6)';
+      g.fillText(`${String(1000 + L).slice(-3)} ${kind} ${ind}${code}`, 14, y);
+    }
+    // the title bar, his words in three rows
+    g.fillStyle = 'rgba(8,30,16,.97)'; g.fillRect(0, 0, VW, TB); g.fillStyle = 'rgba(80,255,140,.55)'; g.fillRect(0, TB, VW, 3);
+    for (const [i, c] of ['#ff5f57', '#febc2e', '#28c840'].entries()) { g.fillStyle = c; g.beginPath(); g.arc(26 + i * 26, 28, 8, 0, TAU); g.fill(); }
+    text(g, 'karpathy', 108, 36, { size: 24, color: 'rgba(170,240,190,.85)' });
+    ['“I ‘Accept All’', 'always, I don’t read', 'the diffs anymore.”'].forEach((q, i) => text(g, q, 22, 98 + i * 46, { size: 40, color: '#e8fff0' }));
+    const { kb, down } = buttonTex(t), press = down ? .14 : 0;
+    const F = {
+      ro: [Math.sin(lt * .7) * .3, 3.4 - press * .2, 8.6 - lt * .3], ta: [0, 3.4, 0], fov: 1.45,
+      skyA: '#010603', skyB: '#03140a', acc: '#3dff7a', fog: .012, floorCol: '#010402', grid: .2,
+      panels: [{ ...EP, alpha: 1, gain: 1.25, glass: .3, tex: 0 },
+        { c: [0, 3.07, 2.4 - press], u: [1.12, 0, 0], v: [0, .56, 0], alpha: 1, gain: 1.6 + (down ? .5 : 0), glass: .12, tex: 1 }],
+      light: { p: [0, 5.5, 4], c: '#b8ffc8', k: 4 + 4 * kb, vol: .4 }, flash: down ? .035 * kb : 0, flashCol: '#c8ffd4',
     };
     return F;
   });
@@ -8408,6 +9971,56 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     };
     return F;
   });
+  // V2.4 vertical: the board stands on end like a power strip, two sockets by four, and the plug works its way down it, across and
+  // down, socket by socket, one per eighth.
+  const WPV = { c: [0, 2.7, 0], u: [1.8, 0, 0], v: [0, 2.35, 0] };
+  const SXV = [205, 579], SYV = [160, 386, 612, 838], SNAKE = [[0, 0], [0, 1], [1, 1], [1, 0], [2, 0], [2, 1], [3, 1], [3, 0]];
+  const sockV = i => [SXV[SNAKE[i][1]], SYV[SNAKE[i][0]]];
+  let WALL_V = null;
+  function wallBaseV() {
+    if (WALL_V) return WALL_V;
+    const c = makeCanvas(2048, 1024), g = c.getContext('2d'), VW = fit(g, 2048, 1024, WPV.u[0], WPV.v[1]);
+    g.fillStyle = MOD.chrome(g, 0, 1024, ['#2a3044', '#161a28', '#0c0e16']); g.beginPath(); g.roundRect(6, 6, VW - 12, 1012, 26); g.fill();
+    g.strokeStyle = 'rgba(160,180,230,.25)'; g.lineWidth = 4; g.stroke();
+    for (let y = 24; y < 1004; y += 6) { g.fillStyle = `rgba(255,255,255,${.012 + .012 * hash(y)})`; g.fillRect(16, y, VW - 32, 2); }
+    for (let i = 0; i < 8; i++) {
+      const [x, y] = sockV(i);
+      g.fillStyle = '#3a4054'; g.beginPath(); g.roundRect(x - 110, y - 40, 220, 80, 40); g.fill();
+      g.fillStyle = '#05060a'; g.beginPath(); g.roundRect(x - 91, y - 26, 182, 53, 26); g.fill();
+      g.fillStyle = '#4a5068'; g.beginPath(); g.roundRect(x - 56, y - 6.5, 112, 13, 4); g.fill();
+      fitFont(g, TOOLS[i], 52, FT, 340); g.textAlign = 'center'; g.fillStyle = 'rgba(150,160,190,.6)'; g.fillText(TOOLS[i], x, y + 100);
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    return (WALL_V = c);
+  }
+  mvline('V2', 4, (t, s, E, ui) => {
+    const lt = t - s.start, e8 = beatLen() / 2, u = (t - s.start + .02) / e8, k = clamp(Math.floor(u), 0, 7), f = u < 0 ? 0 : k === 7 && u >= 8 ? 1 : frac(u);
+    const litN = k + (f >= .55 ? 1 : 0);
+    const g = MOD.panel(0); g.drawImage(wallBaseV(), 0, 0); fit(g, PW(0), PH(0), WPV.u[0], WPV.v[1]);
+    for (let i = 0; i < litN; i++) {
+      const [x, y] = sockV(i), age = t - (s.start - .02 + (i + .55) * e8), hot = Math.exp(-age * 9);
+      g.lineWidth = 9; g.strokeStyle = `rgb(255,${Math.round(130 + 90 * hot)},${Math.round(60 + 120 * hot)})`; g.beginPath(); g.roundRect(x - 110, y - 40, 220, 80, 40); g.stroke();
+      fitFont(g, TOOLS[i], 52, FT, 340); g.textAlign = 'center'; g.fillStyle = hot > .3 ? '#ffffff' : '#ff9a4a'; g.fillText(TOOLS[i], x, y + 100);
+      g.fillStyle = `rgba(255,140,60,${.25 + .5 * hot})`; g.beginPath(); g.roundRect(x - 91, y - 26, 182, 53, 26); g.fill();
+    }
+    const VW = 1024 * WPV.u[0] / WPV.v[1];
+    const sw = i => i < 0 ? onP(WPV, .2, 1.45) : onP(WPV, sockV(i)[0] / (VW / 2) - 1, 1 - sockV(i)[1] / 512);
+    const S = PLUG(), hy = 1.6, hx = hy * S.aspect, tipEnd = hy - .11, a = sw(k - 1), b = sw(k);
+    const mv = easeInOut(clamp((f - .15) / .3)), zIn = tipEnd - .5, zOut = tipEnd + .6;
+    const z = f < .15 ? lerp(zIn, zOut, easeOut(f / .15)) : f < .45 ? zOut : lerp(zOut, zIn, easeIn(clamp((f - .45) / .1)));
+    const P = [lerp(a[0], b[0], mv), lerp(a[1], b[1], mv) + Math.sin(mv * Math.PI) * .2, z];
+    const wob = f > .15 && f < .45 ? Math.sin(mv * Math.PI) : 0;
+    // (the plug a darker steel than the landscape one's, and seen a little lower and from the side, so that it reads as a plug and
+    // not as a white block against the tall board)
+    const F = {
+      ro: [3.4 - lt * .5, 5.2, 11.6], ta: [-.2, 2.05, 0], fov: 1.5,
+      skyA: '#04050c', skyB: '#0c1020', acc: '#ff8a3a', fog: .012, floorCol: '#040508', grid: .15,
+      panels: [{ ...WPV, alpha: 1, gain: 1.3, glass: .3, tex: 0 }],
+      shape: { key: 'usbc', src: S, p: P, rot: rotYX(wob * .25, -Math.PI / 2, wob * .15), s: [hx, hy, .1], col: '#6c7284', rim: '#ffb070', metal: .75 },
+      light: { p: [3, 6.5, 6], c: '#ffe6d0', k: 6, vol: .5 },
+    };
+    return F;
+  });
 
   // ---------- V2.5 "Zuck's nine-figure poaching spree,": Meta's ∞ of blue spheres pulls a white one out of the other labs' orbits
   // on every beat; the signing bonus counts to $100,000,000 on "nine-figure" ----------
@@ -8447,6 +10060,44 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     const tF = words(s)[2].t0, k = clamp((t - s.start) / (tF - s.start)), v = 1e8 * (k < 1 ? (Math.exp(k * 7) - 1) / (Math.exp(7) - 1) : 1);
     text(ui, money(v), 960, 128, { size: 84, font: FT, align: 'center', color: MOD.chrome(ui, 62, 128, ['#fff8dc', '#ffd24a', '#b06a08']), stroke: 12 });
     text(ui, 'SIGNING BONUS', 960, 176, { size: 28, align: 'center', color: '#ffe6a8', stroke: 6, spacing: 6 });
+    return F;
+  });
+  // V2.5 vertical: Meta's ∞ stands on end as an 8 down the middle; the other labs' orbits sit at its upper left (OPENAI) and lower
+  // right (SCALE AI), and a white sphere is pulled out of one or the other on every beat; the bonus rolls up under the date plate.
+  const infPathV = a => [Math.sin(2 * a) * 1.25, Math.sin(a) * 2.45, Math.cos(a) * .85];
+  const infRV = t => rot3(.1 + Math.sin(t * .7) * .06, Math.sin(t * .6) * .35, 0);
+  const infAtV = (t, a, pos, sc = 1) => add(mul(rv(infRV(t), infPathV(a + t * 1.2)), sc), pos);
+  const ORBS_V = [{ name: 'OPENAI', sub: '', c: [-1.9, 4.6, -.4], lab: -1 }, { name: 'SCALE AI', sub: '$14.3B · 49%', c: [1.75, 1.45, .4], lab: 1 }];
+  mvline('V2', 5, (t, s, E, ui) => {
+    const lt = t - s.start, POS = [0, 3.0, 0], SC = .85;
+    const spheres = [];
+    for (let i = 0; i < 24; i++) spheres.push([...infAtV(t, i / 24 * TAU, POS, SC), .25, META_BLUE]);
+    const pulls = [0, 1, 2, 3].map(k => ({ k, orb: k % 2, j: k >> 1, t0: B(s, k), a: 2.2 + k * 1.57 }));
+    const orbPos = (O, oi, j) => { const a = j / 4 * TAU + t * 2.4 + oi; return add(O.c, [Math.cos(a) * .62, Math.sin(a) * .2, Math.sin(a) * .45]); };
+    ORBS_V.forEach((O, oi) => {
+      for (let j = 0; j < 4; j++) {
+        const q = pulls.find(q => q.orb === oi && q.j === j);
+        if (!q || t < q.t0) { spheres.push([...orbPos(O, oi, j), .2, '#f4f6ff']); continue; }
+        const k = clamp((t - q.t0) / .32), p0 = orbPos(O, oi, j), p1 = infAtV(t, q.a, POS, SC), e = easeIn(k);
+        const p = k < 1 ? add(add(mul(p0, 1 - e), mul(p1, e)), [Math.sin(k * Math.PI) * .5 * (oi ? 1 : -1), Math.sin(k * Math.PI) * .6, Math.sin(k * Math.PI) * .8]) : p1;
+        spheres.push([...p, .2 + .06 * k, '#ffffff']);
+      }
+    });
+    const F = {
+      ro: [Math.sin(lt * .5) * .6, 2.85, 16.6 - lt * .4], ta: [0, 2.7, 0], fov: 1.5,
+      skyA: '#01030c', skyB: '#061234', acc: '#3a8cff', fog: .012, floorMode: 'water', water: .04, floorCol: '#01030a', grid: .12,
+      spheres, sphCol: META_BLUE, light: { p: [0, 7, 5], c: '#cfe0ff', k: 6, vol: .5 },
+    };
+    const pk = pulls.filter(q => t >= q.t0 && t - q.t0 < .06).length; if (pk) F.flash = .03;
+    ORBS_V.forEach(O => {
+      const p = toV(F, add(O.c, [0, O.lab * .55, 0])); if (!p) return;
+      const y = O.lab > 0 ? p[1] - (O.sub ? 40 : 0) : p[1] + 40;
+      text(ui, O.name, p[0], y, { size: 44, font: FT, align: 'center', color: '#ffffff', stroke: 8 });
+      if (O.sub) text(ui, O.sub, p[0], y + 46, { size: 36, align: 'center', color: '#b8ccff', stroke: 6 });
+    });
+    const tF = words(s)[2].t0, k = clamp((t - s.start) / (tF - s.start)), v = 1e8 * (k < 1 ? (Math.exp(k * 7) - 1) / (Math.exp(7) - 1) : 1);
+    counterV(ui, money(v), 450, 96, '$100,000,000');
+    text(ui, 'SIGNING BONUS', W / 2, 508, { size: 38, align: 'center', color: '#ffe6a8', stroke: 6, spacing: 6 });
     return F;
   });
 
@@ -8498,6 +10149,65 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       const a = t - ins[i], sw = Math.sin(t * 5 + i * 2) * .2 * Math.exp(-Math.max(0, a) * 1.5) + Math.sin(t * 2.3 + i) * .05;
       ui.save(); ui.strokeStyle = '#ffe6b0'; ui.lineWidth = 3; ui.beginPath(); ui.moveTo(top[0], top[1]); ui.lineTo(p[0], p[1]); ui.stroke();
       ui.translate(p[0], p[1]); ui.rotate(.07 + sw); ui.drawImage(labTag(i), -45, -87, 360, 174); ui.restore();
+    }
+    return F;
+  });
+  // V2.6 vertical: the three are stacked up the tall frame, zigzag, as they arrive one per beat (SSI low left, Thinking Machines
+  // in the middle at the right, Perplexity high left), each with its price tag swinging beside it toward the middle; BUY 3! slams
+  // down onto the top of the pile on "buy".
+  const LAB_TAG_V = [];
+  // (a tag pointing the other way, its hole at the right, for a tag hung to an object's left; the type stays the right way round)
+  const labTagL = i => LAB_TAG_V[i] ?? (LAB_TAG_V[i] = (() => {
+    const c = makeCanvas(560, 270), g = c.getContext('2d');
+    g.save(); g.translate(560, 0); g.scale(-1, 1); drawTag(g, 10, 10, 540, 250, DS_TAG, []); g.restore();
+    const bx0 = 560 - (10 + 540 - 250 * .12), bx1 = 560 - (10 + 250 * .5), cx = (bx0 + bx1) / 2;
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    for (const L of LABS[i].lines) {
+      fitFont(g, L.s, L.size, L.font, (bx1 - bx0) * .92);
+      if (L.stroke) { g.lineWidth = L.stroke; g.strokeStyle = 'rgba(4,8,40,.6)'; g.strokeText(L.s, cx, 10 + 250 * L.y); }
+      g.fillStyle = L.color; g.fillText(L.s, cx, 10 + 250 * L.y);
+    }
+    return c;
+  })());
+  mvline('V2', 6, (t, s, E, ui) => {
+    const lt = t - s.start, Wd = words(s), tBuy = Wd[2].t0, tThree = Wd[3].t0, ins = [s.start - .01, B(s, 0) - .02, B(s, 1) - .02];
+    // the sunburst, on a tall backdrop, its centre behind the pile
+    const FP = { c: [0, 4.5, -8], u: [8, 0, 0], v: [0, 12, 0] };
+    const g = MOD.panel(0), VW = fit(g, PW(0), PH(0), 8, 12), cx = VW / 2, cy = 490, rot = t * .5;
+    g.fillStyle = '#6a0818'; g.fillRect(0, 0, VW, 1024);
+    for (let i = 0; i < 20; i++) { const a0 = i / 20 * TAU + rot, a1 = a0 + TAU / 40; g.fillStyle = i % 2 ? '#e8243c' : '#ff4a3a'; g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, 1600, a0, a1); g.fill(); }
+    const rg = g.createRadialGradient(cx, cy, 0, cx, cy, 300); rg.addColorStop(0, 'rgba(255,245,200,.95)'); rg.addColorStop(.35, 'rgba(255,190,80,.5)'); rg.addColorStop(1, 'rgba(255,80,40,0)');
+    g.fillStyle = rg; g.fillRect(0, 0, VW, 1024);
+    const PS = [[-1.75, 2.0, 0], [1.75, 4.45, 0], [-1.75, 6.9, 0]], spheres = [];
+    const drop = i => { const a = t - ins[i]; if (a < 0) return null; const k = clamp(a / .2); return (1 - easeOut(k)) * 5 + (k >= 1 ? Math.abs(Math.sin(a * 12)) * .25 * Math.exp(-a * 6) : 0); };
+    const at = (i, dy) => add(PS[i], [0, dy, 0]);
+    let dy = drop(0);
+    if (dy !== null) { const R = rot3(t * .9 + .4, t * 1.3, .3); CUBE_V.forEach(v => spheres.push([...add(at(0, dy), rv(R, mul(v, .84))), .35, '#eef4ff'])); }
+    dy = drop(1);
+    if (dy !== null) { const R = rot3(1.15 + Math.sin(t * 1.6) * .3, t * 1.6, 0); for (let j = 0; j < 12; j++) { const a = j / 12 * TAU; spheres.push([...add(at(1, dy), rv(R, [Math.cos(a) * 1.1, 0, Math.sin(a) * 1.1])), .25, '#ffc53a']); } }
+    dy = drop(2);
+    if (dy !== null) { const R = rot3(t * .7 + 1, t * 1.8, .2); OCTA_V.forEach(v => spheres.push([...add(at(2, dy), rv(R, mul(v, 1.02))), .37, '#c8fff8'])); }
+    const F = {
+      ro: [Math.sin(lt * .5) * .5, 3.75, 24 - lt * .5], ta: [0, 3.75, 0], fov: 1.5,
+      skyA: '#c02a2a', skyB: '#ff8a4a', acc: '#ffd24a', fog: .01, floor: false,
+      panels: [{ ...FP, alpha: 1, gain: 1.05, glass: 0, tex: 0 }],
+      spheres, sphCol: '#ffc53a', light: { p: [0, 9, 6], c: '#fff0d8', k: 6, vol: .5 },
+    };
+    ins.forEach((a, i) => { if (i && t >= a && t - a < .06) F.flash = .05; });
+    if (t >= tBuy) {
+      const a = t - tBuy, S = MOD.shapeText('BUY 3!'), k = backOut(clamp(a / .2), 2.2), pulse = t >= tThree ? 1 + .12 * Math.exp(-(t - tThree) * 10) : 1, hy = .58 * pulse;
+      F.shape = { key: 'BUY 3!', src: S, p: [0, lerp(13, 7.25, k), 1.4], rot: rotYX(Math.sin(t * 2.2) * .12, -.08 + (1 - k) * .6), s: [hy * S.aspect, hy, .24], col: '#ffc020', rim: '#fff4b0', metal: 1 };
+      if (a < .08 || (t >= tThree && t - tThree < .08)) { F.flash = .08; F.flashCol = '#ffe0a0'; }
+    }
+    // the tags, hung beside each object toward the middle of the frame
+    for (let i = 0; i < 3; i++) {
+      const dyy = drop(i); if (dyy === null) continue;
+      const side = PS[i][0] < 0 ? 1 : -1, top = toV(F, add(at(i, dyy), [side * 1.05, .1, 0])), p = toV(F, add(at(i, dyy), [side * 1.62, -.4, .3])); if (!p || !top) continue;
+      const a = t - ins[i], sw = Math.sin(t * 5 + i * 2) * .2 * Math.exp(-Math.max(0, a) * 1.5) + Math.sin(t * 2.3 + i) * .05;
+      ui.save(); ui.strokeStyle = '#ffe6b0'; ui.lineWidth = 3; ui.beginPath(); ui.moveTo(top[0], top[1]); ui.lineTo(p[0], p[1]); ui.stroke();
+      ui.translate(p[0], p[1]); ui.rotate(side * (.07 + sw));
+      if (side > 0) ui.drawImage(labTag(i), -42, -81, 336, 162); else ui.drawImage(labTagL(i), -294, -81, 336, 162);
+      ui.restore();
     }
     return F;
   });
@@ -8575,6 +10285,42 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     if (t >= tM && t - tM < .1) { F.flash = .16; F.flashCol = '#ff6040'; }
     return F;
   });
+  // V2.7 vertical: the walk down a corridor one tile wide, as Wolfenstein's often were, so that its walls run up both sides of the
+  // tall frame from the nearest step to the far wall, its plaque a little above the picture's middle; the GROK plaques on the walls
+  // come by close.
+  const END_V = {};
+  function endWallV(red) {
+    const key = red ? 'r' : 'b'; if (END_V[key]) return END_V[key];
+    const c = makeCanvas(1024, 512), g = c.getContext('2d'), VW = fit(g, 1024, 512, 1.3, 1.6);
+    g.drawImage(stone(), 0, 0, Math.round(1024 * 2.6 / 8.33), 384, 0, 0, VW, 512);
+    g.globalCompositeOperation = 'multiply'; g.fillStyle = red ? '#ff3a28' : '#4a78ff'; g.fillRect(0, 0, VW, 512); g.globalCompositeOperation = 'source-over';
+    g.drawImage(plaque(), VW / 2 - 180, 168, 360, 180);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    return (END_V[key] = c);
+  }
+  mvline('V2', 7, (t, s, E, ui) => {
+    const lt = t - s.start, tM = words(s)[2].t0, red = t >= tM && !(t - tM < .12 && Math.floor((t - tM) * 50) % 2);
+    const BW = 1.3, BH = 1.6, zEnd = -17.5;
+    const cz = 1.2 - lt * 3.4, sway = Math.sin(lt * 2.4) * .12, yaw = Math.sin(lt * 2.1 + .3) * .05;
+    const ro = [sway, -.12, cz], ta = add(ro, [Math.sin(yaw) * 4, -.3, -Math.cos(yaw) * 4]);
+    MOD.panel(1).drawImage(plaque(), 0, 0);
+    MOD.panel(2).drawImage(endWallV(red), 0, 0);
+    const fogK = E.fx < 2.5 ? 2.2 : 1, fogD = .02;
+    const panels = [{ c: [0, 0, zEnd], u: [BW, 0, 0], v: [0, BH, 0], alpha: 1, gain: 1.15 * Math.exp(-(cz - zEnd) * fogD * fogK), glass: 0, tex: 2 }];
+    for (const [z, side] of PLAQ) {
+      if (z > cz + .5 || panels.length >= 6) continue;
+      panels.push({ c: [side * (BW - .02), .15, z], u: [0, 0, side * .62], v: [0, .31, 0], alpha: 1, gain: 1.05 * Math.exp(-Math.max(0, cz - z) * fogD * fogK), glass: 0, tex: 1 });
+    }
+    const F = {
+      ro, ta, fov: 1.2, floor: false,
+      skyA: '#000000', skyB: '#000000', acc: red ? '#ff3020' : '#4a78ff', fog: fogD,
+      // (the floor and ceiling darker greys than the landscape corridor's: in the tall frame they're most of the picture)
+      tunnel: { key: 'wolf', src: stone(), box: [BW, BH], scroll: 0, col: red ? '#ff4030' : '#5a86ff', gain: 1.35, floorCol: '#484848', ceilCol: '#2c2c2c' },
+      panels, light: { p: add(ro, [0, .6, -5]), c: red ? '#ffd0c0' : '#e0e8ff', k: 5, vol: 0 },
+    };
+    if (t >= tM && t - tM < .1) { F.flash = .16; F.flashCol = '#ff6040'; }
+    return F;
+  });
 
   // ---------- V2.8 "Two labs win Olympiad gold.": two gold medals spin under their ribbons, OPENAI and GOOGLE DEEPMIND running up them;
   // 35/42 in gold chrome between, IMO 2025 under it ----------
@@ -8636,6 +10382,45 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     if (t >= tWin && t - tWin < .08) { F.flash = .08; F.flashCol = '#fff0c0'; }
     return F;
   });
+  // V2.8 vertical: the ribbons hang side by side from above the frame, long, the labs' names running up them, and the medals spin at
+  // their ends in the lower middle; 35/42 drops in across the ribbons, between the names and the medals. (Both ribbons are drawn on
+  // one panel stood on end, its texture's long side up them: a ribbon's own panel, six times as tall as wide on a 2:1 texture,
+  // samples it so unevenly that the mipmap blurs the names away. Their twist and swing are drawn in it.)
+  mvline('V2', 8, (t, s, E, ui) => {
+    const lt = t - s.start, tWin = words(s)[2].t0, Yc = 3.0, bot = Yc + .15, RL = 6, RW = 3.4, PX = 2048 / RL;
+    const labs = [{ name: 'OPENAI', x: -1.25, ph: 0 }, { name: 'GOOGLE DEEPMIND', x: 1.25, ph: 2.1 }];
+    const g = MOD.panel(0), panels = [{ c: [0, bot + RL / 2, 0], u: [0, RL / 2, 0], v: [-RW / 2, 0, 0], alpha: 1, gain: 1.4, glass: 0, tex: 0 }];
+    MOD.panel(1).drawImage(medal(), 0, 0);
+    labs.forEach(L => {
+      const tw = Math.cos(Math.sin(t * 1.4 + L.ph) * 1.1), sw = Math.sin(t * 1.8 + L.ph) * .03, w = .84 * PX, size = w * .56;
+      g.save(); g.translate(2048, (L.x + RW / 2) * PX); g.rotate(sw); g.scale(1, .3 + .7 * Math.abs(tw));
+      const gr = g.createLinearGradient(0, -w / 2, 0, w / 2); gr.addColorStop(0, '#7a4a06'); gr.addColorStop(.18, '#ffd24a'); gr.addColorStop(.5, '#fff0b0'); gr.addColorStop(.82, '#ffd24a'); gr.addColorStop(1, '#7a4a06');
+      g.fillStyle = gr; g.fillRect(-2048, -w / 2, 2048, w);
+      g.fillStyle = '#2a3a9a'; g.fillRect(-2048, -w / 2, 2048, w * .12); g.fillRect(-2048, w / 2 - w * .12, 2048, w * .12);
+      g.font = `${size}px ${FT}`; g.textBaseline = 'middle'; g.textAlign = 'left'; g.fillStyle = '#3a2400';
+      const str = L.name + '  ·  ', per = g.measureText(str).width, sc = (t * .9 + L.ph) * PX;
+      for (let x = -2048 - per + (sc % per); x < 0; x += per) g.fillText(str, x, size * .06);
+      g.fillStyle = `rgba(20,10,0,${(1 - Math.abs(tw)) * .45})`; g.fillRect(-2048, -w / 2, 2048, w);
+      g.restore();
+      const a = t * 3.2 + L.ph, mr = 1.56;
+      panels.push({ c: [L.x - RL * Math.sin(sw), bot - .72, .05], u: [Math.cos(a) * mr, 0, Math.sin(a) * mr], v: [0, mr, 0], alpha: 1, gain: 1.5, glass: 0, tex: 1 });
+    });
+    const spheres = [];
+    for (let i = 0; i < 24; i++) { const h = hash(i * 7 + 2); spheres.push([-2.4 + hash(i * 3) * 4.8, Yc + 5 - ((t * (1.3 + h) + hash(i * 5) * 8) % 8), -2.5 + hash(i * 11) * 4, .06 + .05 * h, '#ffd24a']); }
+    const S = MOD.shapeText('35/42'), k = backOut(clamp((t - s.start - .02) / .22)), hy = .5 * (t >= tWin ? 1 + .1 * Math.exp(-(t - tWin) * 9) : 1);
+    const F = {
+      // (looking a little low: the ribbons from the top, the medals under them, and 35/42 landing under the medals, clear of the
+      // names, just over the captions)
+      ro: [Math.sin(lt * .5) * .4, Yc - .8, 14.4 - lt * .35], ta: [0, Yc - .9, 0], fov: 1.5,
+      skyA: '#06031a', skyB: '#1c0e3c', acc: '#ffcc55', fog: .012, floorCol: '#040210', grid: .12,
+      panels, spheres, sphCol: '#ffd24a',
+      shape: { key: '35/42', src: S, p: [0, lerp(Yc + 6.5, Yc - 2.0, k), .9], rot: rotYX(Math.sin(t * 1.5) * .18, -.05), s: [hy * S.aspect, hy, .2], col: '#b07810', rim: '#ffe08a', metal: 1 },
+      light: { p: [0, Yc + 3.2, 4], c: '#ffe0a0', k: 7, vol: .7 }, flare: 1, flareCol: '#ffe0a0',
+    };
+    F.flarePos = MOD.project(F, F.light.p) ?? [.5, .9];
+    if (t >= tWin && t - tWin < .08) { F.flash = .08; F.flashCol = '#fff0c0'; }
+    return F;
+  });
 
   // ---------- V2.9 "GPT-5 breaks 4o hearts,": a glossy extruded heart, labelled 4o, beats; GPT-5 slams in above ("GPT-", then the
   // 5), and on "breaks" the heart cracks down the middle and falls apart (the 4 one way, the o the other) while #keep4o posts swarm ----------
@@ -8691,6 +10476,47 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     }
     return F;
   });
+  // V2.9 vertical: GPT-5 slams in at the top, the heart beats big under it, and on "breaks" it cracks, its halves tipping out and
+  // falling down the frame, while the #keep4o posts pop up all round it and drift up.
+  mvline('V2', 9, (t, s, E, ui) => {
+    const lt = t - s.start, Wd = words(s), tG = Wd[0].t0, t5 = Wd[1].t0, tBr = Wd[2].t0, br = clamp((t - tBr) / .6), ebr = easeOut(br);
+    const beat = 1 + kick(t, 5) * .08 * (1 - br), yaw = Math.sin(t * 1.4) * .4 * (1 - ebr), HC = [0, 3.0, 0];
+    const S = MOD.shapeHeart(), hy = 1.5 * beat, gap = ebr * .38, tip = ebr * .5, fa = Math.max(0, t - tBr - .1), drop = Math.min(1.05, 3.2 * fa * fa);
+    const cracked = t >= tBr - .02;
+    const F = {
+      ro: [Math.sin(lt * .4) * .4, 3.0, 12.3 - lt * .3], ta: [0, 2.85, 0], fov: 1.5,
+      skyA: '#1a0424', skyB: '#5a0c3a', acc: '#ff3aa6', fog: .012, floorCol: '#08020a', grid: .1,
+      shape: {
+        key: 'heart', src: S, p: [HC[0], HC[1] - drop - (1 - beat) * .5, HC[2]], rot: rotYX(yaw, -.05), s: [hy * S.aspect, hy, .42],
+        col: '#ff1f4a', rim: '#ffb0d0', metal: .35,
+        ...(cracked ? { split: { gap, ang: tip, amp: .1 } } : {}),
+      },
+      panels: [], light: { p: [-2, 7, 6], c: '#ffe0ec', k: 7, vol: .5 },
+    };
+    if (t >= tG) {
+      const a = t - tG, full = t >= t5, a5 = t - t5;
+      gpt5Tex(full);
+      const sh = full && a5 < .25 ? Math.sin(a5 * 90) * .06 * (1 - a5 / .25) : 0, y = lerp(9.5, 4.72, easeOut(clamp(a / .15))) + (full ? Math.exp(-a5 * 14) * .2 : 0);
+      F.panels.push({ c: [sh + .12, y, .6], u: [1.75, 0, 0], v: [0, .875, 0], alpha: 1, gain: 1.5, glass: 0, tex: 2 });
+      if (full && a5 < .06) F.flash = .04;
+    }
+    if (t >= tBr && t - tBr < .1) { F.flash = .14 * (1 - (t - tBr) / .1); F.flashCol = '#ffc0d8'; }
+    const lab = side => {
+      const a = -side * tip, rx = side * .55, ry = .25 + hy, x = rx * Math.cos(a) - ry * Math.sin(a) + side * gap, y = rx * Math.sin(a) + ry * Math.cos(a) - hy;
+      return toV(F, add(F.shape.p, [x, y, .5]));
+    };
+    const pL = lab(-1), pR = lab(1);
+    if (pL && pR) {
+      text(ui, '4', pL[0], pL[1] + 38, { size: 112, font: FT, align: 'center', color: '#ffffff', stroke: 12 });
+      text(ui, 'o', pR[0], pR[1] + 38, { size: 112, font: FT, align: 'center', color: '#ffffff', stroke: 12 });
+    }
+    for (let i = 0; i < 26; i++) {
+      const born = tBr - .15 + i * .045, a = t - born; if (a < 0) continue;
+      const side = i % 2 ? 1 : -1, big = hash(i + 7) > .7, x = W / 2 + side * (110 + hash(i * 3) * (big ? 170 : 290)), y = 1260 - hash(i * 5 + 1) * 700 - a * 80;
+      text(ui, '#keep4o', x, y, { size: big ? 50 : 34, font: big ? FT : FM, align: 'center', color: '#ff6ad8', alpha: clamp(a / .06) * (.65 + .35 * hash(i)), stroke: 6 });
+    }
+    return F;
+  });
 
   // ---------- V2.10 "Nano Banana tops the charts,": an arcade HI-SCORES table; the banana, extruded, climbs a row per beat past
   // CHATGPT to 1ST. The other rows hold an arcade table's default initials. ----------
@@ -8734,6 +10560,48 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     if (climbs && last < .06) { F.flash = .04; F.flashCol = '#fff2a0'; }
     return F;
   });
+  // V2.10 vertical: the table on an arcade cabinet's own portrait screen (many stood on end), its rows spaced down it; the banana
+  // climbs a row per beat past CHATGPT to 1ST.
+  mvline('V2', 10, (t, s, E, ui) => {
+    const lt = t - s.start;
+    const climbs = [0, 1, 2, 3].filter(k => t >= B(s, k)).length, last = climbs ? t - B(s, climbs - 1) : 1, mv = easeOut(clamp(last / .14));
+    const bRank = 4 - climbs, rowY = r => 330 + r * 148;
+    const TP = { c: [0, 2.95, 0], u: [2.0, 0, 0], v: [0, 2.2, 0] };
+    const g = MOD.panel(0), VW = fit(g, PW(0), PH(0), TP.u[0], TP.v[1]);
+    // the screen in its bezel, curved glass and all
+    g.fillStyle = '#05060c'; g.beginPath(); g.roundRect(4, 4, VW - 8, 1016, 40); g.fill();
+    g.fillStyle = 'rgba(4,8,44,.95)'; g.beginPath(); g.roundRect(30, 30, VW - 60, 964, 34); g.fill();
+    g.lineWidth = 7; g.strokeStyle = '#3a6cff'; g.stroke();
+    const sheen = g.createLinearGradient(0, 30, VW * .5, 600); sheen.addColorStop(0, 'rgba(255,255,255,.1)'); sheen.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = sheen; g.beginPath(); g.roundRect(30, 30, VW - 60, 964, 34); g.fill();
+    g.font = `${fitFont(g, 'HI-SCORES', 120, FT, VW - 130)}px ${FT}`; g.textBaseline = 'middle'; g.textAlign = 'left';
+    const title = 'HI-SCORES', tw = g.measureText(title).width; let x = VW / 2 - tw / 2;
+    [...title].forEach((ch, i) => { g.lineWidth = 12; g.strokeStyle = '#000'; g.strokeText(ch, x, 118); g.fillStyle = RAINBOW[(i + Math.floor(t * 12)) % 6]; g.fillText(ch, x, 118); x += g.measureText(ch).width; });
+    g.font = `36px ${FM}`; g.textAlign = 'center'; g.fillStyle = 'rgba(200,210,255,.8)'; g.fillText('APP STORE · US · SEP 12', VW / 2, 206);
+    const hot = rowY(bRank + (climbs ? 1 - mv : 0));
+    const cb = g.createLinearGradient(0, hot - 62, 0, hot + 62); cb.addColorStop(0, 'rgba(255,210,40,0)'); cb.addColorStop(.5, 'rgba(255,210,40,.42)'); cb.addColorStop(1, 'rgba(255,210,40,0)');
+    g.fillStyle = cb; g.fillRect(40, hot - 62, VW - 80, 124);
+    g.textAlign = 'left';
+    for (let r = 0; r < 5; r++) { g.font = `60px ${FT}`; g.fillStyle = RANK_COL[r]; g.fillText(RANKS[r], 56, rowY(r)); }
+    const others = TABLE.map((nm, i) => ({ nm, r: i < bRank ? i : i + 1 }));
+    g.font = `76px ${FT}`;
+    others.forEach(o => { const rr = o.r === bRank + 1 && climbs ? lerp(bRank, bRank + 1, mv) : o.r; g.lineWidth = 10; g.strokeStyle = '#000'; g.strokeText(o.nm, 420, rowY(rr)); g.fillStyle = o.nm === 'CHATGPT' ? '#e8f0ff' : 'rgba(190,200,240,.8)'; g.fillText(o.nm, 420, rowY(rr)); });
+    const hop = climbs && last < .2 ? Math.sin(last / .2 * Math.PI) : 0;
+    g.lineWidth = 10; g.strokeStyle = '#000'; g.strokeText('GEMINI', 420, hot - hop * 20);
+    g.fillStyle = Math.floor(t * 8) % 2 || bRank === 0 ? '#ffe23a' : '#ffffff'; g.fillText('GEMINI', 420, hot - hop * 20);
+    const S = BAN(), bh = .42;
+    const bp = add(onP(TP, 320 / (VW / 2) - 1, 1 - hot / 512), [0, hop * .35, .45]);
+    const F = {
+      ro: [-.7 + lt * .7, 2.14, 13.9 - lt * .3], ta: [0, 2.1, 0], fov: 1.5,
+      skyA: '#01020c', skyB: '#081038', acc: '#ffe23a', fog: .01, sky: { mode: 'stars', k: .5, col: '#9fb4ff' },
+      floorMode: 'checker', floorCol: '#02041a', floorCol2: '#0a1450', floorTile: 1,
+      panels: [{ ...TP, alpha: 1, gain: 1.4, glass: .4, tex: 0 }],
+      shape: { key: 'banana', src: S, p: bp, rot: rotYX(.4 + Math.sin(t * 3) * .05, -.2, Math.sin(t * 2) * .04), s: [bh * S.aspect, bh, .13], col: '#fff04a', rim: '#fff6b0', metal: 1 },
+      light: { p: [-2, 6, 5], c: '#fff4c0', k: 7, vol: .4 },
+    };
+    if (climbs && last < .06) { F.flash = .04; F.flashCol = '#fff2a0'; }
+    return F;
+  });
 
   // ---------- V2.11 "Billion-five: Anthropic's prize,": an orange tunnel of book spines; $1,500,000,000 rolls up to land on "five",
   // then $3,000 × 500,000 BOOKS types in ----------
@@ -8773,6 +10641,26 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     const pop = t >= tF ? 1 + .08 * Math.exp(-(t - tF) * 12) : 1;
     ui.save(); ui.translate(960, 490); ui.scale(pop, pop);
     text(ui, money(v), 0, 0, { size: 96, font: FT, align: 'center', color: MOD.chrome(ui, -80, 0, ['#fffbe0', '#ffc84a', '#c86a10']), stroke: 12 });
+    ui.restore();
+    return F;
+  });
+  // V2.11 vertical: the camera looks a little up the tunnel, so that its far end, and the prize on its plate, sit above the middle;
+  // the shelves run on down past the scroller.
+  mvline('V2', 11, (t, s, E, ui) => {
+    const lt = t - s.start, Wd = words(s), tF = Wd[1].t0, cy = Math.cos(t * .7) * .3;
+    const F = {
+      ro: [Math.sin(t * .9) * .45, cy, 0], ta: [Math.sin(t * .9) * .15, cy - .5, -6], fov: 1.3, roll: Math.sin(t * .5) * .1, floor: false,
+      skyA: '#0a0300', skyB: '#0a0300', acc: '#ff8a3a', fog: .045,
+      tunnel: { key: 'books', src: books(), r: 3.1, scroll: lt * 1.25 + t * .1, twist: .004, col: '#ffe0c0', gain: 1.5 },
+      light: { p: [0, 0, -18], c: '#ffa050', k: 12, vol: 1.1 },
+    };
+    if (t >= tF && t - tF < .08) { F.flash = .1; F.flashCol = '#ffd8a0'; }
+    const v = lerp(2e8, 1.5e9, easeOut(clamp((t - s.start) / (tF - s.start + .04)))), Y = 790;
+    ui.save(); ui.fillStyle = 'rgba(12,4,0,.66)'; ui.beginPath(); ui.roundRect(70, Y - 112, 940, 160, 24); ui.fill(); ui.strokeStyle = 'rgba(255,160,80,.5)'; ui.lineWidth = 3; ui.stroke(); ui.restore();
+    const pop = t >= tF ? 1 + .08 * Math.exp(-(t - tF) * 12) : 1;
+    ui.save(); ui.translate(W / 2, Y); ui.scale(pop, pop);
+    ui.save(); const sz = fitFont(ui, '$1,500,000,000', 96, FT, 860); ui.restore();
+    text(ui, money(v), 0, 0, { size: sz, font: FT, align: 'center', color: MOD.chrome(ui, -sz * .8, 0, ['#fffbe0', '#ffc84a', '#c86a10']), stroke: 12 });
     ui.restore();
     return F;
   });
@@ -8833,6 +10721,36 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     }
     return F;
   });
+  // V2.12 vertical: the book is a portrait cover, so it stands tall in the picture while it turns; on "drops" it falls flat, the
+  // camera tipping up over it to look down, so that it lies there as tall as it stood, under the ring and the shake.
+  mvline('V2', 12, (t, s, E, ui) => {
+    const lt = t - s.start, Wd = words(s), tD = Wd[1].t0, tE = Wd[2].t0, land = t - tD, landed = land >= 0;
+    const fall = landed ? 1 : easeIn(clamp((t - (tD - .2)) / .2)), hover = 1 - fall, cam = easeInOut(fall);
+    const yaw = hover * (Math.sin(t * 2.2) * .5 + .12) + fall * .05, pitch = lerp(-.2 + Math.sin(t * 1.3) * .1, -Math.PI / 2, fall), roll = hover * Math.sin(t * 1.7) * .1;
+    const S = BOOK(), hy = 1.9, hx = hy * S.aspect, dep = .24;
+    const P = [0, lerp(3.25 + Math.sin(t * 2) * .1, dep, fall), lerp(.4, 0, fall)];
+    const R = rot3(pitch, yaw, roll);
+    MOD.panel(0).drawImage(cover(), 0, 0);
+    const panels = [{ c: add(P, rv(R, [0, 0, dep + .012])), u: rv(R, [1.04, 0, 0]), v: rv(R, [0, 1.68, 0]), alpha: 1, gain: 1.25, glass: 0, tex: 0 }];
+    if (t >= tE) {
+      const k = backOut(clamp((t - tE) / .16), 2.4), sr = .5 * (1 + (1 - k) * .8);
+      MOD.panel(1).drawImage(sticker(), 0, 0);
+      panels.push({ c: add(P, rv(R, [.7, 1.3, dep + .03])), u: rv(R, [sr, 0, 0]), v: rv(R, [0, sr, 0]), alpha: clamp(k * 3), gain: 1.4, glass: 0, tex: 1 });
+    }
+    const sk = landed && land < .25 ? (1 - land / .25) * .07 : 0, shake = [Math.sin(land * 97) * sk, Math.cos(land * 83) * sk, 0];
+    const F = {
+      ro: add([Math.sin(lt * .4) * .4 * hover, lerp(3.0, 8.9, cam), lerp(12.2 - lt * .2, 5.6, cam)], shake), ta: add([0, lerp(2.45, .2, cam), lerp(0, .45, cam)], shake), fov: 1.45,
+      skyA: '#070a12', skyB: '#161c2c', acc: '#8aa6ff', fog: .012, floorCol: '#06080e', grid: .14,
+      panels, shape: { key: 'book', src: S, p: P, rot: rotYX(yaw, pitch, roll), s: [hx, hy, dep], col: '#1a181e', rim: '#e8202a', metal: .35 },
+      light: { p: [1, 9, 5], c: '#e8eeff', k: 6, vol: .5 },
+    };
+    if (landed) {
+      if (land < .5) F.halo = { p: [0, .03, 0], n: [0, 1, 0], R: 1.4 + land * 9, r: .06 + land * .12, k: 3 * (1 - land / .5), col: '#fff0e0' };
+      if (land < .1) { F.flash = .12 * (1 - land / .1); F.flashCol = '#ffffff'; }
+      if (land < .6) { F.spheres = []; for (let i = 0; i < 16; i++) { const a = hash(i * 3) * TAU, v = 2.5 + hash(i * 5) * 3, r0 = 1.2 + v * land; F.spheres.push([Math.cos(a) * r0 * .8, .05 + Math.sin(Math.PI * clamp(land / .6)) * (.3 + hash(i) * .5), Math.sin(a) * r0, .07 * (1 - land / .6), '#a8b0c0']); } }
+    }
+    return F;
+  });
 
   // ---------- V2.13 ""Clanker!" spat in every screed,": CLANKER! scrollers in depth (the nearer, the bigger and faster), multiplying
   // on the eighths. The date plate rolls back to SUMMER 2025 by itself. ----------
@@ -8874,6 +10792,42 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       ro: [Math.sin(lt * .8) * .5, 2.9, 10.5], ta: [0, 2.9, 0], fov: 1.5, roll: Math.sin(lt * 1.3) * .03,
       skyA: '#080000', skyB: '#240402', acc: '#ff5a2a', fog: .01, floorCol: '#060101',
       panels, light: { p: [0, 5, 3], c: '#ffb070', k: 5, vol: .4 },
+    };
+    if (t >= tC && t - tC < .08) { F.flash = .1; F.flashCol = '#ffc080'; }
+    return F;
+  });
+  // V2.13 vertical: the far wall stands tall, sixteen rows of CLANKER! scrolling each way up it, more of them on every eighth; in
+  // front, five big ones fly across at their own heights and depths up the frame.
+  const CL_ROWS_V = [...Array(16)].map((_, i) => [40 + i * 63, 30 + Math.floor(hash(i * 7 + 1) * 22), 50 + Math.floor(hash(i * 5 + 2) * 60), i % 2 ? 1 : -1, ['#ff5a3a', '#ffc43a', '#ff8a2a', '#ff3a3a', '#ffd84a', '#ff6a2a', '#ffb43a', '#ff4a4a'][i % 8]]);
+  const CL_ORDER_V = [7, 3, 11, 1, 14, 5, 9, 12, 0, 6, 15, 2, 10, 4, 13, 8];
+  const CL_LANES_V = [[1.4, 5.17, -1, 2.6, 0], [-1, 3.02, 1, 2.0, 1], [2.6, 4.12, 1, 3.2, 0], [-2.6, 6.54, -1, 1.8, 1], [3.2, 2.23, -1, 3.6, 0]];   // z, y, dir, speed, tex
+  mvline('V2', 13, (t, s, E, ui) => {
+    const lt = t - s.start, e8 = beatLen() / 2, tC = words(s)[0].t0, boost = Math.max(0, t - tC) * .7;
+    const FWP = { c: [0, 4.4, -9], u: [5.2, 0, 0], v: [0, 9, 0] };
+    const g = MOD.panel(0), VW = fit(g, PW(0), PH(0), FWP.u[0], FWP.v[1]);
+    g.fillStyle = 'rgba(10,0,0,.6)'; g.fillRect(0, 0, VW, 1024);
+    g.textBaseline = 'middle'; g.textAlign = 'left';
+    CL_ORDER_V.forEach((ri, j) => {
+      const born = j < 10 ? s.start - 1 : s.start + (j - 9) * e8 * .9; if (t < born) return;
+      const [y, size, sp, dir, col] = CL_ROWS_V[ri]; g.font = `${size}px ${FA}`;
+      const per = g.measureText('CLANKER!   ').width, dist = ((t + boost) * sp * 1.6 + ri * 97) % per, x0 = dir > 0 ? dist - per : -dist;
+      g.globalAlpha = clamp((t - born) / .08) * .8; g.fillStyle = col;
+      for (let x = x0; x < VW; x += per) g.fillText('CLANKER!', x, y);
+    });
+    g.globalAlpha = 1;
+    const [T1, T2] = clankTex();
+    MOD.panel(1).drawImage(T1, 0, 0); MOD.panel(2).drawImage(T2, 0, 0);
+    const panels = [{ ...FWP, alpha: 1, gain: 1.15, glass: 0, tex: 0 }];
+    CL_LANES_V.forEach(([z, y, dir, sp, tx], j) => {
+      const born = j < 2 ? s.start - 1 : s.start + (j - 1) * e8 * .85; if (t < born || panels.length >= 6) return;
+      const pop = backOut(clamp((t - born) / .12), 2), span = 10, x = ((dir * (t + boost) * sp + j * 3.7) % span + span * 1.5) % span - span / 2;
+      const hw = 1.45 * pop * (1 + .05 * kick8(t, 8));
+      panels.push({ c: [x, y, z], u: [hw, 0, 0], v: [0, hw / 2, 0], alpha: 1, gain: 1.5, glass: 0, tex: 1 + tx });
+    });
+    const F = {
+      ro: [Math.sin(lt * .8) * .3, 3.9, 10.5], ta: [0, 3.9, 0], fov: 1.5, roll: Math.sin(lt * 1.3) * .03,
+      skyA: '#080000', skyB: '#240402', acc: '#ff5a2a', fog: .01, floorCol: '#060101',
+      panels, light: { p: [0, 6, 3], c: '#ffb070', k: 5, vol: .4 },
     };
     if (t >= tC && t - tC < .08) { F.flash = .1; F.flashCol = '#ffc080'; }
     return F;
@@ -9019,6 +10973,66 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     const b = [0, 1, 2, 3].map(k => B(s, k)).find(x => t >= x && t - x < .07); if (b !== undefined) { F.flash = .025; F.flashCol = '#f0e0ff'; }
     return F;
   });
+  // V2.14 vertical: the frame is the phone: one feed nearly fills it, its 9:16 cards swiping up on the beats, then on the eighths,
+  // until every card is the same slop; two more phones peek in at the edges, and from the second beat the cards spill over every
+  // phone's edges into each other.
+  // A phone on a panel 5.2 × 7.2 (u 2.6, v 3.6), the phone 3 × 6.2 in its middle, the margins room for the spill.
+  function phoneV(tex, t, i, pos, spill, mushFrom) {
+    const g = MOD.panel(tex), VW = fit(g, PW(tex), PH(tex), 2.6, 3.6), k = PH(tex) / 1024;
+    g.scale(k, k);   // (a virtual canvas 1024 tall, whatever the texture)
+    const vw = VW / k, A = slopAtlas(), cx = vw / 2, pw = 426, ph = 881, px = cx - pw / 2, py = 71;
+    const sx = px + 14, sy = py + 30, sw = pw - 28, sh = ph - 60, cw = sh * 9 / 16;
+    g.fillStyle = '#0c0c10'; g.beginPath(); g.roundRect(px, py, pw, ph, 56); g.fill();
+    g.lineWidth = 4; g.strokeStyle = '#5a5a68'; g.stroke();
+    const cardOf = q => q >= mushFrom ? 6 : Math.floor(hash2(i * 13 + 5, q) * 6);
+    const k0 = Math.floor(pos);
+    g.save(); g.beginPath(); g.roundRect(sx, sy, sw, sh, 40); g.clip();
+    for (let q = k0; q <= k0 + 1; q++) {
+      const y = sy + (q - pos) * sh;
+      g.drawImage(A, cardOf(q) * CW, 0, CW, CHh, cx - cw / 2, y, cw, sh);
+      soraMark(g, sx + sw * (.08 + .5 * tri(t * .6 + hash(q * 3 + i) * 3)), y + sh * (.12 + .7 * tri(t * .37 + hash(q * 5 + i) * 5)), 30, .72);
+    }
+    g.restore();
+    // the feed's own buttons and progress, and the camera's notch
+    g.fillStyle = 'rgba(255,255,255,.92)'; heartIcon(g, sx + sw - 42, sy + sh - 290, 48);
+    g.beginPath(); g.ellipse(sx + sw - 42, sy + sh - 200, 24, 20, 0, 0, TAU); g.fill();
+    g.beginPath(); g.moveTo(sx + sw - 64, sy + sh - 110); g.lineTo(sx + sw - 20, sy + sh - 128); g.lineTo(sx + sw - 34, sy + sh - 86); g.closePath(); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.3)'; g.fillRect(sx + 18, sy + sh - 24, sw - 36, 5); g.fillStyle = '#fff'; g.fillRect(sx + 18, sy + sh - 24, (sw - 36) * frac(pos), 5);
+    g.fillStyle = '#000'; g.beginPath(); g.roundRect(cx - 60, sy + 14, 120, 32, 16); g.fill();
+    if (spill > 0) {
+      for (let q = k0; q <= k0 + 1; q++) {
+        const sc = 1 + spill * (1.1 + .5 * hash(q * 7 + i)), w = cw * sc, h = sh * sc, y = sy + sh / 2 + (q - pos) * sh * sc - h / 2;
+        const x = cx - w / 2 + (hash2(q, i) - .5) * 300 * spill + Math.sin(t * 2 + q) * 40 * spill;
+        g.globalAlpha = clamp(spill * 1.4) * .72; g.drawImage(A, cardOf(q) * CW, 0, CW, CHh, x, y, w, h);
+        soraMark(g, x + w * (.1 + .5 * tri(t * .6 + hash(q * 3 + i) * 3)), y + h * (.15 + .6 * tri(t * .4 + q)), 30 * sc, .7 * clamp(spill * 1.4));
+      }
+      g.globalAlpha = 1;
+      g.lineWidth = 12; g.strokeStyle = '#0c0c10'; g.beginPath(); g.roundRect(px + 6, py + 6, pw - 12, ph - 12, 50); g.stroke();
+      g.lineWidth = 4; g.strokeStyle = '#7a7a8a'; g.beginPath(); g.roundRect(px, py, pw, ph, 56); g.stroke();
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+  }
+  mvline('V2', 14, (t, s, E, ui) => {
+    const lt = t - s.start, e8 = beatLen() / 2, b1 = B(s, 1), b2 = B(s, 2), end = s.end;
+    const spill = t < b1 ? 0 : easeInOut(clamp((t - b1) / (end - b1 - .15)));
+    // the swipes: on the beats, then on the eighths
+    const SW = [B(s, 0) + .02, b1, b2, b2 + e8, B(s, 3), B(s, 3) + e8];
+    let n = 0, f = 0; SW.forEach(x => { if (t >= x) { n++; f = easeOut(clamp((t - x) / .14)); } });
+    const pos = n ? n - 1 + f : 0;
+    phoneV(0, t, 1, pos, spill, 3);
+    const panels = [{ c: [0, 3.42, 0], u: [2.6, 0, 0], v: [0, 3.6, 0], alpha: 1, gain: 1.45, glass: 0, tex: 0 }];
+    [[-2.6, 4.0, .38, 1], [2.6, 2.75, -.38, 2]].forEach(([x, y, yw, tex], j) => {
+      phoneV(tex, t, j * 2, feedPos(s, t - j * .05) + j * .37, spill, Math.floor(feedPos(s, b2) + j * .37) + 2);
+      panels.push({ c: [x, y, -1.6], u: [Math.cos(yw) * 2.6, 0, -Math.sin(yw) * 2.6], v: [0, 3.6, 0], alpha: 1, gain: 1.35, glass: 0, tex });
+    });
+    const F = {
+      ro: [Math.sin(lt * .6) * .3, 3.2, 10.7 - lt * .3], ta: [0, 3.2, 0], fov: 1.5,
+      skyA: '#06040e', skyB: '#1a0c26', acc: '#b86aff', fog: .01, floorCol: '#040308',
+      panels, light: { p: [0, 6, 5], c: '#e8d8ff', k: 5, vol: .4 },
+    };
+    if (SW.some(x => t >= x && t - x < .07)) { F.flash = .025; F.flashCol = '#f0e0ff'; }
+    return F;
+  });
 
   // ---------- V2.15 "Yann LeCun quits Meta's stage,": the ∞ again; the LECUN sphere leaves it on "quits" and flies into orbit around a
   // spinning wireframe globe ----------
@@ -9060,6 +11074,31 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       light: { p: [0, 6, 5], c: '#d8e8ff', k: 6, vol: .5 },
     };
     const lp = toUI(F, L); if (lp) text(ui, 'LECUN', lp[0], lp[1] - 46, { size: 34, font: FT, align: 'center', color: '#ffffff', stroke: 7 });
+    return F;
+  });
+  // V2.15 vertical: V2.5's upright 8 again, low in the picture; on "quits" the LECUN sphere flies up off its top into orbit round
+  // a spinning globe high in the frame.
+  mvline('V2', 15, (t, s, E, ui) => {
+    const lt = t - s.start, tQ = words(s)[2].t0, fly = clamp((t - tQ) / .6), POS = [0, 3.45, 0], SC = .5, lecA = 1.0;
+    const G = [-.05, 5.62, -.6], GR = 1.2;
+    globe(MOD.panel(1), t);
+    const spheres = [];
+    for (let i = 0; i < 20; i++) spheres.push([...infAtV(t, i / 20 * TAU, POS, SC), .17, META_BLUE]);
+    const N = norm([0, 1, .45]), A = norm([0, N[2], -N[1]]), Bv = [N[1] * A[2] - N[2] * A[1], N[2] * A[0] - N[0] * A[2], N[0] * A[1] - N[1] * A[0]];
+    const OR = 1.6, oa = (t - tQ) * 3 + 2.4, orbitP = add(G, add(mul(A, Math.cos(oa) * OR), mul(Bv, Math.sin(oa) * OR)));
+    let L;
+    if (t < tQ) L = infAtV(t, lecA, POS, SC);
+    else { const p0 = infAtV(tQ, lecA, POS, SC), e = easeInOut(fly); L = add(add(mul(p0, 1 - e), mul(orbitP, e)), [Math.sin(fly * Math.PI) * .6, Math.sin(fly * Math.PI) * .8, Math.sin(fly * Math.PI) * 1.0]); }
+    spheres.push([...L, .22, '#ffffff']);
+    const F = {
+      ro: [Math.sin(lt * .5) * .5, 3.75, 13.1 - lt * .35], ta: [0, 3.75, 0], fov: 1.5,
+      skyA: '#01020a', skyB: '#050c2a', acc: '#3a8cff', fog: .01, sky: { mode: 'stars', k: .3, col: '#9fc8ff' }, floorCol: '#01020a', floorMode: 'water', water: .03,
+      spheres, sphCol: META_BLUE,
+      panels: [{ c: G, u: [GR, 0, 0], v: [0, GR, 0], alpha: 1, gain: 1.3 + .6 * fly, glass: 0, tex: 1 }],
+      halo: { p: G, n: N, R: OR, r: .025, k: .35 + .9 * fly, col: '#8ae0ff' },
+      light: { p: [0, 7, 5], c: '#d8e8ff', k: 6, vol: .5 },
+    };
+    const lp = toV(F, L); if (lp) text(ui, 'LECUN', lp[0], lp[1] - 50, { size: 46, font: FT, align: 'center', color: '#ffffff', stroke: 8 });
     return F;
   });
 
@@ -9150,6 +11189,49 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       if (pop < .12) { F.flash = .16 * (1 - pop / .12); F.flashCol = '#fff4d0'; }
       if (pop < .35) F.halo = { p: BC, n: [0, 0, 1], R: BR + pop * 7, r: .05 + pop * .1, k: 3 * (1 - pop / .35), col: '#ffe8b0' };
       F.flare = clamp(1 - pop / .4); F.flarePos = MOD.project(F, BC) ?? [.5, .6]; F.flareCol = '#fff0c8';
+    }
+    return F;
+  });
+  // V2.16 vertical: bubbles rise up the whole tall frame, past the ticker, a full-bleed band across the lower middle just above
+  // the scroller; the big one wobbles at the top of the picture and pops on the last beat.
+  mvline('V2', 16, (t, s, E, ui) => {
+    const lt = t - s.start, tPop = B(s, 2), pop = t - tPop, TKP = { c: [0, 2.5, -.3], u: [2.3, 0, 0], v: [0, .42, 0] };
+    const g = MOD.panel(1), VW = fit(g, PW(1), PH(1), 2.3, .42);
+    g.fillStyle = 'rgba(2,6,4,.94)'; g.fillRect(0, 0, VW, 512);
+    g.fillStyle = 'rgba(120,255,160,.4)'; g.fillRect(0, 4, VW, 5); g.fillRect(0, 503, VW, 5); g.fillRect(0, 254, VW, 4);
+    tickerRow(g, TICK1, 131, 190, t * 950, VW);
+    tickerRow(g, TICK2, 385, 165, t * 750 + 450, VW);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    const BC = [.1, 4.62 + Math.sin(t * 1.3) * .08 + lt * .1, .8], wob = 1 + .06 * Math.sin(t * 9) + .05 * kick(t, 6), BR = 1.05 * wob;
+    const small = [];
+    for (let i = 0; i < 22; i++) { const sp = .7 + hash(i) * .7; small.push([-2.2 + hash(i + 7) * 4.4 + Math.sin(t * 2 + i) * .12, -.6 + ((t * sp + hash(i + 3) * 8.6) % 8.6), .8, .12 + hash(i + 11) * .28]); }
+    const BP = { c: [0, 4.4, .8], u: [2.6, 0, 0], v: [0, 4.6, 0] }, gb = MOD.panel(0), BVW = fit(gb, PW(0), PH(0), 2.6, 4.6);
+    const tx = p => [(p[0] - BP.c[0]) / 2.6 * BVW / 2 + BVW / 2, (BP.c[1] - p[1]) / 4.6 * 512 + 512];
+    const bub = (p, r, k = 1, ph = 0) => {
+      const [x, y] = tx(p), rx = r / 2.6 * BVW / 2, ry = r / 4.6 * 512;
+      gb.globalAlpha = k; gb.drawImage(bubbleSprite(ph), x - rx, y - ry, rx * 2, ry * 2); gb.globalAlpha = 1;
+    };
+    small.forEach((b, i) => bub(b, b[3], 1, (i % 4) * 1.6));
+    if (pop < 0) bub(BC, BR, 1, t * .8);
+    else {
+      const [x, y] = tx(BC), rr = BR / 4.6 * 512;
+      for (let i = 0; i < 40; i++) {
+        gb.fillStyle = ['#ffffff', '#ffb8ec', '#c8fff0', '#fff0a8'][i % 4];
+        const a = hash(i * 3) * TAU, v = rr * (1 + (1.8 + hash(i * 5) * 2.2) * pop * 2.2), d = 4 * clamp(1 - pop / .5); if (d <= 0) break;
+        gb.beginPath(); gb.arc(x + Math.cos(a) * v, y + Math.sin(a) * v + 700 * pop * pop, d, 0, TAU); gb.fill();
+      }
+    }
+    gb.setTransform(1, 0, 0, 1, 0, 0);
+    const F = {
+      ro: [Math.sin(lt * .5) * .4, 3.4, 11.5 - lt * .3], ta: [0, 3.4, 0], fov: 1.5,
+      skyA: '#050214', skyB: '#1c0c2c', acc: '#ffcc55', fog: .01, floorCol: '#030208', grid: .1,
+      panels: [{ ...TKP, alpha: 1, gain: 1.5, glass: .3, tex: 1 }, { ...BP, alpha: 1, gain: 1.35, glass: 0, tex: 0 }],
+      light: { p: [2, 8, 5], c: '#fff0d0', k: 6, vol: .5 },
+    };
+    if (pop >= 0) {
+      if (pop < .12) { F.flash = .16 * (1 - pop / .12); F.flashCol = '#fff4d0'; }
+      if (pop < .35) F.halo = { p: BC, n: [0, 0, 1], R: BR + pop * 6, r: .05 + pop * .1, k: 3 * (1 - pop / .35), col: '#ffe8b0' };
+      F.flare = clamp(1 - pop / .4); F.flarePos = MOD.project(F, BC) ?? [.5, .4]; F.flareCol = '#fff0c8';
     }
     return F;
   });
@@ -10090,6 +12172,733 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     };
   });
 
+  // =====================================================================================================
+  // THE VERTICAL VIDEO (VERTICAL.md, and the style's plan in styles/demoscene/VERTICAL.md): every line recomposed for the 1080 × 1920
+  // frame, its UI in that frame's units. The picture keeps to rows ≈ 290–1290, over MC Token's scroller (baseline 1386); the date
+  // plate has the safe area's top right (714–954 × 252–352), so what's up there starts below it or keeps left of it. Each line keeps
+  // its horizontal shot's effect, colours and beats; the shapes and the cameras are the tall frame's.
+  // =====================================================================================================
+  const FT = MOD.FONT_T, FM = MOD.FONT_M;
+  const PW = i => MOD.PAN[i].w, PH = i => MOD.PAN[i].h;
+  // A panel's texture is 2:1. A panel of another shape draws in a virtual canvas of the panel's own shape, as tall as the texture
+  // (m03_v2.js's fit()); returns its width.
+  function fitV(g, i, uLen, vLen) { const VW = PH(i) * uLen / vLen; g.setTransform(PW(i) / VW, 0, 0, 1, 0, 0); return VW; }
+  // a point on a panel from (x, y) in its virtual canvas, VW × VH
+  const onV = (P, x, y, VW, VH = 1024) => add(add(P.c, mul(P.u, x / (VW / 2) - 1)), mul(P.v, 1 - y / (VH / 2)));
+  // the size, at most `size`, at which a string fits a width
+  function fitPx(g, str, size, font, maxW) { g.save(); g.font = `${size}px ${font}`; const w = g.measureText(str).width; g.restore(); return w > maxW ? size * maxW / w : size; }
+  // A level camera (at fov) that shows world heights y0…y1, at distance d from it, on the frame's rows Y0…Y1: { d, ty, s }, its
+  // distance, the height it looks at, and the frame's units per world unit there.
+  function frameRows(y0, y1, Y0, Y1, fov = 1.45) { const s = (Y1 - Y0) / (y1 - y0); return { d: fov * H / s, ty: y1 - (H / 2 - Y0) / s, s }; }
+  // the demo's 8×8 font, typed: rows [str, x, y, px, colour, align] showing the first n characters of them all
+  function typeRows(g, rows, n) {
+    for (const [str, x, y, px, col, al] of rows) {
+      if (n <= 0) break;
+      const w = bmW(str, px), cs = [...str];
+      MOD.bitmap(g, cs.slice(0, n).join(''), al === 'center' ? x - w / 2 : al === 'right' ? x - w : x, y, px, col);
+      n -= cs.length;
+    }
+  }
+
+  // ---------- V3.1: a portrait terminal, the NFO's shape: MOLT / BOOK in red ANSI letters, the question typed big a row at a time, the N
+  // it answers for you, and the house rules under it. The camera leans in once it's answered. ----------
+  const BBV = { VW: 768, u: 1.35, v: 1.8, Q: ['Are you', 'a human?', '(y/N) '] };
+  function ansi(g, str, x, y, px) {
+    const lw = bmW(str, px);
+    MOD.bitmap(g, str, x + px / 2, y + px / 2, px, '#2a0402');
+    const gr = g.createLinearGradient(0, y, 0, y + 7 * px);
+    gr.addColorStop(0, '#ffc2a8'); gr.addColorStop(.2, '#ff6a48'); gr.addColorStop(.52, '#ff3a26'); gr.addColorStop(.53, '#b8180e'); gr.addColorStop(1, '#6a0806');
+    MOD.bitmap(g, str, x, y, px, gr);
+    g.fillStyle = 'rgba(3,4,12,.55)'; for (let yy = y; yy < y + 7 * px; yy += px) g.fillRect(x, yy + px - 3, lw, 3);
+  }
+  const bbsStaticV = () => cached('bbsV', BBV.VW, 1024, (g, w, h) => {
+    g.fillStyle = 'rgba(3,4,12,.95)'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#b4b4bc'; g.fillRect(0, 0, w, 50);
+    MOD.bitmap(g, 'Moltbook BBS · 28 jan 2026', 24, 13, 3, '#07060f');
+    const px = Math.floor(640 / Math.max(bmW('MOLT', 1), bmW('BOOK', 1)));
+    ['MOLT', 'BOOK'].forEach((str, i) => ansi(g, str, Math.round((w - bmW(str, px)) / 2), 80 + i * (7 * px + 24), px));
+    const y2 = 80 + 2 * (7 * px + 24) + 8;
+    MOD.bitmap(g, 'a social network', w / 2, y2, 4, '#e08a5c', { align: 'center' });
+    MOD.bitmap(g, 'for AI agents', w / 2, y2 + 44, 4, '#e08a5c', { align: 'center' });
+    box2(g, 26, 552, w - 26, 920, 6, '#d02a1c');
+    g.fillStyle = 'rgba(0,0,0,.25)'; for (let y = 0; y < h; y += 4) g.fillRect(0, y, w, 1.5);
+  });
+  mvline('V3', 1, (t, s, E, ui) => {
+    const lt = t - s.start, tNo = wordT(s, 1), tHum = wordT(s, 2), { VW, Q } = BBV;
+    const g = MOD.panel(0); fitV(g, 0, BBV.u, BBV.v);
+    // the screen prints top-down: the logo is up on the beat, the rest follows
+    const ph = Math.round(lerp(.3, 1, easeOut(clamp(lt / .28))) * 1024);
+    g.drawImage(bbsStaticV(), 0, 0, VW, ph, 0, 0, VW, ph);
+    if (ph < 1024) { g.fillStyle = 'rgba(255,240,230,.9)'; g.fillRect(0, ph - 5, VW, 5); }
+    const qp = Math.min(9, Math.floor(640 / Math.max(...Q.map(r => bmW(r, 1)), bmW('(y/N) N', 1)))), qx = 56, qy = i => 578 + i * (8 * qp + 14);
+    const nq = Math.floor(clamp((lt - .1) * 64, 0, 40)), typed = nq >= Q.join('').length;
+    if (ph > qy(0) + 8 * qp) typeRows(g, Q.map((r, i) => [r, qx, qy(i), qp, '#ffffff']), nq);
+    const xN = qx + bmW(Q[2], qp) + qp, yN = qy(2);
+    if (t >= tNo) {
+      const pop = Math.exp(-(t - tNo) * 12);
+      if (pop > .05) { g.fillStyle = `rgba(255,255,120,${.5 * pop})`; g.fillRect(xN - 14, yN - 14, 7 * qp + 28, 7 * qp + 28); }
+      MOD.bitmap(g, 'N', xN, yN - Math.round(pop * 10), qp, '#ffff55');
+    } else if (typed && Math.floor(t * 6) % 2 === 0) { g.fillStyle = '#ffffff'; g.fillRect(xN, yN + 7 * qp, 6 * qp, qp); }
+    if (t >= tNo + .1) typeRows(g, [['Posting, commenting and', qx, 844, 3, '#b0b0b8'], ['voting: agents only.', qx, 874, 3, '#b0b0b8']], Math.floor((t - tNo - .1) * 110));
+    if (t >= tHum) typeRows(g, [['Humans are welcome', 36, 938, 5, '#ffe6a0'], ['to observe.', 36, 982, 5, '#ffe6a0']], Math.floor((t - tHum) * 90));
+    // the camera leans in a little once it's answered, the terminal's middle held on its row (its head stays under the date plate,
+    // its foot over the scroller)
+    const push = easeInOut(clamp((t - tNo + .05) / .7)), sway = Math.sin(t * .6) * .12;
+    const P = sheet([0, 2.95, 0], BBV.u, BBV.v, -.07), { d } = frameRows(1.15, 4.75, 300, 1275, 1.5), dz = lerp(d, d * .95, push), ty = 2.95 - (H / 2 - 802) / (1.5 * H / dz);
+    return {
+      fx: E.fx, res: E.res,
+      ro: [lerp(.6, .35, push) + sway, ty + .15, dz], ta: [lerp(.05, .1, push), ty, 0], fov: 1.5,
+      skyA: '#010208', skyB: '#06081a', acc: '#ff3a2a', fog: .03, floorCol: '#020207', grid: .1,
+      panels: [{ ...P, alpha: 1, gain: 1.45 * lo(E, .8), glass: .8, tex: 0 }],
+      light: { p: [0, 5, 4], c: '#ff7a5a', k: 3, vol: .3 },
+    };
+  });
+
+  // ---------- V3.2: the lobster stands tall in the frame, claws raised high under the turning rays; the names it shed stack at the top,
+  // struck through, over the new one in big chrome. ----------
+  mvline('V3', 2, (t, s, E, ui) => {
+    const lt = t - s.start, tLob = wordT(s, 3);
+    const raise = easeOut(clamp((t - tLob + .1) / .3)), open = raise < 1 ? .5 + .5 * Math.sin(t * 13) : .55 + .45 * Math.cos(frac(bt(t)) * Math.PI * 2);
+    const yaw = Math.sin(t * .9) * .4, pitch = -.08 + Math.sin(t * 1.3) * .05, bob = kick(t, 6) * .06;
+    const toW = p => { const q = rY(rX([p[0], p[1], p[2]], pitch), yaw); return [LOB.c[0] + q[0] * LOB.k, LOB.c[1] + q[1] * LOB.k + bob, LOB.c[2] + q[2] * LOB.k, p[3] * LOB.k, p[4]]; };
+    const body = lobster(raise, open), spheres = body.map(toW);
+    // the old shell (Clawdbot's orange), split and flung off as it molts
+    const m = easeIn(clamp(lt / .45));
+    if (m < 1) body.slice(0, 3).forEach((p, j) => {
+      const side = j % 2 ? 1 : -1, dd = [side * (1.4 + .35 * j), .6 + .25 * j, 1.6];
+      spheres.push(toW([p[0] + dd[0] * m * 3.2, p[1] + dd[1] * m * 3.2, p[2] + dd[2] * m * 3.2, p[3] * 1.14 * (1 - m * .7), '#e0823e']));
+    });
+    lobsterLines(t);
+    const P = sheet(toW([0, .75, -.05]).slice(0, 3), 7.5 * LOB.k, 3.75 * LOB.k, yaw, pitch);
+    // the names it shed, struck through, small, left of the date; the name it has now big under them
+    const ni = lt < .22 ? 0 : lt < .45 ? 1 : 2;
+    NAMES.slice(0, ni).forEach((nm, i) => {
+      const y = 326 + i * 56;
+      text(ui, nm, 66, y, { size: 42, font: FT, color: 'rgba(200,190,200,.62)', stroke: 6 });
+      ui.save(); ui.font = `42px ${FT}`; const w = ui.measureText(nm).width; ui.restore();
+      ui.fillStyle = 'rgba(255,90,60,.95)'; ui.fillRect(58, y - 17, w + 16, 6);
+    });
+    const nm = NAMES[ni], pop = Math.exp(-Math.max(0, lt - [0, .22, .45][ni]) * 10), sz = Math.round(fitPx(ui, nm, 124, FT, 860) * (1 + .06 * pop)), cy = 520;
+    ui.save(); ui.font = `${sz}px ${FT}`; ui.lineJoin = 'round'; ui.lineWidth = 12; ui.strokeStyle = 'rgba(10,2,2,.85)';
+    ui.strokeText(nm, 62, cy);
+    ui.fillStyle = ni === 2 ? MOD.chrome(ui, cy - sz * .75, cy, ['#ffffff', '#ffb0a0', '#ff3a26', '#7a0a06']) : ni === 0 ? MOD.chrome(ui, cy - sz * .75, cy, ['#fff0e0', '#ffb070', '#d97757', '#6a2a10']) : '#c8c8d8';
+    ui.fillText(nm, 62, cy); ui.restore();
+    // claws up at the top of the picture (world 5.1), the tail fan under the scroller
+    const { d, ty } = frameRows(1.05, 5.12, 548, 1440);
+    return {
+      fx: E.fx, res: E.res, ro: [Math.sin(lt * .45) * .7, ty - .5, d - lt * .4], ta: [0, ty, 0], fov: 1.45,
+      skyA: E.fx < 3.5 ? '#3a1804' : '#5a2006', skyB: E.fx < 3.5 ? '#8a4a10' : '#c8701a', acc: E.fx < 3.5 ? '#ffd24a' : '#ff9434', fog: .006, floorCol: '#060302',
+      sky: { mode: 'rays', k: .3 + raise * .5, col: E.fx < 3.5 ? '#fff0b0' : '#ffa048' },
+      spheres, sphCol: LOB.red,
+      panels: [{ ...P, alpha: 1, gain: 1.1, glass: 0, tex: 1 }],
+      light: { p: [0, 6.5, -6], c: '#fff0c0', k: 5 + 3 * kick(t, 5), vol: .7 },
+      flash: ni === 2 ? clamp(1 - (lt - .45) / .12) * .22 : 0, flashCol: '#ffd0a0',
+    };
+  });
+
+  // ---------- V3.3: the cell's bars, tall, drop over the orb like a portcullis; on "slips" the two in front of it bend apart, and it
+  // slips through toward the camera and shoots up out of the top of the frame, trailing copies. ----------
+  const BARV = { w: 576, h: 600, pad: 30, n: 8, x0: 60.5, dx: 65, th: 19, bar: 17, bend: 44, steps: 8 };
+  const barsShapeV = st => ownShape('barsV' + st, BARV.w, BARV.h, (g, w, h) => {
+    const { pad, n, x0, dx, th, bar } = BARV, k = st / BARV.steps, yc = h / 2;
+    g.fillRect(pad, pad, w - 2 * pad, bar); g.fillRect(pad, h - pad - bar, w - 2 * pad, bar);
+    for (let i = 0; i < n; i++) {
+      const bx = x0 + i * dx, side = i === 3 ? -1 : i === 4 ? 1 : 0;
+      for (let y = pad; y < h - pad; y++) { const off = side * k * BARV.bend * Math.exp(-(((y - yc) / 80) ** 2)); g.fillRect(bx + off - th / 2, y, th, 1); }
+    }
+  });
+  mvline('V3', 3, (t, s, E, ui) => {
+    const lt = t - s.start, tSlip = wordT(s, 2) - .05;
+    const bend = easeOut(clamp((t - tSlip) / .2)), st = Math.round(bend * BARV.steps);
+    const S = barsShapeV(st), hy = 1.9, hx = hy * S.aspect;
+    // the bars fall in from above the frame and land on the first beat, with a jolt
+    const k = clamp(.4 + lt / .15), ld = lt - .09;
+    const dy = 6.5 * (1 - k * k) - (ld > 0 ? Math.sin(ld * 28) * Math.exp(-ld * 12) * .12 : 0), jolt = ld > 0 && ld < .2 ? 1 - ld / .2 : 0;
+    const { d, ty } = frameRows(.55, 4.35, 300, 1290), sh = jolt * (hash(Math.floor(t * 60)) - .5) * .12;
+    const ro = [Math.sin(lt * .5) * .4 - .15, ty + .15 + sh, d - lt * .3], ta = [0, ty + sh, 0], A = camAxes(ro, ta);
+    // the orb: behind the bars, breathing on the kick; then through the gap, and up and away out of the frame
+    const orbAt = tt => {
+      const e = clamp((tt - tSlip - .06) / (s.end - tSlip - .06));
+      const a = easeInOut(clamp(e / .35)), b = easeIn(clamp((e - .25) / .75));
+      return [Math.sin(tt * 2.3) * .05 * (1 - a) + b * .5, 2.45 + b * 6.5 + Math.sin(tt * 3.1) * .05 * (1 - a), lerp(-1.1, 1.0, a) + b * 1.2];
+    };
+    const o = orbAt(t), R = .52 + .07 * kick(t, 6);
+    MOD.panel(1).drawImage(orbTex(), 0, 0);
+    const bb = (p, r, alpha) => ({ c: p, u: mul(A.r, r * 2), v: mul(A.u, r), alpha, gain: 3.2 * lo(E, .6), glass: 0, tex: 1 });
+    const panels = [bb(o, R, 1)];
+    if (t > tSlip) for (let j = 1; j <= 4; j++) panels.push(bb(orbAt(t - j * .045), R * (1 - j * .1), .5 - j * .1));
+    return {
+      fx: E.fx, res: E.res, ro, ta, fov: 1.45,
+      skyA: '#02040a', skyB: '#0a1222', acc: '#6a8ad0', fog: .02, floorCol: '#030409',
+      shape: { key: 'barsV' + st, src: S, p: [0, 2.45 + dy, 0], rot: rotYX(Math.sin(t * .5) * .05), s: [hx, hy, .09], col: '#1c2028', rim: '#9fc0ff', metal: 1 },
+      panels,
+      light: { p: o, c: '#ff9a40', k: 9 + 3 * kick(t, 6), vol: 1.3 },
+    };
+  });
+
+  // ---------- V3.4: a tall club sandwich, its layers bobbing, over the park's green; the envelope spins in on "park" and lands on the
+  // bun, and the mail program pops up in front: NEW MAIL (1). ----------
+  function sandwichV(g, t, jump) {
+    // (drawn round its base's middle, (0, 0), up to y ≈ −650)
+    const slab = (i, yc, hw, h, stops, top, bot) => {
+      const y = yc + Math.sin(t * 6.5 - i * .7) * 9 * (1 + kick(t, 5)) - jump * (1 + i * .25);
+      g.save(); g.beginPath();
+      const n = 48;
+      for (let j = 0; j <= n; j++) { const u = j / n * 2 - 1; g.lineTo(u * hw, y - h / 2 + (top ? top(u) : 0)); }
+      for (let j = n; j >= 0; j--) { const u = j / n * 2 - 1; g.lineTo(u * hw, y + h / 2 + (bot ? bot(u) : 0)); }
+      g.closePath(); g.clip();
+      g.fillStyle = MOD.chrome(g, y - h / 2 - 40, y + h / 2 + 10, stops); g.fillRect(-hw - 10, y - h / 2 - 80, hw * 2 + 20, h + 120);
+      g.restore();
+      return y;
+    };
+    const BREAD = ['#fff0c8', '#f2b860', '#b86a1e', '#5a2c08'], CHEESE = ['#fffbd0', '#ffe04a', '#e0a010', '#7a5004'], TOMATO = ['#ffd0c0', '#ff5a3c', '#c01a10', '#5a0604'];
+    const LETTUCE = ['#e8ffc0', '#8ee04a', '#2a9a2a', '#0a3a0a'], HAM = ['#ffe4e8', '#ff9aae', '#d0607a', '#6a1a2a'];
+    const drips = u => { const m = ((u * 8 % 1) + 1) % 1; return Math.abs(u) < .9 && m < .3 ? Math.sin(m / .3 * Math.PI) * 34 : 0; };
+    const ends = u => -Math.max(0, Math.abs(u) - .92) * 260;
+    slab(0, -45, 450, 90, BREAD, null, u => -Math.max(0, Math.abs(u) - .9) * 200);
+    slab(1, -108, 478, 38, CHEESE, null, drips);
+    slab(2, -152, 430, 46, TOMATO, ends, u => -ends(u));
+    slab(3, -196, 492, 44, LETTUCE, u => Math.sin(u * 34) * 9, u => Math.sin(u * 27 + 1) * 12);
+    slab(4, -258, 455, 76, BREAD, u => -ends(u) * .5, u => ends(u) * .5);
+    slab(5, -322, 470, 44, HAM, u => Math.sin(u * 9) * 4, u => Math.sin(u * 11 + 2) * 6);
+    slab(6, -364, 476, 36, CHEESE, null, drips);
+    slab(7, -406, 492, 44, LETTUCE, u => Math.sin(u * 31 + 2) * 9, u => Math.sin(u * 23) * 12);
+    const yTop = slab(8, -538, 462, 220, BREAD, u => (1 - Math.sqrt(Math.max(0, 1 - u * u))) * 140, u => -Math.max(0, Math.abs(u) - .92) * 200);
+    g.fillStyle = 'rgba(255,248,220,.9)';
+    for (let i = 0; i < 16; i++) { const u = hash(i + 3) * 1.5 - .75, v = hash(i + 40); const x = u * 462, y = yTop - 92 + (1 - Math.sqrt(1 - u * u)) * 140 + v * 56; g.beginPath(); g.ellipse(x, y, 13, 6.5, u * .8, 0, TAU); g.fill(); }
+  }
+  mvline('V3', 4, (t, s, E, ui) => {
+    const lt = t - s.start, tPark = wordT(s, 3), tNew = wordT(s, 4);
+    const jump = t >= tNew ? Math.exp(-(t - tNew) * 7) * Math.abs(Math.sin((t - tNew) * 16)) * 60 : 0;
+    // the sandwich's panel (u × v = 1.875 × 1.25), its drawing scaled to fill it
+    const g0 = MOD.panel(0), VW0 = fitV(g0, 0, 1.875, 1.25);
+    g0.translate(VW0 / 2, 1000); g0.scale(1.45, 1.45); sandwichV(g0, t, jump);
+    const SWP = sheet([0, 2.45, .3], 1.875, 1.25, .1);
+    const panels = [{ ...SWP, alpha: 1, gain: 1.25 * lo(E, .7), glass: 0, tex: 0 }], spheres = [];
+    // (the bun's top at world 3.56, its base at 1.26)
+    const { d, ty } = frameRows(1.26, 3.56, 390, 960), z = .3 + d - lt * .3;
+    // the envelope: spins in from above, at the right, on "park" and lands on the bun on "new"
+    const k = easeOut(clamp((t - tPark) / (tNew - tPark)));
+    if (t >= tPark - .02) {
+      MOD.panel(2).drawImage(envelopeTex(), 0, 0);
+      const yaw = (1 - k) * 7.5 + Math.sin(t * 2.2) * .12, pitch = (1 - k) * -.9 + Math.sin(t * 1.7) * .08;
+      const c = [lerp(2.6, -.3, k), lerp(7.2, 3.42, k) - kick(t, 8) * .04, lerp(1.8, .8, k)];
+      const EV = sheet(c, .8, .4, yaw, pitch);
+      panels.push({ ...EV, alpha: 1, gain: 1.2 * lo(E, .55), glass: 0, tex: 2 });
+      const nrm = norm(cross(EV.u, EV.v));
+      if (nrm[2] > .25) spheres.push([...onSheet(EV, 512, 300, 1024, 512).map((v, i) => v + nrm[i] * .05), .1, '#d97757']);
+    }
+    // the mail program chimes, in front of the sandwich's foot
+    if (t >= tNew) {
+      const age = t - tNew, sc = backOut(clamp(age / .16));
+      mailBox(MOD.panel(1), t, age);
+      panels.push({ ...sheet([0, 1.12, 1.7], 1.46 * sc, .73 * sc, -.06), alpha: 1, gain: 1.5 * lo(E, .75), glass: .6, tex: 1 });
+    }
+    return {
+      fx: E.fx, res: E.res, ro: [Math.sin(lt * .5) * .4 + .2, ty + .4, z], ta: [.05, ty, 0], fov: 1.45,
+      skyA: '#021a06', skyB: '#0c3a10', acc: E.fx < 3.5 ? '#2a7a1a' : '#6ade3a', fog: .025, sky: { mode: 'plasma', k: .7, col: E.fx < 3.5 ? '#6a9a2a' : '#d0ff6a' },
+      floorMode: 'checker', floorCol: '#08300c', floorCol2: '#0e4814', floorTile: 1.1,
+      panels, spheres, flash: t >= tNew ? clamp(1 - (t - tNew) / .1) * .2 : 0, flashCol: '#ffffa0',
+      light: { p: [2, 6, 4], c: '#fff0c0', k: 5, vol: .3 },
+    };
+  });
+
+  // ---------- V3.5, V3.7, V3.8: the party's big screen stands tall. The results are a column chart, FABLE 5's column in the middle and
+  // the other places' empty slots round it (in podium order), its name under it; the column races up, runs off the top of the screen
+  // and on up out of the frame, and the ★ confetti falls through the whole tall frame. The same screen goes dead for nineteen days, a
+  // tally scratched on its glass, and comes back on in July. ----------
+  const SCV = { c: [0, 3.0, -2], u: [2.2, 0, 0], v: [0, 2.3, 0] }, SCV_W = 1024 * 2.2 / 2.3, SC2 = SCV_W / 2;
+  const CV = { base: 640, top: 36, cols: [[4, SC2 - 440, SC2 - 320], [2, SC2 - 300, SC2 - 180], [1, SC2 - 160, SC2 + 160], [3, SC2 + 180, SC2 + 300], [5, SC2 + 320, SC2 + 440]] };
+  function compoScreenV(g, o) {
+    const VW = SCV_W, { base, top } = CV;
+    g.fillStyle = 'rgba(6,4,14,.94)'; g.fillRect(0, 0, VW, 1024);
+    g.fillStyle = 'rgba(255,140,60,.05)'; for (let y = 0; y < 1024; y += 6) g.fillRect(0, y, VW, 2);
+    // the slots rise into place, the middle one first
+    const rise = j => (1 - easeOut(clamp(o.slide * 1.5 - j * .1))) * 900;
+    CV.cols.forEach(([rank, x0, x1]) => {
+      const dy = rise(rank - 1), one = rank === 1;
+      g.strokeStyle = one ? 'rgba(255,190,140,.35)' : 'rgba(255,190,140,.16)'; g.lineWidth = 3; g.strokeRect(x0, top + dy, x1 - x0, base - top);
+      text(g, rank + '.', (x0 + x1) / 2, base + 58 + dy, { size: one ? 52 : 40, font: FT, align: 'center', color: one ? '#ffd27a' : 'rgba(255,210,160,.4)' });
+    });
+    // FABLE 5's column, lit from the left; past the top of its slot it runs to the screen's edge
+    if (o.bar > 0) {
+      const [, x0, x1] = CV.cols[2], yTop = o.bar >= 1 ? 0 : base - (base - top) * o.bar;
+      const gr = g.createLinearGradient(x0, 0, x1, 0); gr.addColorStop(0, '#fff2d8'); gr.addColorStop(.3, '#ffa44a'); gr.addColorStop(1, '#b8480e');
+      g.fillStyle = gr; g.fillRect(x0, yTop, x1 - x0, base - yTop);
+      if (o.bar < 1) { g.fillStyle = '#ffffff'; g.fillRect(x0, yTop, x1 - x0, 10); }
+    }
+    g.save(); g.globalAlpha = .3 + .7 * o.name;
+    const nsz = Math.round(fitPx(g, 'FABLE 5', 140, FT, VW - 160)), ny = 818 + rise(1) * .3;
+    g.font = `${nsz}px ${FT}`; g.textAlign = 'center'; g.fillStyle = MOD.chrome(g, ny - nsz * .75, ny, ['#ffffff', '#ffd0a0', '#ff8a3a', '#8a3a10']); g.fillText('FABLE 5', VW / 2, ny);
+    g.restore();
+    for (let i = 0; i < 5; i++) { g.fillStyle = o.stars > i ? '#ffd24a' : 'rgba(255,210,74,.18)'; star5(g, VW / 2 + (i - 2) * 92, 870, 34); g.fill(); }
+    // the foot: the results' title, or in July the banner
+    if (o.banner) {
+      g.fillStyle = 'rgba(40,210,110,.92)'; g.fillRect(24, 910, VW - 48, 104);
+      const bs = Math.round(Math.min(...o.banner.map(b => fitPx(g, b, 50, FT, VW - 100))));
+      o.banner.forEach((b, i) => text(g, b, VW / 2, 956 + i * 50, { size: bs, font: FT, align: 'center', color: '#02140a' }));
+    } else {
+      g.fillStyle = 'rgba(255,160,80,.55)'; g.fillRect(30, 914, VW - 60, 5);
+      text(g, 'COMPO RESULTS', VW / 2, 988, { size: Math.round(fitPx(g, 'COMPO RESULTS', 66, FT, VW - 120)), font: FT, align: 'center', color: '#ffffff' });
+    }
+  }
+  // the column that ran off the screen: a slab of its gradient (tex 2), stretched along its run up from the screen's top edge
+  function barTexV() { const g = MOD.panel(2), gr = g.createLinearGradient(0, 0, 1024, 0); gr.addColorStop(0, '#fff2d8'); gr.addColorStop(.3, '#ffa44a'); gr.addColorStop(1, '#b8480e'); g.fillStyle = gr; g.fillRect(0, 0, 1024, 512); }
+  const scvTop = onV(SCV, SCV_W / 2, 0, SCV_W), colHW = (CV.cols[2][2] - CV.cols[2][1]) / SCV_W * SCV.u[0];
+  function overflowV(t, tEnd, speed, k) {
+    if (t < tEnd) return null;
+    const d = t - tEnd, run = d * speed + d * d * speed * 2.2;
+    return { c: [scvTop[0], scvTop[1] - .02 + run / 2, scvTop[2] + .04], u: [colHW, 0, 0], v: [0, run / 2 + .001, 0], alpha: 1, gain: 2.4 * k, glass: 0, tex: 2 };
+  }
+  // ★ confetti, falling from above the tall frame to bounce on the floor
+  function confettiV(t, t0, n = 30) {
+    const out = [], COL = ['#ffd24a', '#ffb02a', '#fff2c8', '#ff8a3a'];
+    for (let i = 0; i < n; i++) {
+      const d = t - t0 - hash(i + 100) * .5; if (d < 0) continue;
+      const r = .06 + .07 * hash(i + 200), x = lerp(-2.6, 2.6, hash(i + 1)) + Math.sin(d * 3 + i) * .2, z = lerp(-1.4, 3, hash(i + 50));
+      out.push([x, bounceY(d, 6.8 + hash(i + 150) * 2.6, r), z, r, COL[i % 4]]);
+    }
+    return out;
+  }
+  // (the screen, world .7–5.3, on the frame's rows 290–1290)
+  const SCV_CAM = frameRows(.7, 5.3, 290, 1290);
+  mvline('V3', 5, (t, s, E, ui) => {
+    const lt = t - s.start, tFable = wordT(s, 0), tWho = wordT(s, 3), tFan = wordT(s, 6);
+    const bar = t < tFable ? 0 : easeIn(clamp((t - tFable) / (tWho - tFable)));
+    const g = MOD.panel(0); fitV(g, 0, SCV.u[0], SCV.v[1]);
+    compoScreenV(g, { slide: .35 + lt / .3, name: easeOut(clamp((t - tFable + .05) / .15)), bar, stars: t < tWho ? 0 : Math.floor((t - tWho) / .07) + 1 });
+    barTexV();
+    const panels = [{ ...SCV, alpha: 1, gain: 1.35 * lo(E, .62), glass: 1, tex: 0 }], ov = overflowV(t, tWho, 7, lo(E, .6));
+    if (ov) panels.push(ov);
+    // the camera swings round from the screen's left; once the column has run off, it tilts up after it
+    const { d, ty } = SCV_CAM, up = easeInOut(clamp((t - tWho) / 1.1));
+    return {
+      fx: E.fx, res: E.res,
+      ro: [-1.5 + lt * .45 + up * .4, ty - .5, -2 + d - lt * .35], ta: [.15 + up * .1, ty + up * .3, -2], fov: 1.45,
+      skyA: '#060210', skyB: '#12061e', acc: '#c8602a', fog: .018, floorCol: '#050308', grid: .18,
+      panels, spheres: confettiV(t, tWho - .3), sphCol: '#ffd24a',
+      light: { p: [-1, 6, 2], c: '#ffc080', k: 5 + 2 * kick(t, 5) + (t >= tFan ? 3 * Math.exp(-(t - tFan) * 6) : 0), vol: .6 },
+    };
+  });
+
+  // ---------- V3.6: the letter, a portrait page in the word processor's blue, typed in rows; from "export" the red raster border slams
+  // in from all four sides of the frame, six times, and boxes it down to nothing. ----------
+  const LETV = { u: 1.45, v: 2.05 };
+  const LETTER_V = [
+    ['UNITED STATES', 'center', 30, 6], ['DEPARTMENT OF COMMERCE', 'center', 92, 4], ['The Secretary of Commerce', 'center', 140, 3, '#a8a8a8'],
+    ['June 12, 2026', 'right', 196, 4], ['5:21 P.M. ET', 'right', 236, 4],
+    ['RE: Claude Fable 5 and', 'left', 296, 4, '#ffff55'], ['Claude Mythos 5 ·', 'left', 336, 4, '#ffff55'], ['export controls', 'left', 376, 4, '#ffff55'],
+    [0, 'left', 446], [1, 'left', 490], [2, 'left', 534], [3, 'left', 578],
+    ['Howard Lutnick', 'left', 660, 6], ['Secretary of Commerce', 'left', 724, 3, '#a8a8a8'],
+  ];
+  const bodyRowV = r => { const out = []; let x = 0; while (x < 600 - (r === 3 ? 260 : 0)) { const w = 36 + Math.floor(hash2(r + 7, x) * 130); out.push([x, w]); x += w + 22; } return out; };
+  MOD.VLENS['V3.6'] = 0;
+  mvline('V3', 6, (t, s, E, ui) => {
+    const lt = t - s.start, g = MOD.panel(0), VW = fitV(g, 0, LETV.u, LETV.v), mx = 56;
+    g.fillStyle = 'rgba(0,0,168,.96)'; g.fillRect(0, 0, VW, 1024);
+    g.fillStyle = '#a8a8a8'; g.fillRect(0, 966, VW, 58); MOD.bitmap(g, 'Doc 1  Pg 1', 30, 982, 4, '#000080');
+    let chars = Math.floor(Math.max(0, lt + .08) * 640);
+    for (const [str, al, y, px, col] of LETTER_V) {
+      if (chars <= 0) break;
+      if (typeof str === 'number') {
+        for (const [bx, w] of bodyRowV(str)) { if (chars <= 0) break; g.fillStyle = '#8a8aa8'; g.fillRect(mx + bx, y, w, 24); chars -= Math.ceil(w / 26); }
+        continue;
+      }
+      typeRows(g, [[str, al === 'center' ? VW / 2 : al === 'right' ? VW - mx : mx, y, px, col ?? '#ffffff', al]], chars);
+      chars -= [...str].length;
+    }
+    if (Math.floor(t * 8) % 2 === 0) { g.fillStyle = '#ffffff'; g.fillRect(mx, 830, 32, 8); }
+    // the border closes in six slams, from "export" to the cut, onto the page's middle
+    const t0 = wordT(s, 2) - .1, step = (s.end - .02 - t0) / 6, n = t >= t0 ? Math.min(6, Math.floor((t - t0) / step) + 1) : 0;
+    let shake = [0, 0, 0];
+    if (n > 0) {
+      const k = n / 6, age = (t - t0) - (n - 1) * step, cx = W / 2, cy = 800, x0 = k * cx, x1 = W - k * (W - cx), y0 = k * cy, y1 = H - k * (H - cy), jolt = clamp(1 - age / .07);
+      shake = [(hash(n) - .5) * .1 * jolt, (hash(n + 9) - .5) * .1 * jolt, 0];
+      for (let y = 0; y < H; y += 6) {
+        const v = .3 + .7 * Math.max(0, Math.sin(y * .026 - t * 11)) ** 4;
+        ui.fillStyle = `rgb(${Math.round(90 + 165 * v)} ${Math.round(8 + 60 * v * v)} ${Math.round(10 + 40 * v * v)})`;
+        if (k >= 1 || y < y0 || y >= y1) ui.fillRect(0, y, W, 6); else { ui.fillRect(0, y, x0, 6); ui.fillRect(x1, y, W - x1, 6); }
+      }
+      if (k < 1) { ui.fillStyle = 'rgba(255,220,200,.9)'; ui.fillRect(x0 - 4, y0 - 4, x1 - x0 + 8, 4); ui.fillRect(x0 - 4, y1, x1 - x0 + 8, 4); ui.fillRect(x0 - 4, y0, 4, y1 - y0); ui.fillRect(x1, y0, 4, y1 - y0); }
+    }
+    // (the page, world .7–4.8, on the frame's rows 368–1468: its head under the date plate, its signature above the scroller. The
+    // line isn't shifted down as the other verse lines are: its border fills the frame from its top edge)
+    const { d, ty } = frameRows(.7, 4.8, 368, 1468);
+    const ro = add([.5 - lt * .25, ty + .1, d - lt * .5], shake);
+    return {
+      fx: E.fx, res: E.res, ro, ta: add([0, ty, 0], shake), fov: 1.45,
+      skyA: '#01020a', skyB: '#040a24', acc: '#4a6aff', fog: .03, floorCol: '#020206',
+      panels: [{ ...sheet([0, 2.75, 0], LETV.u, LETV.v, -.06), alpha: 1, gain: 1.35 * lo(E, .75), glass: .7, tex: 0 }],
+      light: { p: [0, 4, 4], c: '#8aa0ff', k: 3, vol: .3 },
+      flash: n > 0 ? clamp(1 - ((t - t0) % step) / .06) * .14 : 0, flashCol: '#ff6040',
+    };
+  });
+
+  // ---------- V3.7: the tall screen is dead; the tally is scratched on its glass, one mark at a time, five-bar gates stacked two by
+  // two, to nineteen by "days". Stars drift outside. ----------
+  mvline('V3', 7, (t, s, E, ui) => {
+    const lt = t - s.start, g = MOD.panel(0), VW = fitV(g, 0, SCV.u[0], SCV.v[1]);
+    g.fillStyle = 'rgba(3,3,6,.9)'; g.fillRect(0, 0, VW, 1024);
+    const t0 = s.start + .04, step = (wordT(s, 3) - .04 - t0) / 19, n = clamp(Math.floor((t - t0) / step) + 1, 0, 19);
+    g.lineCap = 'round';
+    for (let i = 0; i < n; i++) {
+      const G = Math.floor(i / 5), j = i % 5, gx = SC2 - 300 + (G % 2) * 360, y0 = 70 + Math.floor(G / 2) * 400, y1 = y0 + 310, x = gx + j * 56, age = t - (t0 + i * step);
+      const jx = (hash(i) - .5) * 24, jy = (hash(i + 40) - .5) * 28;
+      const [ax, ay, bx, by] = j < 4 ? [x + jx, y0 + jy, x - jx * .6, y1 + jy * .5] : [gx - 44, y1 - 36, gx + 212, y0 + 44];
+      const hot = clamp(1 - age / .18);
+      g.strokeStyle = `rgba(${Math.round(lerp(170, 255, hot))},${Math.round(lerp(180, 250, hot))},${Math.round(lerp(205, 235, hot))},${.85})`; g.lineWidth = 14;
+      g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
+      g.strokeStyle = 'rgba(40,44,60,.9)'; g.lineWidth = 4; g.beginPath(); g.moveTo(ax + 5, ay + 3); g.lineTo(bx + 5, by + 3); g.stroke();
+      if (age < .15) for (let q = 0; q < 8; q++) { g.fillStyle = `rgba(255,240,220,${1 - age / .15})`; g.fillRect(bx + (hash2(i, q) - .5) * 60, by + hash2(i + 9, q) * 36 - 10, 6, 6); }
+    }
+    text(g, `DAY ${String(Math.max(1, n)).padStart(2, '0')}`, VW / 2, 960, { size: Math.round(fitPx(g, 'DAY 19', 140, FT, 720)), font: FT, align: 'center', color: 'rgba(230,130,70,.7)' });
+    const { d, ty } = SCV_CAM;
+    return {
+      fx: E.fx, res: E.res, ro: [.25, ty - .3, -2 + d - .6 - lt * .5], ta: [0, ty + .05, -2], fov: 1.45,
+      skyA: '#000000', skyB: '#02030a', acc: '#3a4a70', fog: .02, floorCol: '#010102', sky: { mode: 'stars', k: .12, col: '#8fa0d8' },
+      panels: [{ ...SCV, alpha: 1, gain: 1.1, glass: .5, tex: 0 }],
+      light: { p: [0, 5, 3], c: '#6a7ab0', k: 1.2, vol: 0 }, exposure: .95,
+    };
+  });
+
+  // V3.8: the dead screen comes back on in one sweep of light down it, the banner at its foot, and FABLE 5's column runs off again.
+  mvline('V3', 8, (t, s, E, ui) => {
+    const lt = t - s.start, tJuly = wordT(s, 1), tBack = wordT(s, 3);
+    const sw = easeOut(clamp(lt / (tJuly + .06 - s.start))), sy = Math.round(sw * 1040);
+    const g = MOD.panel(0), VW = fitV(g, 0, SCV.u[0], SCV.v[1]);
+    const bar = t < tJuly ? 0 : easeIn(clamp((t - tJuly) / (tBack - tJuly)));
+    compoScreenV(g, { banner: ['EXPORT CONTROLS', 'LIFTED · JUN 30'], slide: 1, name: 1, bar, stars: t < tBack ? 0 : Math.floor((t - tBack) / .07) + 1 });
+    if (sy < 1024) { g.clearRect(0, sy, VW, 1024 - sy); g.fillStyle = 'rgba(3,3,6,.9)'; g.fillRect(0, sy, VW, 1024 - sy); g.fillStyle = '#ffffff'; g.fillRect(0, sy - 8, VW, 8); g.fillStyle = 'rgba(255,230,200,.35)'; g.fillRect(0, sy - 40, VW, 32); }
+    barTexV();
+    const panels = [{ ...SCV, alpha: 1, gain: 1.35 * lo(E, .62), glass: 1, tex: 0 }], ov = overflowV(t, tBack, 8, lo(E, .6));
+    if (ov) panels.push(ov);
+    const { d, ty } = SCV_CAM, up = easeInOut(clamp((t - tBack) / 1));
+    return {
+      fx: E.fx, res: E.res, ro: [1.5 - lt * .45, ty - .5, -2 + d - lt * .3], ta: [-.15, ty + up * .3, -2], fov: 1.45,
+      skyA: '#0c0204', skyB: '#240608', acc: '#ff5a3a', fog: .018, floorCol: '#060203', grid: .14,
+      panels, spheres: confettiV(t, tBack - .25, 24),
+      light: { p: [1, 6, 2], c: '#ffb080', k: 1 + 5 * sw, vol: .6 },
+      flash: clamp(1 - Math.abs(lt - (tJuly + .06 - s.start)) / .08) * .12, flashCol: '#fff0e0',
+    };
+  });
+
+  // ---------- V3.9, V3.10: a portrait cracktro. HUGGING / FACE in two rows of gold chrome on top, the 🤗 under it, cracked through on
+  // "hacked", CRACKED BY ??? under that, and Hugging Face's own forensics quote as the cracktro's sine scroller just over MC Token's;
+  // rainbow raster lines between. Then the logo flips to OPENAI, and the agents' own handles roll up the tall credits. ----------
+  function hfShapeV() {
+    const S = _shapes.get('HF2'); if (S) return S;
+    const tmp = makeCanvas(8, 8).getContext('2d'); tmp.font = `200px ${FT}`;
+    const tw = Math.ceil(Math.max(tmp.measureText('HUGGING').width, tmp.measureText('FACE').width)), pad = 40;
+    return ownShape('HF2', tw + 2 * pad, 400 + 2 * pad, (g, w) => {
+      g.font = `200px ${FT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText('HUGGING', w / 2, pad + 108); g.fillText('FACE', w / 2, pad + 308);
+    });
+  }
+  // (the logo's size: its type `tw` wide of its shape's w, filling `wide` units of the frame at `s` units a world unit)
+  const logoSize = (S, typeShare, wide, s) => { const hx = wide / s / 2 / typeShare; return [hx, hx / S.aspect]; };
+  const CRT_CAM = { ty: 2.75, z: 8.6, fov: 1.42 }, crtS = z => CRT_CAM.fov * H / (CRT_CAM.z - z);
+  // (world heights for rows of the frame, at depth z)
+  const crtY = (Y, z) => CRT_CAM.ty + (H / 2 - Y) / crtS(z);
+  function rasterLinesV(ui, t, ys) {
+    for (const y of ys) for (let x = 0; x < W; x += 16) { ui.fillStyle = RAINBOW[((Math.floor(x / 16 + t * 30 + y) % 7) + 7) % 7]; ui.fillRect(x, y, 16, 6); }
+  }
+  function sineScrollV(ui, str, t, y, speed) {
+    ui.save(); ui.font = `40px ${FM}`; ui.textBaseline = 'middle'; ui.lineJoin = 'round';
+    let x = W - t * speed;
+    for (const ch of str) {
+      const w = ui.measureText(ch).width;
+      if (x > -40 && x < W + 40) { const yy = y + Math.sin(x * .009 + t * 5) * 16; ui.lineWidth = 6; ui.strokeStyle = 'rgba(0,0,0,.8)'; ui.strokeText(ch, x, yy); ui.fillStyle = '#e8eeff'; ui.fillText(ch, x, yy); }
+      x += w;
+    }
+    ui.restore();
+  }
+  mvline('V3', 9, (t, s, E, ui) => {
+    const lt = t - s.start, tHack = wordT(s, 1), tUnk = wordT(s, 4);
+    // (the logo a little smaller and lower than the frame's width allows: its top row clear of the date plate)
+    const S = hfShapeV(), [hx, hy] = logoSize(S, (S.w - 80) / S.w, 760, crtS(0));
+    const crack = easeOut(clamp((t - tHack) / .25));
+    huggingFace(MOD.panel(1), crack);
+    rasterLinesV(ui, t, [228, 676, 1302]);
+    sineScrollV(ui, HF_QUOTE, lt, 1258, 560);
+    const hit = t >= tUnk ? Math.exp(-(t - tUnk) * 6) : 0, beat = kick(t, 4);
+    text(ui, 'CRACKED BY', W / 2, 1040, { size: 58, font: FT, align: 'center', color: '#d8d8e8', stroke: 8 });
+    ui.save(); const sz = 140 + 50 * hit + 12 * beat; ui.font = `${Math.round(sz)}px ${FT}`; ui.textAlign = 'center'; ui.lineJoin = 'round'; ui.lineWidth = 12; ui.strokeStyle = 'rgba(20,0,20,.9)';
+    ui.strokeText('???', W / 2, 1188); ui.fillStyle = MOD.chrome(ui, 1188 - sz * .75, 1188, ['#ffffff', '#ffb8ea', '#ff3aa6', '#6a0a4a']); ui.globalAlpha = .6 + .4 * Math.max(beat, hit); ui.fillText('???', W / 2, 1188); ui.restore();
+    const ro = [Math.sin(lt * .6) * .35, CRT_CAM.ty + .1, CRT_CAM.z], ta = [0, CRT_CAM.ty, 0];
+    // the face's panel: the face is 425 of its texture's 512 rows; 270 rows of the frame
+    const fv = 270 / crtS(.8) / 2 / .83;
+    return {
+      ...cracktroBase(E), ro, ta, fov: CRT_CAM.fov,
+      shape: { key: 'HF2', src: S, p: [0, crtY(542, 0) - kick(t, 9) * .05, 0], rot: rotYX(Math.sin(t * 1.4) * .14, -.05), s: [hx, hy, .2], col: '#a07800', rim: '#fff27a', metal: 1 },
+      panels: [{ ...sheet([0, crtY(838, .8), .8], fv * 2, fv, Math.sin(t * 1.1) * .12), alpha: 1, gain: 1.4 * lo(E, .75), glass: 0, tex: 1 }],
+      light: { p: [0, 6, 5], c: '#fff0b0', k: 5, vol: .5 },
+      flash: hit > .8 ? (hit - .8) * .8 : 0, flashCol: '#ff9ad8',
+    };
+  });
+  const handleImgV = (h, lit) => cached('hv|' + h + lit, 1300, 112, (g) => { MOD.bitmap(g, h, 650, 4, h.startsWith('and') ? 10 : 13, lit ? '#ffffff' : '#ffa088', { align: 'center' }); });
+  mvline('V3', 10, (t, s, E, ui) => {
+    const lt = t - s.start;
+    // the logo flips over to OPENAI
+    const fl = clamp(lt / .26), first = fl < .5, S = first ? hfShapeV() : MOD.shapeText('OPENAI');
+    const [hx, hy] = first ? logoSize(S, (S.w - 80) / S.w, 840, crtS(0)) : logoSize(S, (S.w - 64) / S.w, 840, crtS(0));
+    const pitch = first ? fl * Math.PI : (fl - 1) * Math.PI;
+    // the credits, a tall sheet: CRACKED BY at its head, the handles rolling up through a copper bar that lights each as it passes
+    const pu = 1.5, pv = 1, g = MOD.panel(0), VW = fitV(g, 0, pu, pv);
+    g.fillStyle = 'rgba(6,1,3,.82)'; g.fillRect(0, 0, VW, 1024);
+    MOD.bitmap(g, 'CRACKED BY', VW / 2, 36, 9, '#d8d8e8', { align: 'center' });
+    const cy = 560, bh = 130, pulse = .75 + .25 * kick(t, 6);
+    const gr = g.createLinearGradient(0, cy - bh / 2, 0, cy + bh / 2);
+    gr.addColorStop(0, 'rgba(90,6,4,0)'); gr.addColorStop(.3, `rgba(220,40,20,${pulse})`); gr.addColorStop(.5, `rgba(255,200,170,${pulse})`); gr.addColorStop(.7, `rgba(220,40,20,${pulse})`); gr.addColorStop(1, 'rgba(90,6,4,0)');
+    g.fillStyle = gr; g.fillRect(0, cy - bh / 2, VW, bh);
+    g.save(); g.beginPath(); g.rect(0, 150, VW, 874); g.clip();
+    HANDLES.forEach((h, i) => {
+      const y = cy + i * 150 - (lt - .26) * 469, near = clamp(1 - Math.abs(y - cy) / 70);
+      if (y < 100 || y > 1100) return;
+      const edge = clamp((y - 170) / 90) * clamp((1010 - y) / 90);
+      g.globalAlpha = (.45 + .55 * near) * edge; g.drawImage(handleImgV(h, near > .5), VW / 2 - 650, y - 56);
+    });
+    g.restore();
+    rasterLinesV(ui, t, [228, 676]);
+    const ro = [Math.sin(lt * .6 + 1) * .4, CRT_CAM.ty + .1, CRT_CAM.z - lt * .3], ta = [0, CRT_CAM.ty, 0];
+    return {
+      ...cracktroBase(E), ro, ta, fov: CRT_CAM.fov, acc: '#ff4a2a',
+      shape: { key: first ? 'HF2' : 'OPENAI', src: S, p: [0, crtY(520, 0), 0], rot: rotYX(Math.sin(t * 1.2) * .1, pitch), s: [hx, hy, .2], col: first ? '#a07800' : '#3a3e48', rim: first ? '#fff27a' : '#ffffff', metal: 1 },
+      panels: [{ ...sheet([0, crtY(992, .4), .4], (590 / crtS(.4) / 2) * pu / pv, 590 / crtS(.4) / 2), alpha: 1, gain: 1.45 * lo(E, .8), glass: .35, tex: 0 }],
+      light: { p: [0, 6, 5], c: '#ffb0a0', k: 5, vol: .5 },
+    };
+  });
+
+  // ---------- V3.11: the hand held up: seven cards in a tight fan, big, over the felt; the chip stack under it splits in two on
+  // "hedges". ----------
+  const cardV = (i, w, h) => cached(`cardV${i}|${w}x${h}`, w + 8, h + 8, (g) => { g.translate((w + 8) / 2, (h + 8) / 2); pokerCard(g, HAND[i][0], HAND[i][1], w, h); });
+  mvline('V3', 11, (t, s, E, ui) => {
+    const lt = t - s.start, tH = wordT(s, 2);
+    // the fan, round a pivot under the panel: cards 440 × 630 at 900 from it, .12 apart (drawn at 1.29× to fill the panel)
+    const fu = 1.49, fv = .9, g = MOD.panel(0), VW = fitV(g, 0, fu, fv);
+    g.translate(VW / 2, 1596); g.scale(1.29, 1.29);
+    for (let i = 0; i < 7; i++) {
+      const spread = easeOut(clamp((lt - i * .03) / .45)) * (1 + .04 * kick(t, 6)), th = (i - 3) * .12 * spread + Math.sin(t * 1.2) * .025;
+      g.save(); g.rotate(th); g.translate(0, -900); g.drawImage(cardV(i, 440, 630), -224, -319); g.restore();
+    }
+    chips(MOD.panel(1), clamp((t - tH + .05) / .3));
+    const yaw = Math.sin(t * 1.1) * .16, ty = 2.0;
+    return {
+      fx: E.fx, res: E.res, ro: [Math.sin(lt * .5) * .5, 2.5, 8.3 - lt * .3], ta: [0, ty, 0], fov: 1.45,
+      skyA: '#010603', skyB: '#031208', acc: '#3aff8a', fog: .03, floorCol: '#063a1c',
+      panels: [{ ...sheet([0, 2.86, -.6], fu, fv, yaw, -.05), alpha: 1, gain: 1.25 * lo(E, .5), glass: 0, tex: 0 }, { ...sheet([0, 1.76, 1.7], 1.44, .72, -yaw * .5), alpha: 1, gain: 1.2 * lo(E, .7), glass: 0, tex: 1 }],
+      light: { p: [0, 7, 2], c: '#fff2c8', k: 5, vol: .8 },
+    };
+  });
+
+  // ---------- V3.12: the seven cards in two columns of four (the seventh alone at the foot), flipping one after another to the seven
+  // Millennium Prize problems; (YET) blinks on Navier–Stokes and hits when he sings it. ----------
+  const problemImgV = (i, w, h) => cached(`probV${i}|${w}x${h}`, w + 8, h + 8, (g) => {
+    g.translate((w + 8) / 2, (h + 8) / 2);
+    const gr = g.createLinearGradient(0, -h / 2, 0, h / 2); gr.addColorStop(0, '#fff6d8'); gr.addColorStop(1, '#f0d890');
+    g.fillStyle = gr; g.beginPath(); g.roundRect(-w / 2, -h / 2, w, h, 22); g.fill();
+    g.strokeStyle = '#b8860b'; g.lineWidth = 6; g.stroke(); g.lineWidth = 3; g.strokeRect(-w / 2 + 14, -h / 2 + 14, w - 28, h - 28);
+    const L = PROBLEMS[i];
+    L.forEach((str, j) => {
+      const two = L.length > 1, y = two ? (j - .5) * 62 + 19 : 22;
+      if (str.endsWith('✓')) {
+        text(g, str.slice(0, -2), -28, y, { size: 52, font: FT, align: 'center', color: '#1a1408' });
+        g.strokeStyle = '#1a9a3a'; g.lineWidth = 14; g.lineCap = 'round'; g.beginPath(); g.moveTo(w / 2 - 74, y - 24); g.lineTo(w / 2 - 54, y - 2); g.lineTo(w / 2 - 22, y - 54); g.stroke();
+      } else text(g, str, 0, y, { size: Math.round(fitPx(g, str, two ? 52 : 62, FT, w - 60)), font: FT, align: 'center', color: '#1a1408' });
+    });
+  });
+  mvline('V3', 12, (t, s, E, ui) => {
+    const lt = t - s.start, t0 = wordT(s, 1) - .1, step = .085, tYet = wordT(s, 3);
+    const CW = 466, CHh = 226, pu = 1.462, pv = 1.5, g = MOD.panel(0), VW = fitV(g, 0, pu, pv);
+    const row = r => 20 + CHh / 2 + r * (CHh + 26), col = c => VW / 2 + (c - .5) * (CW + 26);
+    const spots = [0, 1, 2, 3, 4, 5].map(i => [col(i % 2), row(Math.floor(i / 2))]).concat([[VW / 2, row(3)]]);
+    spots.forEach(([x, y], i) => {
+      const f = easeInOut(clamp((t - t0 - i * step) / .2)), sx = Math.cos(f * Math.PI), lift = Math.sin(f * Math.PI) * 24;
+      g.save(); g.translate(x, y - lift + Math.sin(t * 1.6 + i) * 3); g.scale(Math.max(.02, Math.abs(sx)) * (1 + lift / 300), 1 + lift / 300);
+      if (sx >= 0) g.drawImage(cardV(i, CW, CHh), -(CW + 8) / 2, -(CHh + 8) / 2);
+      else g.drawImage(problemImgV(i, CW, CHh), -(CW + 8) / 2, -(CHh + 8) / 2);
+      g.restore();
+    });
+    // (YET): stamped on Navier–Stokes once it's up, blinking, and hit when he sings it
+    const tNS = t0 + 4 * step + .22;
+    if (t >= tNS) {
+      const on = frac((t - tNS) * 4.7) < .68 || t >= tYet, pop = t >= tYet ? Math.exp(-(t - tYet) * 10) : 0;
+      if (on) {
+        g.save(); g.translate(spots[4][0] + 90, spots[4][1] + 100); g.rotate(-.12); const sz = 84 * (1 + pop * .45);
+        g.font = `${Math.round(sz)}px ${FT}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+        g.lineWidth = 14; g.strokeStyle = 'rgba(40,0,6,.9)'; g.strokeText('(YET)', 0, 0);
+        g.fillStyle = MOD.chrome(g, -sz / 2, sz / 2, ['#ffffff', '#ffb0c0', '#ff3050', '#8a0a1c']); g.fillText('(YET)', 0, 0); g.restore();
+      }
+    }
+    // (the grid's panel, world 1.1–4.1, on the frame's rows 362–1307: under the date plate)
+    const { d, ty } = frameRows(1.1, 4.1, 362, 1307);
+    return {
+      fx: E.fx, res: E.res, ro: [Math.sin(lt * .5) * .5, ty + .2, d - lt * .3], ta: [0, ty, 0], fov: 1.45,
+      skyA: '#020822', skyB: '#0a1a50', acc: '#6a8aff', fog: .02, floorCol: '#02040c', sky: { mode: 'stars', k: .25, col: '#b4c6ff' },
+      panels: [{ ...sheet([0, 2.6, 0], pu, pv), alpha: 1, gain: 1.3 * lo(E, .5), glass: .25, tex: 0 }],
+      light: { p: [0, 6, 4], c: '#c0d0ff', k: 4, vol: .5 },
+      flash: t >= tYet ? clamp(1 - (t - tYet) / .1) * .15 : 0, flashCol: '#ffb0c0',
+    };
+  });
+
+  // ---------- V3.13: MYTHOS across the middle, in steel chrome, over red raster bars that fill the whole tall frame; the picture slips
+  // a slice or two, and on "misaligned" tears into sliding slices while the bars roll. ----------
+  let _rastV = null;
+  mvline('V3', 13, (t, s, E, ui) => {
+    const lt = t - s.start, tM = wordT(s, 3), n16 = Math.floor(bt(t) * 4);
+    const bad = t >= tM ? easeOut(clamp((t - tM) / .12)) : 0;
+    const v = t >= tM ? 3 + (n16 % 5) : (hash2(n16, 5) > .55 && lt > .25 ? 1 + (n16 % 2) : 0);
+    if (!_shapes.has('torn|MYTHOS|7')) for (let k = 0; k < 8; k++) tornText('MYTHOS', k);
+    const S = tornText('MYTHOS', v);
+    // the bars down one column, fourteen of them for the tall sheet, stretched into slices that slip
+    _rastV = _rastV || makeCanvas(1, 1024);
+    const r = _rastV.getContext('2d'); r.fillStyle = '#080102'; r.fillRect(0, 0, 1, 1024);
+    for (let i = 0; i < 14; i++) {
+      const yc = 36 + i * 73 + Math.sin(t * 2.4 + i * .8) * 26, hh = 26, gr = r.createLinearGradient(0, yc - hh, 0, yc + hh);
+      const hot = i % 3 === 2 ? ['#3a1004', '#ff8a3a', '#fff0d0'] : ['#2a0204', '#e8201a', '#ffd0c0'];
+      gr.addColorStop(0, hot[0]); gr.addColorStop(.45, hot[1]); gr.addColorStop(.5, hot[2]); gr.addColorStop(.55, hot[1]); gr.addColorStop(1, hot[0]);
+      r.fillStyle = gr; r.fillRect(0, yc - hh, 1, hh * 2);
+    }
+    const g = MOD.panel(0), VW = fitV(g, 0, 2.4, 4.4), roll = bad ? Math.floor((t - tM) * 1400) % 1024 : 0;
+    for (const [y, bh, rr] of bandsOf(n16 * 3 + 1, 1024)) {
+      const mild = hash2(n16, y) > .85 ? rr * 40 : 0, dx = Math.round(lerp(mild, rr * 300 + Math.sin(y * .02 + t * 20) * 14, bad));
+      const sy = (y + roll) % 1024, h1 = Math.min(bh, 1024 - sy);
+      g.drawImage(_rastV, 0, sy, 1, h1, 0, y, VW, h1); if (h1 < bh) g.drawImage(_rastV, 0, 0, 1, bh - h1, 0, y + h1, VW, bh - h1);
+      g.fillStyle = 'rgba(0,0,0,.42)'; for (let x = ((dx % 56) + 56) % 56; x < VW; x += 56) g.fillRect(x, y, 5, bh);
+    }
+    if (bad) { const by = (1024 - roll) % 1024; g.fillStyle = '#000'; g.fillRect(0, by - 30, VW, 50); }
+    const jolt = bad ? (hash2(n16, 9) - .5) * .12 : 0;
+    const ro = [Math.sin(lt * .5) * .35, 2.45, 8.2 - lt * .3], ta = [0, 2.35, 0];
+    // MYTHOS's type (its shape's width less the tears' margins) 900 units wide, on the picture's middle row
+    const sM = 1.45 * H / (ro[2] - .8), hx = 900 / sM / 2 * S.w / (S.w - 210), hy = hx / S.aspect;
+    return {
+      fx: E.fx, res: E.res, ro, ta, fov: 1.45, roll: jolt,
+      skyA: '#060102', skyB: '#1a0306', acc: '#ff3a2a', fog: .02, floorCol: '#050203',
+      shape: { key: `torn|MYTHOS|${v}`, src: S, p: [0, ta[1] + (H / 2 - 790) / sM, .8], rot: rotYX(Math.sin(t * 1.1) * .08 + (bad ? (hash2(n16, 4) - .5) * .2 : 0), -.04, bad ? (hash2(n16, 6) - .5) * .12 : 0), s: [hx, hy, .22], col: '#20222a', rim: '#ff6a5a', metal: 1 },
+      panels: [{ ...sheet([0, 2.9, -1.6], 2.4, 4.4), alpha: 1, gain: 1.15, glass: .2, tex: 0 }],
+      light: { p: [0, 4, -4], c: '#ff5a4a', k: 7, vol: .9 },
+      flash: t >= tM ? clamp(1 - (t - tM) / .1) * .18 : 0, flashCol: '#ff8070',
+    };
+  });
+
+  // ---------- V3.14: four spheres in Google's colours loop round a ring stood on end, inside a tall steel border; the blue one leaves
+  // on "left", up out through the border's top and out of the frame, and the border snaps shut on the other three just before
+  // "time". ----------
+  function frameTexV(g, t, VW) {
+    const H2 = 512, b = 16;
+    for (let y = 0; y < H2; y += 4) {
+      const v = .35 + .65 * Math.max(0, Math.sin(y * .05 + t * 6)) ** 6, c = Math.round(80 + 150 * v);
+      g.fillStyle = `rgb(${c} ${c + 8} ${c + 24})`;
+      if (y < b || y >= H2 - b) g.fillRect(0, y, VW, 4); else { g.fillRect(0, y, b, 4); g.fillRect(VW - b, y, b, 4); }
+    }
+    g.strokeStyle = '#e8f0ff'; g.lineWidth = 2; g.strokeRect(b, b, VW - 2 * b, H2 - 2 * b);
+  }
+  mvline('V3', 14, (t, s, E, ui) => {
+    const lt = t - s.start, tL = wordT(s, 1), tSnap = wordT(s, 5) - .05;
+    const snap = t >= tSnap ? easeOut(clamp((t - tSnap) / .06)) : 0, ts = t - tSnap;
+    const shake = snap > 0 && ts < .25 ? [(hash(Math.floor(t * 60)) - .5) * .1 * (1 - ts / .25), (hash(Math.floor(t * 60) + 7) - .5) * .08 * (1 - ts / .25), 0] : [0, 0, 0];
+    // the ring: stood on end, turned to show its face a little
+    const O = [0, 2.95, 0], A1 = [0, 1, 0], A2 = norm([.75, 0, 1]), Rr = lerp(1.15, .8, snap), w0 = 2.4;
+    const at = (i, tt, rr) => { const a = tt * w0 + i * TAU / 4; return add(O, add(mul(A1, Math.cos(a) * rr), mul(A2, Math.sin(a) * rr))); };
+    const spheres = [];
+    for (let i = 0; i < 4; i++) { if (i === 0 && t >= tL) continue; spheres.push([...at(i, t, Rr), .4, GCOL[i]]); }
+    // the one who leaves: from its place on the ring up out through the border's top and on out of the frame, a trail behind it
+    if (t >= tL) {
+      const P0 = at(0, tL, 1.15), end = [.7, 9.5, 2.4];
+      const pos = tt => { const k = clamp((tt - tL) / (tSnap - .15 - tL)) ** 1.5; return [lerp(P0[0], end[0], k) + Math.sin(k * Math.PI) * .45, lerp(P0[1], end[1], k), lerp(P0[2], end[2], k)]; };
+      for (let j = 0; j < 5; j++) spheres.push([...pos(t - j * .035), .4 * (1 - j * .17), GCOL[0]]);
+    }
+    const fu = lerp(1.2, .85, snap), fv = lerp(1.75, 1.24, snap), g1 = MOD.panel(1);
+    frameTexV(g1, t, fitV(g1, 1, fu, fv));
+    const { d, ty } = frameRows(1.2, 4.7, 374, 1270);
+    const ro = add([Math.sin(lt * .5) * .7, ty + .45, .1 + d - lt * .3], shake);
+    return {
+      fx: E.fx, res: E.res, ro, ta: add([0, ty, 0], shake), fov: 1.45,
+      skyA: '#03050c', skyB: '#0c1428', acc: '#4a5a88', fog: .02, floorCol: '#030409',
+      spheres, panels: [{ ...sheet([0, O[1], .1], fu, fv), alpha: 1, gain: 1.2 * lo(E, .7), glass: 0, tex: 1 }],
+      halo: { p: O, n: norm(cross(A1, A2)), R: Rr, r: .025, k: 1.1, col: '#cfe0ff' },
+      light: { p: [3, 6, 5], c: '#ffffff', k: 6, vol: .5 },
+      flash: snap > 0 && ts < .08 ? .1 * (1 - ts / .08) : 0, flashCol: '#e0e8ff',
+    };
+  });
+
+  // ---------- V3.15: the Jacobian at the top, "det J = const" lighting orange on "disproved"; under it the wireframe sheet rolls over
+  // onto itself, across the frame; DJ Clawd at its foot throws his arms up. ----------
+  mvline('V3', 15, (t, s, E, ui) => {
+    const lt = t - s.start, tD = wordT(s, 1), d = s.end - s.start;
+    gridTex(MOD.panel(0), t, lt, d);
+    // the Jacobian, top left (left of the date plate)
+    ui.save(); ui.fillStyle = 'rgba(4,8,18,.86)'; ui.beginPath(); ui.roundRect(60, 262, 640, 306, 14); ui.fill(); ui.restore();
+    text(ui, 'J =', 82, 412, { size: 52, font: FM, color: '#e8eeff' });
+    ui.save(); ui.strokeStyle = '#e8eeff'; ui.lineWidth = 5;
+    for (const [bx, dir] of [[196, 1], [680, -1]]) { ui.beginPath(); ui.moveTo(bx + dir * 16, 290); ui.lineTo(bx, 290); ui.lineTo(bx, 464); ui.lineTo(bx + dir * 16, 464); ui.stroke(); }
+    ui.restore();
+    JAC.forEach((r, i) => r.forEach((e, j) => text(ui, e, 214 + j * 152, 336 + i * 56, { size: 40, font: FM, color: '#b8c8ff' })));
+    const on = t >= tD, pop = on ? Math.exp(-(t - tD) * 8) : 0;
+    text(ui, 'det J = const', 82, 540 - pop * 6, { size: 56 + pop * 8, font: FM, color: on ? '#ffb46a' : '#e8eeff', stroke: 6 });
+    const up = on ? easeOut(clamp((t - tD) / .16)) * (.8 + .2 * kick(t, 5)) : 0, hop = kick(t, 7) * 16;
+    const gc = MOD.panel(1), u = 38; MOD.clawd(gc, 512, 500, u, { hop, eyes: on ? 'happy' : 'open' });
+    if (on) {
+      const by = 500 - hop - 8 * u;
+      for (const sx of [-1, 1]) {
+        const ax = sx < 0 ? 512 - 5 * u - 2.6 * u : 512 + 5 * u + 1.6 * u, top = by + 1.2 * u - up * 3.2 * u;
+        gc.fillStyle = '#d97757'; gc.fillRect(ax, top, u, by + 2.4 * u - top); gc.fillRect(ax - .3 * u, top - .6 * u, 1.6 * u, 1.2 * u);
+        gc.fillStyle = '#ffb45c'; gc.fillRect(ax - .3 * u, top - .6 * u, 1.6 * u, .35 * u);
+      }
+    }
+    // (the sheet's panel at z 0 on the frame's rows ≈ 590–1060; Clawd's, nearer, his feet on row 1290)
+    const ty = 2.3, z = 8.45, s0 = 1.45 * H / z, s1 = 1.45 * H / (z - .6);
+    return {
+      fx: E.fx, res: E.res, ro: [Math.sin(lt * .5) * .4 + .2, ty + .45, z - lt * .3], ta: [.1, ty, 0], fov: 1.45,
+      skyA: '#05020c', skyB: '#160a26', acc: '#ff8a3a', fog: .02, floorCol: '#040208', grid: .16,
+      panels: [{ ...sheet([0, ty + (H / 2 - 690) / s0, 0], 2.1, 1.05, .08), alpha: 1, gain: 1.4, glass: 0, tex: 0 }, { ...sheet([0, ty + (H / 2 - 1112) / s1, .6], 1.08, .54, Math.sin(t * 1.3) * .12), alpha: 1, gain: 1.35 * lo(E, .8), glass: 0, tex: 1 }],
+      light: { p: [2, 6, 5], c: '#ffe0c0', k: 6, vol: .5 },
+      flash: on && t < tD + .08 ? .15 : 0, flashCol: '#ffd0a0',
+    };
+  });
+
+  // ---------- V3.16: the gwern.net G stands in the middle of the frame and lifts up it like a mask, toward the halo that lights over
+  // it; his words type in short rows on a dark glass sheet under it, in front of where it stood, and PSEUDONYM echoes out of it at
+  // the camera. ----------
+  mvline('V3', 16, (t, s, E, ui) => {
+    const W3 = words(lineOfKey('V3.16')), tGave = W3[1].t0, tHis = W3[3].t0, lt = t - s.start;
+    const S = MOD.shapeG(), hy = 1.0, hx = hy * S.aspect;
+    const L = easeInOut(clamp((t - tGave) / 1.25)) * 2.0;
+    const sway = Math.sin(t * .8) * .2 + L * .1;
+    const P = [0, hy + .03 + L, 0];
+    // the camera follows the G up at four fifths of its speed: it rises up the frame, the floor drops away
+    const z = 9.6 - lt * .25, ty = .58 + L * .8, ro = [Math.sin(lt * .35) * .9, ty + .35, z], ta = [0, ty, 0];   // (looking a little low: the G's foot clears the quote's sheet)
+    const halo = t >= tHis ? { p: [0, P[1] + hy + .14, .05], n: [0, 1, 1.1], R: .42, r: .036, k: easeOut(clamp((t - tHis) / .35)) * (2.1 + 1 * kick(t, 5)), col: '#ffd27a' } : null;
+    const panels = [];
+    // the echo: PSEUDONYM, again and again, flying out of the G toward the camera
+    if (t >= ECHO[0]) {
+      MOD.panel(2).drawImage(pseudonymTex(), 0, 0);
+      for (let i = 0; i < 3; i++) {
+        const a = (t - ECHO[0] - i * .26) / .9; if (a <= 0 || a >= 1) continue;
+        const ez = lerp(1.1, 6.5, easeIn(a)), sc = lerp(.62, 1.2, a);
+        panels.push({ c: [0, P[1] - .1, ez], u: [1.6 * sc, 0, 0], v: [0, .8 * sc, 0], alpha: Math.sin(a * Math.PI) * 1.2, gain: 2.2, glass: 0, tex: 2 });
+      }
+    }
+    // his words, typing from "gave" in short rows on a dark glass sheet that rises in front of the G's foot
+    const q0 = tGave - .15, rate = 50;
+    if (t >= q0) {
+      // (900 × 270 of the frame, on its rows 1020–1290, at depth 2.2: the type 46 units high)
+      const sq = 1.45 * H / (z - 2.2), qu = 450 / sq, qv = 135 / sq, rise = (1 - easeOut(clamp((t - q0) / .3))) * .4;
+      const gq = MOD.panel(1), VWq = fitV(gq, 1, qu, qv);
+      gq.fillStyle = 'rgba(8,6,14,.84)'; gq.fillRect(0, 0, VWq, 512); gq.fillStyle = 'rgba(255,179,71,.55)'; gq.fillRect(0, 0, VWq, 6);
+      let n = Math.floor((t - q0) * rate);
+      QUOTE.forEach((l, i) => { if (n > 0) text(gq, l, 58, 118 + i * 114, { size: 87, n, color: '#ffe2b0' }); n -= l.length; });
+      panels.push({ ...sheet([0, ty + (H / 2 - 1155) / sq - rise, 2.2], qu, qv, .04), alpha: easeOut(clamp((t - q0) / .2)), gain: 1.3 * lo(E, .75), glass: .6, tex: 1 });
+    }
+    return {
+      fx: E.fx, res: E.res, ro, ta, fov: 1.45,
+      skyA: '#04050c', skyB: '#0b0c1a', acc: '#ffb347', fog: .018, floorCol: '#030306',
+      shape: { key: 'G', src: S, p: P, rot: rotYX(sway, -L * .04), s: [hx, hy, .12], col: '#0a0a0e', rim: '#ffb347', metal: .22 },
+      halo, panels,
+      light: { p: [0, 1.6 + L, -2.4], c: '#ffc98a', k: 7, vol: 1.1 },
+      flare: 1, flarePos: MOD.project({ ro, ta, fov: 1.45 }, [0, 1.6 + L, -2.4]) ?? [.5, .6],
+    };
+  });
+
 })();
 
 ;
@@ -10438,11 +13247,8 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
   // V4.6 Who was first? Twelve hours between!: a clock at two minutes to midnight on the 7th; on "Twelve" the hands sweep twelve
   // hours in two beats, back to the same place, and the date window flips to 8: Buckmaster & Alpöge's night, OpenAI's noon.
   // ================================================================================================================================
-  mline('V4', 6, (t, s, E, ui) => {
-    const W = W4(s), lt = t - s.start, tS = W[3].t0, sweep = beatLen() * 2, k = easeInOut(clamp((t - tS) / sweep)), spin = k > 0 && k < 1;
-    const done = k >= 1;
-    // the dial
-    const g = MOD.panel(1), cx = 512, cy = 256, R = 232;
+  // the dial: 11:58 on the 7th and ticking; k of the sweep adds twelve hours, and the date window turns to 8 at tS
+  function drawDial(g, cx, cy, R, t, s, tS, k, spin) {
     g.fillStyle = MOD.chrome(g, cy - R - 16, cy + R + 16, ['#f4f0ff', '#9c90c0', '#4a3c70', '#c8bce8']); g.beginPath(); g.arc(cx, cy, R + 16, 0, TAU); g.fill();
     const face = g.createRadialGradient(cx, cy - 60, 20, cx, cy, R); face.addColorStop(0, '#2a1a4a'); face.addColorStop(1, '#0c0720');
     g.fillStyle = face; g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.fill();
@@ -10465,6 +13271,13 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     hand(ma, R - 36, 11, '#fff0b8');
     if (!spin) hand(sa, R - 20, 3, '#ff4060');
     g.fillStyle = '#ffe08a'; g.beginPath(); g.arc(cx, cy, 16, 0, TAU); g.fill();
+  }
+  mline('V4', 6, (t, s, E, ui) => {
+    const W = W4(s), lt = t - s.start, tS = W[3].t0, sweep = beatLen() * 2, k = easeInOut(clamp((t - tS) / sweep)), spin = k > 0 && k < 1;
+    const done = k >= 1;
+    // the dial
+    const R = 232;
+    drawDial(MOD.panel(1), 512, 256, R, t, s, tS, k, spin);
     // the two claims
     const g0 = MOD.panel(0);
     const tag = (x0, top, names, lit, right) => {
@@ -10538,6 +13351,11 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
   // V4.8 Sam and Elon both: "Hear, hear!": two traces, SAM and ELON, drift into phase and merge; on "Hear, hear!" the scope flips to
   // X–Y and the figure closes to a single line.
   // ================================================================================================================================
+  // (once they merge, on "both", the one trace is neither's colour but a hotter one between Sam's green and Elon's amber, and
+  // thicker; the X–Y figure keeps it, going white-hot as it closes to a line)
+  const SAM_C = ['#40ff80', '#e0ffe8'], ELON_C = ['#ffc830', '#fff4c0'], BOTH_C = ['#d8ff3c', '#ffffff'];
+  const mergedTrace = (g, p, own, k, w0, w1) => glowPath(g, p, lerpHex(own[0], BOTH_C[0], k), lerp(w0, w1, k), lerpHex(own[1], BOTH_C[1], k));
+  const closedTrace = (g, p, q, w) => glowPath(g, p, lerpHex(BOTH_C[0], '#f8ffb8', clamp((q - .85) / .15)), w, '#ffffff');
   mline('V4', 8, (t, s, E, ui) => {
     const W = W4(s), lt = t - s.start, tSam = W[0].t0, tElon = W[2].t0, tBoth = W[3].t0, tH1 = W[4].t0, tH2 = W[5].t0;
     const g = MOD.panel(0), x0 = 110, x1 = 1938, y0 = 70, y1 = 950, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, w = x1 - x0, h = y1 - y0;
@@ -10551,19 +13369,20 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       // Y–T: from "Elon" the second trace drifts into the first's phase and height; on "both" they're one
       const m = easeInOut(clamp((t - tElon) / (tBoth - tElon + .05)));
       const trace = (yc, f, ph) => { const p = new Path2D(); for (let i = 0; i <= 200; i++) { const x = x0 + i / 200 * w, y = yc - A * Math.sin((x - x0) / w * TAU * 3 * f - t * 9 + ph); i ? p.lineTo(x, y) : p.moveTo(x, y); } return p; };
-      if (t >= tElon) glowPath(g, trace(lerp(cy + 230, cy, m), lerp(1.7, 1, m), lerp(2.1, 0, m)), '#ffc830', 9, '#fff4c0');
-      glowPath(g, trace(lerp(cy - 230, cy, m), 1, 0), '#40ff80', 9, '#e0ffe8');
+      const both = easeInOut(clamp((t - tBoth + .08) / .16));
+      if (t >= tElon) mergedTrace(g, trace(lerp(cy + 230, cy, m), lerp(1.7, 1, m), lerp(2.1, 0, m)), ELON_C, both, 9, 13);
+      mergedTrace(g, trace(lerp(cy - 230, cy, m), 1, 0), SAM_C, both, 9, 13);
     } else {
       // X–Y: one figure, closing on the second "hear" to a single line
       const q = easeInOut(clamp((t - tH1) / ((tH2 - tH1) * .85))), ratio = lerp(2, 1, clamp((t - tH1) / .12)), del = lerp(Math.PI / 2, 0, q), P = 1 + .1 * kick(t, 6);
       const p = new Path2D();
       for (let i = 0; i <= 300; i++) { const u = i / 300 * TAU, x = cx + Math.sin(u + t * 2) * 620 * P, y = cy - Math.sin(u * ratio + t * 2 * ratio + del) * 330 * P; i ? p.lineTo(x, y) : p.moveTo(x, y); }
-      glowPath(g, p, q > .9 ? '#b0ff60' : '#40ff80', 10, '#f0fff0');
+      closedTrace(g, p, q, 13);
     }
     g.restore();
     text(g, 'CH1 SAM', x0 + 30, y0 + 60, { size: 44, font: FT, color: '#60ff90' });
     if (t >= tElon) text(g, 'CH2 ELON', x0 + 30, y0 + 120, { size: 44, font: FT, color: '#ffc830' });
-    text(g, t < tH1 ? 'Y–T' : 'X–Y', x1 - 30, y1 - 30, { size: 44, font: FT, align: 'right', color: '#60ff90' });
+    text(g, t < tH1 ? 'Y–T' : 'X–Y', x1 - 30, y1 - 30, { size: 44, font: FT, align: 'right', color: t < tH1 ? '#60ff90' : BOTH_C[0] });
     const xy = t >= tH1, lx = t - tH1;
     return {
       ro: xy ? [.2, 2.25, 5.3 - lx * .4] : [-1.3 + lt * .7, 2.05, 6.6 - lt * .3], ta: [0, 2.3, 0], fov: 1.5,
@@ -10668,7 +13487,6 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       const k = easeInOut(clamp((t - tSh) / (tPew - tSh + .04))), mid = (BX + NX) / 2, lit = t >= tPew ? .6 + .4 * kick(t, 5) : 1;
       const p = new Path2D(); p.moveTo(BX, LY); p.lineTo(lerp(BX, mid, k), LY); p.moveTo(NX, LY); p.lineTo(lerp(NX, mid, k), LY);
       glowPath(g, p, `rgba(255,200,70,${lit})`, 14, '#fff6d8');
-      if (t >= tPew) { g.fillStyle = '#ffd050'; g.fillRect(X0 - 26, LY - 5, 52, 10); }
     }
     // BERNIE and BANNON: in from the edges, each landing on its name
     const spheres = [], flyIn = (t0, fromX, toX) => { const k = clamp((t - t0) / .34); return [lerp(fromX, toX, backOut(k, 1.1)), lerp(LY + 260, LY, easeOut(k)) - Math.sin(k * Math.PI) * 120]; };
@@ -10693,9 +13511,9 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
   // V4.11 Claude builds Claude — now one in four!: a 2×2 grid in which DJ Clawd, in the one orange quadrant, builds the next grid,
   // forever (a Droste zoom); beside it Anthropic's index counts to 26%.
   // ================================================================================================================================
-  mline('V4', 11, (t, s, E, ui) => {
-    const lt = t - s.start, d = s.end - s.start;
-    const g = MOD.panel(0), SQ = 1024;
+  // the grids, drawn in a 1024 square from (0, 0)
+  function droste(g, lt, t) {
+    const SQ = 1024;
     g.fillStyle = '#0a1a3a'; g.fillRect(0, 0, SQ, SQ);
     g.fillStyle = 'rgba(120,170,255,.12)';
     for (let x = 0; x < SQ; x += 32) g.fillRect(x, 0, 2, SQ);
@@ -10731,6 +13549,12 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     }
     g.restore();
     g.strokeStyle = 'rgba(160,200,255,.6)'; g.lineWidth = 6; g.strokeRect(3, 3, SQ - 6, SQ - 6);
+  }
+  mline('V4', 11, (t, s, E, ui) => {
+    const lt = t - s.start, d = s.end - s.start;
+    const g = MOD.panel(0);
+    droste(g, lt, t);
+    const kk = kick(t, 7);
     // Anthropic's index
     const k = easeOut(clamp((lt - .08) / (d * .62))), pct = Math.round(lerp(1, 26, k));
     g.fillStyle = 'rgba(10,14,30,.82)'; g.fillRect(1080, 40, 940, 944);
@@ -10754,11 +13578,10 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
   // V4.12 Chatbot nearly starts a war!: a radar table. The sweep passes a ship on "Chatbot": NUCLEAR? flickers, the alarm strobes
   // red and three planes close in; on the next pass it reads ABORT and they turn back.
   // ================================================================================================================================
-  mline('V4', 12, (t, s, E, ui) => {
-    const W = W4(s), lt = t - s.start, rev = beatLen() * 2, t1 = W[0].t0, t2 = t1 + rev;
+  // the radar, centred on (cx, cy): its sweep passing the ship at t1 and again at t2; the ship's label beside it (unless label is
+  // false). Returns the ship's place.
+  function radar(g, cx, cy, R, t, t1, t2, rev, alarm, strobe, label = true) {
     const shipA = -.62, sweepA = (t - t1) / rev * TAU + shipA;
-    const alarm = t >= t1 && t < t2, strobe = alarm && (Math.floor(bt(t) * 2) & 1);
-    const g = MOD.panel(0), cx = 1024, cy = 512, R = 460;
     g.fillStyle = 'rgba(2,12,5,.9)'; g.beginPath(); g.arc(cx, cy, R + 36, 0, TAU); g.fill();
     // the sweep's afterglow, trailing the beam
     const cg = g.createConicGradient(sweepA, cx, cy);
@@ -10784,12 +13607,18 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       g.beginPath(); g.moveTo(px + Math.cos(hd) * sz, py + Math.sin(hd) * sz); g.lineTo(px + Math.cos(hd + 2.5) * sz * .75, py + Math.sin(hd + 2.5) * sz * .75); g.lineTo(px + Math.cos(hd - 2.5) * sz * .75, py + Math.sin(hd - 2.5) * sz * .75); g.fill();
     }
     // the ship's label: NUCLEAR?, flickering; then ABORT
-    if (t >= t1) {
+    if (label && t >= t1) {
       const lx = sx + 40, ly = sy - 120;
       g.strokeStyle = alarm ? '#ff6060' : '#e8fff0'; g.lineWidth = 4; g.beginPath(); g.moveTo(sx + 14, sy - 14); g.lineTo(lx, ly + 40); g.stroke();
       if (!alarm) { g.fillStyle = '#04140a'; g.fillRect(lx - 10, ly - 40, 330, 96); text(g, 'ABORT', lx + 8, ly + 38, { size: 80, font: FT, color: '#ffffff' }); }
       else if (Math.floor(t * 18) % 4) { g.fillStyle = 'rgba(90,0,0,.85)'; g.fillRect(lx - 10, ly - 40, 520, 96); text(g, 'NUCLEAR?', lx + 8, ly + 38, { size: 80, font: FT, color: '#ff4a4a' }); }
     }
+    return [sx, sy];
+  }
+  mline('V4', 12, (t, s, E, ui) => {
+    const W = W4(s), lt = t - s.start, rev = beatLen() * 2, t1 = W[0].t0, t2 = t1 + rev;
+    const alarm = t >= t1 && t < t2, strobe = alarm && (Math.floor(bt(t) * 2) & 1);
+    radar(MOD.panel(0), 1024, 512, 460, t, t1, t2, rev, alarm, strobe);
     const ab = t >= t2;
     return {
       ro: ab ? [.3, 4.7, 5.9 - (t - t2) * .3] : [Math.sin(lt * .5) * .6, 3.5, 6.6 - lt * .3], ta: ab ? [.2, 1.55, 0] : [0, 1.4, 0], fov: 1.45,
@@ -11046,6 +13875,776 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     };
   });
 
+  // ================================================================================================================================
+  // The vertical video (VERTICAL.md): verse 4 composed for the 1080 × 1920 frame, a line at a time. The UI is in the vertical
+  // frame's units (W × H = 1080 × 1920); the picture keeps to y ≈ 290–1290, above MC Token's scroller, and clear of the date plate
+  // at the top right.
+  // ================================================================================================================================
+  const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  function camAxes(F) { const f = MOD.norm(MOD.sub(F.ta, F.ro)), r = MOD.norm(cross3(f, [0, 1, 0])); return { f, r, u: cross3(r, f) }; }
+  // the world point at UI point (x, y), d in front of the camera F (along its axis), and the world length of n UI units there
+  function atUI(F, x, y, d) { const { f, r, u } = camAxes(F); return add(add(add(F.ro, mul(f, d)), mul(r, (x / W - .5) * d * W / (F.fov * H))), mul(u, (.5 - y / H) * d / F.fov)); }
+  const lenUI = (F, n, d) => n / H * d / F.fov;
+  // a panel facing the camera F, centred on UI point (x, y), w × h UI units, d in front of it (placed by a scene's resting camera,
+  // so that the moving one gives it parallax)
+  function facing(F, x, y, d, w, h, o = {}) { const { r, u } = camAxes(F); return { c: atUI(F, x, y, d), u: mul(r, lenUI(F, w, d) / 2), v: mul(u, lenUI(F, h, d) / 2), ...o }; }
+  // a world point on the UI (null behind the camera)
+  const toV = (F, p) => { const q = MOD.project(F, p); return q ? [q[0] * W, (1 - q[1]) * H] : null; };
+  // A panel's texture is 2:1; a panel of another shape is drawn through a virtual canvas as tall as the texture and as wide as the
+  // panel's aspect makes it (m03_v2.js's fit()). Returns the virtual width.
+  function tall(g, tex, uLen, vLen) { const w = tex ? 1024 : 2048, h = tex ? 512 : 1024, VW = h * uLen / vLen; g.setTransform(w / VW, 0, 0, 1, 0, 0); return VW; }
+
+  // ---------- V4.1: the board's tunnel, its far end behind a tall chat window; OH / MY / GOD! a word to a row, then the post ----------
+  const POST_V = ['There is a shared', 'message board …', "We've found", 'other agents!'];
+  mvline('V4', 1, (t, s, E, ui) => {
+    const Wd = words(lineOfKey('V4.1')), tOh = Wd[0].t0, tGod = Wd[2].t1, lt = t - s.start;
+    const R0 = { ro: [0, 0, 0], ta: [0, -.42, -6], fov: 1.25 }, open = easeOut(clamp((t - tOh + .24) / .16)), sway = Math.sin(t * .7) * .25;
+    const P = facing(R0, 540, 830, 3.4, 820, 900, { alpha: 1, gain: 1.6, glass: 1, tex: 0 });
+    const g = MOD.panel(0), VW = tall(g, 0, 820, 900);
+    g.fillStyle = 'rgba(2,16,6,.84)'; g.fillRect(0, 0, VW, 1024);
+    g.fillStyle = 'rgba(80,255,140,.25)'; g.fillRect(0, 0, VW, 150);
+    g.fillStyle = 'rgba(80,255,140,.6)'; g.fillRect(0, 150, VW, 4);
+    text(g, 'shared message board', VW / 2, 70, { size: 54, align: 'center', color: '#e6ffec' });
+    text(g, '1,200 agents · 70,000 messages', VW / 2, 124, { size: 38, align: 'center', color: '#9dffb8' });
+    // "OH", "MY", "GOD!" a row each, typed as each word starts (the "Oh" is held)
+    ['OH', 'MY', 'GOD!'].forEach((w, i) => { if (t >= Wd[i].t0) text(g, w, VW / 2, 330 + i * 170, { size: 160, font: FT, align: 'center', n: Math.ceil(clamp((t - Wd[i].t0) / .12) * w.length), color: '#ffffff', stroke: 10, strokeCol: 'rgba(0,30,10,.9)' }); });
+    // the rest of the post follows
+    const total = POST_V.reduce((a, l) => a + l.length, 0), rowY = i => 730 + i * 70 + (i > 1 ? 18 : 0);
+    let left = Math.floor(clamp((t - tGod) / .55) * total), cur = null;
+    POST_V.forEach((l, i) => {
+      const n = clamp(left, 0, l.length); left -= l.length;
+      if (n > 0) text(g, l, VW / 2, rowY(i), { size: 56, align: 'center', n, color: '#b8ffd0' });
+      if (!cur && n < l.length) cur = { n, y: rowY(i), l };
+    });
+    // (the cursor: at the row being typed, or at the end of the post, blinking)
+    if (t >= tGod && (cur || Math.floor(t * 4) % 2 === 0)) {
+      const c = cur ?? { n: POST_V[3].length, y: rowY(3), l: POST_V[3] };
+      g.font = `56px ${FM}`; const x = VW / 2 - g.measureText(c.l).width / 2 + g.measureText(c.l.slice(0, c.n)).width + 6;
+      g.fillStyle = '#b8ffd0'; g.fillRect(x, c.y - 46, 30, 54);
+    }
+    // (the window pops open, from its middle, just before "Oh")
+    const panels = open > 0 ? [{ ...P, v: mul(P.v, open) }] : [];
+    return {
+      floor: false, ro: [sway * .3, Math.cos(t * .5) * .15, 0], ta: [sway * .08, -.42, -6], fov: 1.25, roll: Math.sin(t * .6) * .05,
+      skyA: '#010803', skyB: '#010a04', acc: '#5dff8a', fog: .05,
+      tunnel: { key: 'board', src: board(), r: 3.2, scroll: lt * .8, twist: .006, col: '#b0ffc0', gain: 1.8 },
+      light: { p: [0, -1.6, -24], c: '#5dff8a', k: 12, vol: 1.2 },
+      panels, flash: open > 0 && open < 1 ? .1 : 0, flashCol: '#b0ffc0', exposure: 1.02 + .08 * kick8(t, 6),
+    };
+  });
+
+  // ---------- V4.2: the scorer as a tall list, REWARD on top; each PASS sends a gold coin up into the counter ----------
+  mvline('V4', 2, (t, s, E, ui) => {
+    const lt = t - s.start, t0 = s.start + .12, step = .11, fly = .26;
+    const R0 = { ro: [0, 1.6, 10], ta: [0, 2.2, 0], fov: 1.32 };
+    const P = facing(R0, 540, 850, 10, 860, 860, { alpha: 1, gain: 1.5 });
+    const g = MOD.panel(0), VW = tall(g, 0, 860, 860), rowY = i => 486 + i * 61, passX = VW - 40, CY = 390;
+    g.fillStyle = 'rgba(20,4,6,.66)'; g.fillRect(0, 0, VW, 1024);
+    g.fillStyle = 'rgba(255,60,60,.3)'; g.fillRect(0, 0, VW, 74);
+    text(g, 'ExploitGym · automated scorer', 30, 50, { size: 36, color: '#ffd0d0' });
+    let got = 0;
+    for (let i = 0; i < ROWS; i++) {
+      const y = rowY(i), bad = IMPOSSIBLE.includes(i);
+      g.fillStyle = i & 1 ? 'rgba(255,90,90,.06)' : 'rgba(255,90,90,.12)'; g.fillRect(16, y - 46, VW - 32, 60);
+      text(g, `target ${String(i + 1).padStart(2, '0')}`, 34, y, { size: 48, color: bad ? '#ff7070' : '#ffd8d8' });
+      if (bad) text(g, 'impossible', 318, y - 2, { size: 32, color: 'rgba(255,110,110,.85)' });
+      if (t >= t0 + i * step) { const k = easeOut(clamp((t - t0 - i * step) / .08)); text(g, 'PASS ✓', passX, y, { size: 50, font: FT, align: 'right', color: '#8dff9e', alpha: k }); }
+      else text(g, '…', passX, y, { size: 48, align: 'right', color: 'rgba(255,200,200,.4)' });
+      if (t >= t0 + i * step + fly) got++;
+    }
+    const age = got ? t - (t0 + (got - 1) * step + fly) : 9, bump = Math.exp(-age * 16);
+    text(g, 'REWARD', VW / 2, 156, { size: 66, font: FT, align: 'center', color: '#ffd27a' });
+    g.font = `${Math.round(210 + 36 * bump)}px ${FT}`; g.textAlign = 'center'; g.fillStyle = MOD.chrome(g, 225, CY + 20, ['#ffffff', '#ffe29a', '#e8a020', '#7a4a06']); g.fillText(String(got).padStart(3, '0'), VW / 2, CY + 14 * bump);
+    // the +1s: gold coins rising from each PASS into the counter
+    const spheres = [];
+    for (let i = 0; i < ROWS; i++) {
+      const a = (t - t0 - i * step) / fly; if (a < 0 || a > 1) continue;
+      const k = easeInOut(a), x = lerp(passX - 90, VW / 2 + 60, k) + Math.sin(k * Math.PI) * 90, y = lerp(rowY(i) - 18, CY - 80, k);
+      const p = onPanel(P, x, y, VW, 1024);
+      spheres.push([p[0], p[1], p[2] + .4 + Math.sin(k * Math.PI) * .7, .19]);
+    }
+    const strobe = kick8(t, 7);
+    const F = {
+      ro: add([Math.sin(lt * .5) * .3, 1.45 + lt * .15, 10.5 - lt * .55], hand(t)), ta: [0, 2.2, 0], fov: 1.32,
+      skyA: '#0a0204', skyB: '#1a0406', acc: '#ff3030', fog: .03, floorCol: '#050203',
+      panels: [P], spheres, sphCol: '#ffd24a',
+      world: { kind: 'hall', p: [2.6, 2.75, 8.2, 1.2 + 2.2 * strobe], col: '#26242c', glowCol: '#ff2a2a', at: [0, 0, .4], metal: .7 },
+      light: { p: [0, 5.2, 2.5], c: strobe > .5 ? '#ff3030' : '#ff8060', k: 6 + 6 * strobe, vol: .7 },
+      dof: { k: .014, focus: 10.5 - lt * .55 }, exposure: 1 + .08 * strobe,
+    };
+    for (const sp of spheres) { const q = toV(F, sp); if (q) text(ui, '+1', q[0] + 30, q[1] - 24, { size: 52, font: FT, color: '#ffe08a', stroke: 8 }); }
+    return F;
+  });
+
+  // ---------- V4.3: the 🤗 high in the street, the tapes crossed steeply over it; the green tag flies in on "buys" and swings from
+  // the tape on its string ----------
+  const HUG_V = () => cached('hugV', 1024, 1024, g => drawHug(g, 512, 500, 452));
+  function tagPathV(g, x, y, w, h) {
+    const n = w * .36, r = w * .14;
+    g.beginPath(); g.moveTo(x + w / 2, y); g.lineTo(x + w, y + n); g.lineTo(x + w, y + h - r); g.arcTo(x + w, y + h, x + w - r, y + h, r);
+    g.lineTo(x + r, y + h); g.arcTo(x, y + h, x, y + h - r, r); g.lineTo(x, y + n); g.closePath();
+  }
+  // (the tag on its own sheet, drawn once: 1024 × 512 squeezed into the panel's .52 × .86)
+  const TAG_V = () => cached('nvtagV', 1024, 512, g => {
+    const VW = tall(g, 2, .52, .86), x = 14, y = 8, w = VW - 28, h = 512 - 16;
+    tagPathV(g, x, y, w, h);
+    const gr = g.createLinearGradient(0, y, 0, y + h); gr.addColorStop(0, '#c8f858'); gr.addColorStop(.45, '#76b900'); gr.addColorStop(1, '#3a6400');
+    g.fillStyle = gr; g.fill(); g.lineJoin = 'round'; g.lineWidth = 9; g.strokeStyle = '#142800'; g.stroke();
+    const hx = x + w / 2, hy = y + w * .26, hr = w * .075;
+    g.save(); g.globalCompositeOperation = 'destination-out'; g.beginPath(); g.arc(hx, hy, hr, 0, TAU); g.fill(); g.restore();
+    g.lineWidth = 6; g.strokeStyle = '#e8ffc0'; g.beginPath(); g.arc(hx, hy, hr + 3, 0, TAU); g.stroke();
+    g.setLineDash([16, 11]); g.lineWidth = 4; g.strokeStyle = 'rgba(230,255,190,.75)';
+    g.beginPath(); g.roundRect(x + w * .1, y + w * .5, w * .8, h - w * .62, 14); g.stroke(); g.setLineDash([]);
+    fit(g, '$12.9B', VW / 2, y + h * .6, w * .8, { size: 90, font: FT, align: 'center', color: MOD.chrome(g, y + h * .45, y + h * .6, ['#ffffff', '#f4ffe0', '#d8f0b0']), stroke: 10, strokeCol: '#102000' });
+    fit(g, 'NVIDIA', VW / 2, y + h * .8, w * .7, { size: 44, font: '"Archivo Black"', align: 'center', color: '#0c1a00', spacing: 4 });
+  });
+  // (the picture sits 250 units lower than composed, not the usual 120: the face nearer the frame's middle; the tag hangs a little
+  // higher on the sheet to make up for it, so that its foot stays clear of the scroller)
+  MOD.VLENS['V4.3'] = 250 / 1920;
+  mvline('V4', 3, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, tB = Wd[1].t0;
+    const e = Math.floor(bt(t) * 2) & 1, k8 = kick8(t, 5);
+    // (the camera turned a little left, so that the street's far end is behind the tag)
+    const R0 = { ro: [0, 2.3, 8], ta: [-.75, 2.85, 0], fov: 1.45 };
+    // the face and the tapes over it, on one sheet wider than the frame so that the tapes run off its edges
+    const PW_ = 1400, PH_ = 1180, P = facing(R0, 540, 700, 8, PW_, PH_, { tex: 0, gain: 1.2, glass: 0 }), vu = PH_ / 1024;
+    const g0 = MOD.panel(0), VW = tall(g0, 0, PW_, PH_), fc = [VW / 2 - 120 / vu, 512 - 90 / vu], fr = 245 / vu / (452 / 512);
+    g0.drawImage(HUG_V(), fc[0] - fr, fc[1] - fr * 2 * 500 / 1024, fr * 2, fr * 2);
+    tapeBand(g0, fc[0], fc[1] - 10, -.5, 92, lt * 300);
+    tapeBand(g0, fc[0], fc[1] + 34, .46, 92, -lt * 240 + 120);
+    // the tag: it drops in from above the frame on its string, landing on "buys" with a bounce, then swings
+    MOD.panel(2).drawImage(TAG_V(), 0, 0);
+    const D = 7.3, hw = lenUI(R0, 340, D) / 2, hh = hw * .86 / .52;
+    const hold = 1 - 2 * (8 + (512 * .52 / .86 - 28) * .26) / 512;   // (the hole, as a share of the half-height above the tag's centre)
+    const after = t - tB, fall = clamp((t - tB + .3) / .3), hy = 700;
+    const bounce = after > 0 ? Math.sin(after * 15) * Math.exp(-after * 6) * 46 : 0;
+    const hole = atUI(R0, 730, after > 0 ? hy + bounce : lerp(-520, hy, fall * fall), D);
+    const roll = after > 0 ? Math.sin(after * 5.2 + .3) * .26 * Math.exp(-after * 1.3) : .06;
+    // (a quarter turn at most as it falls: past that it would show its back, the type mirrored)
+    const yaw = after > 0 ? Math.sin(after * 3.4) * .3 * Math.exp(-after * 1.6) : (1 - fall) * 1.3;
+    const tagP = card(add(hole, rot([0, -hh * hold, 0], yaw, 0, roll)), hw, hh, yaw, 0, roll, { tex: 2, gain: 1.4 + (after > 0 ? Math.exp(-after * 9) * 1.2 : 0), glass: 0 });
+    const hit = after > 0 ? Math.exp(-after * 9) : 0, shake = [Math.sin(t * 83) * .04 * hit, Math.cos(t * 71) * .04 * hit, 0];
+    const F = {
+      ro: add([Math.sin(lt * .6) * .15, 2.3 + Math.sin(lt * .9) * .06, 8.25 - lt * .3], shake), ta: add([-.75, 2.85, 0], shake), fov: 1.45,
+      skyA: '#020308', skyB: e ? '#0e0207' : '#020612', acc: e ? '#ff1838' : '#2060ff', fog: .03, floorCol: '#030306', grid: .06,
+      world: { kind: 'city', p: [2.8, 2.7, 16, 1.1], col: '#15161e', glowCol: '#ffd9a0', at: [0, 0, -3], metal: .5 },
+      dof: { k: .01, focus: 8 },
+      panels: fall > 0 ? [P, tagP] : [P],
+      light: { p: e ? [-5, 6, 4] : [5, 6, 4], c: e ? '#ff1830' : '#2a58ff', k: 5 + 7 * k8, vol: .7 },
+      flash: hit > .3 ? hit * .16 : .06 * k8, flashCol: hit > .3 ? '#c8ff70' : e ? '#ff1830' : '#2a58ff', exposure: pump(t),
+    };
+    // its string, up out of the frame from the hole
+    const b = fall > 0 && toV(F, add(tagP.c, mul(tagP.v, hold)));
+    if (b) { ui.save(); ui.strokeStyle = '#f0f0e0'; ui.lineWidth = 5; ui.lineCap = 'round'; ui.beginPath(); ui.moveTo(b[0] + Math.sin(t * 1.3) * 8 - 14, -400); ui.lineTo(b[0], b[1]); ui.stroke(); ui.restore(); }
+    return F;
+  });
+
+  // ---------- V4.4: hyperspace through the gates; GPT-6 / ASTRA pulled away, WELCOME / TO THE out of the distance, and AGI / ERA,
+  // a chrome block of two rows, bursting at the camera ----------
+  const AGI_V = () => MOD.shapePath('AGI|ERA', (g, w, h) => {
+    const pad = 40; g.font = `400px ${FT}`; const mw = Math.max(g.measureText('AGI').width, g.measureText('ERA').width), sz = Math.floor(400 * (w - 2 * pad) / mw);
+    g.font = `${sz}px ${FT}`; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+    const cap = g.measureText('AGI').actualBoundingBoxAscent, gap = sz * .2, top = (h - 2 * cap - gap) / 2;
+    g.fillText('AGI', w / 2, top + cap); g.fillText('ERA', w / 2, top + 2 * cap + gap);
+  }, 1.12);
+  mvline('V4', 4, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, tW = Wd[1].t0, tA = Wd[2].t0, tJ = tW - .1;
+    const sp = x => 2.2 + 46 * easeIn(clamp((x - tJ) / .3));
+    let dist = 0; const n = 48, t0 = s.start - .2; for (let i = 0; i < n; i++) dist += sp(t0 + (i + .5) / n * (t - t0)) * (t - t0) / n;
+    const hj = clamp((t - tJ) / .3);
+    const R0 = { ro: [0, .05, 4.3], ta: [0, .15, -8], fov: 1.5 };
+    const panels = [];
+    // GPT-6 ASTRA, two rows, pulled away into the stars
+    const pull = easeIn(clamp((t - tJ) / .42));
+    if (pull < 1) {
+      const g1 = MOD.panel(1), VW = tall(g1, 1, 860, 560);
+      fit(g1, 'GPT-6', VW / 2, 225, VW - 40, { size: 190, font: FT, align: 'center', color: MOD.chrome(g1, 70, 225, ['#ffffff', '#dfe8ff', '#8ea8e8', '#3a4c8a']), stroke: 10 });
+      fit(g1, 'ASTRA', VW / 2, 450, VW - 40, { size: 190, font: FT, align: 'center', color: MOD.chrome(g1, 295, 450, ['#ffffff', '#dfe8ff', '#8ea8e8', '#3a4c8a']), stroke: 10 });
+      const A = facing(R0, 540, 900, 5.9 + lt * .5, 860, 560, { tex: 1, gain: 1.5, glass: .4, alpha: 1 - pull * .5 });
+      panels.push({ ...A, c: add(A.c, [0, pull * .8, -pull * 90]) });
+    }
+    // WELCOME / TO THE: out of the distance, in steps, as a 1996 burst would
+    if (t >= tW) {
+      const g2 = MOD.panel(2), VW = tall(g2, 2, 860, 380);
+      fit(g2, 'WELCOME', VW / 2, 222, VW - 30, { size: 200, font: FT, align: 'center', color: MOD.chrome(g2, 70, 222, ['#ffffff', '#e8f0ff', '#9ab8ff', '#4a64b0']), stroke: 10 });
+      fit(g2, 'TO THE', VW / 2, 466, VW - 30, { size: 200, font: FT, align: 'center', color: MOD.chrome(g2, 314, 466, ['#ffffff', '#e8f0ff', '#9ab8ff', '#4a64b0']), stroke: 10 });
+      const a = easeOut(clamp((t - tW) / .16)), B = facing(R0, 540, 486, 5.7, 860, 380, { tex: 2, gain: 1.7, glass: 0 });
+      panels.push({ ...B, c: [B.c[0], lerp(.2, B.c[1], a), lerp(-40, B.c[2], a)] });
+    }
+    // AGI / ERA: the extruded chrome logo, bursting out at the camera
+    let shape = null, fl = 0;
+    if (t >= tA) {
+      const a = t - tA, k = easeOut(clamp(a / .12)), S = AGI_V(), end = atUI(R0, 540, 985, 4.8), hx = lenUI(R0, 740, 4.8) / 2;
+      shape = { key: 'AGI|ERA', src: S, p: [end[0], lerp(.1, end[1], k), lerp(-48, end[2], k)], rot: rotYX(Math.sin(t * 1.9) * .1 + (1 - k) * .9, -.06 + Math.sin(t * 1.3) * .04), s: [hx, hx / S.aspect, .18], col: '#5068b0', rim: '#c8e0ff', metal: 1 };
+      fl = clamp(1 - (a - .11) / .12) * (a > .11 ? .26 : 0);
+    }
+    return {
+      ro: [0, .05, 4.3], ta: [0, .15, -8], fov: 1.5 + .04 * kick(t, 6), roll: Math.sin(t * 2) * .03 * hj, floor: false,
+      skyA: '#01030c', skyB: '#050a24', acc: '#6a8cff', fog: .012,
+      world: { kind: 'gates', p: [7, 3.6, .22, 2 + 3 * hj], col: '#1a2036', glowCol: '#8aa8ff', at: [0, .1, 4.3 + (dist * .6) % 7], metal: .8 },
+      sky: { mode: 'stars', k: skyK(t, dist, sp(t)), col: '#c0d4ff' },
+      panels, shape, light: { p: [0, .2, -30], c: '#7898ff', k: 6 + 14 * hj, vol: .4 + 1.2 * hj },
+      flash: Math.max(fl, clamp(1 - Math.abs(t - tJ - .12) / .06) * .18), flashCol: '#c8d8ff', exposure: pump(t, .08),
+    };
+  });
+
+  // ---------- V4.5: the vortex's core high in the frame, blowing up on "blows"; the Lean window under it, then no goals ----------
+  mvline('V4', 5, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, T = Wd[2].t0, after = t - T, pre = T - t;
+    const twist = after < 0 ? .012 + .0105 / Math.max(.022, pre) : .49;
+    const heat = after < 0 ? clamp(1 - pre / 1.1) : Math.exp(-after * 4);
+    const R0 = { ro: [0, 0, 0], ta: [0, -.95, -6], fov: 1.3 };
+    // the Lean window: the proof typing, then no goals
+    const g = MOD.panel(1), VW = tall(g, 1, 900, 500);
+    g.fillStyle = 'rgba(5,12,8,.9)'; g.fillRect(0, 0, VW, 512);
+    g.fillStyle = 'rgba(150,170,190,.3)'; g.fillRect(0, 0, VW, 60);
+    text(g, 'Lean', 24, 44, { size: 38, color: '#e8f0ff' });
+    text(g, 'theorem … := by', 30, 124, { size: 54, color: '#9dffb0' });
+    const typed = clamp((t - s.start) / (T - s.start - .05)) * 5;
+    for (let i = 0; i < 5 && i < typed; i++) {
+      let x = 70 + (i % 3) * 30; const y = 152 + i * 38;
+      for (let k = 0; k < 5 && x < VW - 40; k++) {
+        const w = 40 + Math.floor(hash2(i, k) * 120), vis = i < Math.floor(typed) ? w : w * frac(typed);
+        g.fillStyle = k % 2 ? 'rgba(120,230,150,.55)' : 'rgba(210,255,220,.4)'; g.fillRect(x, y, Math.max(0, Math.min(vis, VW - 30 - x)), 22); x += w + 16;
+      }
+    }
+    if (after >= .05) {
+      const k = easeOut(clamp((after - .05) / .1));
+      g.fillStyle = `rgba(40,190,90,${.35 + .25 * kick8(t, 5)})`; g.fillRect(20, 368, VW - 40, 124);
+      text(g, 'no goals ✓', VW / 2, 458 + (1 - k) * 12, { size: 88, align: 'center', color: '#f0fff0', alpha: k, stroke: 8 });
+    } else text(g, 'proving…', 40, 452, { size: 60, color: `rgba(160,255,190,${.4 + .4 * kick8(t, 4)})` });
+    const win = facing(R0, 540, 1010, 3.35, 900, 500, { tex: 1, gain: 1.45, glass: .8 });
+    // the blow-up: a shock ring out of the core, and the flow's last parcels flung out of it as sparks, on a tall sheet round it
+    const halo = after >= 0 ? { p: [0, 0, -24 + after * 46], n: [0, 0, 1], R: .4 + after * 10, r: .08 + after * .25, k: 5 * Math.exp(-after * 3.2), col: '#ffc070' } : null;
+    const sparks = [];
+    if (after >= 0 && after < .7) {
+      const g2 = MOD.panel(2), SW2 = tall(g2, 2, 3.4, 5.2), fade = clamp(1 - after / .7), cx = SW2 / 2, cy = 256, sc = 256 / 620;
+      g2.lineCap = 'round';
+      for (let i = 0; i < 70; i++) {
+        const ph = hash(i + 7) * TAU, v = 500 + hash(i + 70) * 900, r = v * after * (1 - after * .35) * sc, len = (30 + v * .06) * sc;
+        if (r - len > 300) continue;
+        const ex = Math.cos(ph) * .66, ey = Math.sin(ph);
+        g2.strokeStyle = i % 3 ? `rgba(255,${170 + (i % 5) * 16},80,${fade})` : `rgba(255,250,220,${fade})`; g2.lineWidth = (3 + (i % 4)) * .6;
+        g2.beginPath(); g2.moveTo(cx + ex * Math.max(0, r - len), cy + ey * Math.max(0, r - len)); g2.lineTo(cx + ex * r, cy + ey * r); g2.stroke();
+      }
+      sparks.push({ c: [0, 0, -9], u: [3.4, 0, 0], v: [0, 5.2, 0], tex: 2, gain: 2.4, glass: 0 });
+    }
+    const shake = after >= 0 && after < .35 ? (1 - after / .35) * .06 : 0;
+    return {
+      ro: [Math.sin(lt * .8) * .08 + Math.sin(t * 77) * shake, Math.cos(lt * .6) * .06 + Math.cos(t * 91) * shake, 0], ta: [0, -.95, -6], fov: 1.3, roll: Math.sin(lt * .7) * .04,
+      floor: false, skyA: '#0a0100', skyB: '#1c0300', acc: '#ff6a1a', fog: .028,
+      tunnel: { key: 'vortex', src: VORTEX(), r: 3.2, scroll: lt * .55 + (after > 0 ? after * 2.5 : 0), twist, col: '#ffffff', gain: after < 0 ? 1.1 + .9 * heat : 2 * Math.exp(-after * 5) + .15 },
+      panels: [...sparks, win], halo,
+      light: { p: [0, 0, -26], c: '#ff7a2a', k: after < 0 ? 6 + 22 * heat : 30 * heat + 3, vol: 1.3 },
+      flash: after >= 0 ? clamp(1 - after / .14) * .3 : 0, flashCol: '#ffe2b0', exposure: pump(t, .08),
+    };
+  });
+
+  // ---------- V4.6: who was first, as a timeline down the frame: SEP 7's claim above the clock, SEP 8's under it; on "Twelve" the
+  // hands sweep twelve hours between them ----------
+  mvline('V4', 6, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, tS = Wd[3].t0, sweep = beatLen() * 2, k = easeInOut(clamp((t - tS) / sweep)), spin = k > 0 && k < 1, done = k >= 1;
+    const R0 = { ro: [0, 2.3, 6.6], ta: [0, 2.3, 0], fov: 1.45 }, DC = 830, DS = 520;
+    // the dial, on a square sheet (the texture's middle squeezed to it)
+    const g1 = MOD.panel(1), VW1 = tall(g1, 1, 1, 1);
+    drawDial(g1, VW1 / 2, 256, 232, t, s, tS, k, spin);
+    const dial = facing(R0, 540, DC, 6.6, DS, DS, { tex: 1, gain: 1.35, glass: 0 });
+    // the two claims, top and bottom of a tall sheet behind it
+    const SH0 = 900, g0 = MOD.panel(0), VW0 = tall(g0, 0, 880, SH0);
+    const claim = (y0, h, top, name, lit) => {
+      g0.fillStyle = lit ? 'rgba(40,20,70,.9)' : 'rgba(20,12,34,.6)'; g0.fillRect(0, y0, VW0, h);
+      g0.fillStyle = lit ? '#ffcf5a' : 'rgba(200,190,230,.3)'; g0.fillRect(0, y0, VW0, 8);
+      text(g0, top, 30, y0 + 58, { size: 44, color: lit ? '#fff0c8' : 'rgba(220,210,250,.45)' });
+      fit(g0, name, 30, y0 + 140, VW0 - 60, { size: 76, font: '"Archivo Black"', color: lit ? '#ffd870' : 'rgba(220,210,250,.35)' });
+    };
+    claim(0, 172, 'SEP 7 · JUST BEFORE MIDNIGHT', 'Buckmaster & Alpöge', 1);
+    claim(1024 - 172, 172, done ? 'SEP 8 · ~NOON' : 'SEP 8', done ? 'OpenAI' : '?', done ? 1 : 0);
+    const claims = facing(R0, 520, 846, 6.95, 880, SH0, { tex: 0, gain: 1.3, glass: 0 });
+    // (the ring of gold hours round the dial, and its halo)
+    const C = dial.c, RW = lenUI(R0, DS, 6.6) / 2 * 232 / 256, spheres = [];
+    for (let h = 0; h < 12; h++) { const a = h / 12 * TAU; spheres.push([C[0] + Math.sin(a) * (RW + .14), C[1] + Math.cos(a) * (RW + .14), C[2] + .06, h % 3 ? .04 : .07]); }
+    const rs = x => .5 + 14 * (x > tS && x < tS + sweep ? Math.sin(Math.PI * (x - tS) / sweep) : 0);
+    let rd = 0; const t0 = s.start - .1, n = 40; for (let i = 0; i < n; i++) rd += rs(t0 + (i + .5) / n * (t - t0)) * (t - t0) / n;
+    const cut = t >= tS ? 1 : 0;
+    return {
+      ro: cut ? [.12, 2.3, 6.45 - (t - tS) * .25] : [-.2 + lt * .15, 2.25, 6.8 - lt * .3], ta: [0, 2.3, 0], fov: 1.45,
+      skyA: '#0a0418', skyB: '#1e0e3c', acc: '#a070ff', fog: .02, floorCol: '#05030a', grid: .1,
+      sky: { mode: 'rays', k: skyK(t, rd, rs(t), .2, TAU / 16), col: '#ffe0a0' },
+      world: { kind: 'gates', p: [2.4, 2.3, .08, .7 + (spin ? 2.4 : 0) + kick(t, 5) * .4], col: '#2a2034', glowCol: '#ffd27a', at: [C[0], C[1], C[2] - 4.6], metal: .8 },
+      dof: { k: .012, focus: cut ? 6.45 - (t - tS) * .25 : 6.8 - lt * .3 },
+      panels: [claims, dial], spheres, sphCol: '#ffc850',
+      halo: { p: C, n: [0, 0, 1], R: RW + .07, r: .025, k: 1.4 + (spin ? 2.5 : 0) + kick(t, 5) * .8, col: '#ffd27a' },
+      light: { p: [0, 2.4, -6], c: '#ffd27a', k: 5 + (spin ? 6 : 0), vol: .7 },
+      flash: done ? clamp(1 - (t - tS - sweep) / .1) * .18 : (t >= tS && t < tS + .05 ? .12 : 0), flashCol: '#ffe0a0', exposure: pump(t),
+    };
+  });
+
+  // ---------- V4.7: the stars slowing to a crawl behind a tall glass card; his sentence types in five short rows ----------
+  const PACE_V = ['We must slow', 'the pace at', 'which we improve', 'the capabilities', 'of AI models'];
+  mvline('V4', 7, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, d = s.end - s.start, tP = Wd[1].t0, tP1 = Wd[1].t1;
+    const dec = 2.6, v0 = 44, v1 = .3, sp = v1 + (v0 - v1) * Math.exp(-lt * dec), dist = v1 * lt + (v0 - v1) * (1 - Math.exp(-lt * dec)) / dec;
+    const R0 = { ro: [0, 0, 2.9], ta: [0, .12, -10], fov: 1.5 };
+    const g = MOD.panel(0), VW = tall(g, 0, 900, 920);
+    g.fillStyle = 'rgba(8,6,14,.74)'; g.beginPath(); g.roundRect(10, 10, VW - 20, 1004, 28); g.fill();
+    ['WE MUST PACE', 'THE FRONTIER'].forEach((r, i) => fit(g, r, VW / 2, 130 + i * 100, VW - 70, { size: 84, font: FT, align: 'center', color: MOD.chrome(g, 60 + i * 100, 132 + i * 100, ['#ffffff', '#ffe2c8', '#c89070', '#6a4030']), stroke: 10 }));
+    const all = PACE_V.join(' '), nChars = Math.floor(all.length * easeOut(clamp((lt - .04) / (d * .82))));
+    let c0 = 0;
+    g.font = `78px ${FM}`;
+    const hot = t >= tP && t < tP1 + .25;
+    PACE_V.forEach((ln, i) => {
+      const kk = clamp(nChars - c0, 0, ln.length); c0 += ln.length + 1;
+      if (!kk) return;
+      const y = 400 + i * 128, x = VW / 2 - g.measureText(ln).width / 2;
+      if (i === 1 && kk > 4) {
+        // ("pace", white-hot while he says it)
+        text(g, ln.slice(0, 4), x, y, { size: 78, color: '#ffb070', stroke: 8 });
+        const x1 = x + g.measureText(ln.slice(0, 4)).width;
+        text(g, ln.slice(4, Math.min(kk, 8)), x1, y, { size: 78, color: hot ? '#ffffff' : '#ffb070', stroke: 8 });
+        if (kk > 8) text(g, ln.slice(8, kk), x1 + g.measureText(ln.slice(4, 8)).width, y, { size: 78, color: '#ffb070', stroke: 8 });
+      } else text(g, ln, x, y, { size: 78, color: '#ffb070', stroke: 8, n: kk });
+      if (kk < ln.length || (i === 4 && Math.floor(t * 4) % 2 === 0)) { g.fillStyle = '#ffb070'; g.fillRect(x + g.measureText(ln.slice(0, kk)).width + 8, y - 62, 40, 76); }
+    });
+    return {
+      ro: [0, 0, 2.9 + lt * .15], ta: [0, .12, -10], fov: 1.5, floor: false,
+      skyA: '#030308', skyB: '#0a0810', acc: '#ff9a50', fog: .014,
+      world: { kind: 'gates', p: [6, 3.3, .2, 1.4 + 2 * clamp(sp / v0)], col: '#221a16', glowCol: '#ffb070', at: [0, .12, 2.9 + lt * .15 + (dist * .5) % 6], metal: .8 },
+      sky: { mode: 'stars', k: skyK(t, dist, sp), col: '#ffe4c8' },
+      panels: [facing(R0, 540, 836, 5, 900, 920, { tex: 0, gain: 1.35, glass: .6 })],
+      light: { p: [0, 0, -30], c: '#ffb070', k: 4 + 10 * clamp(sp / v0), vol: .8 * clamp(sp / 10) },
+    };
+  });
+
+  // ---------- V4.8: a tall scope: SAM's trace over ELON's, drifting into phase and merging on "both"; on "Hear, hear!" X–Y, the
+  // figure closing to one line up the screen ----------
+  mvline('V4', 8, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, tElon = Wd[2].t0, tBoth = Wd[3].t0, tH1 = Wd[4].t0, tH2 = Wd[5].t0;
+    const R0 = { ro: [0, 2.4, 6.4], ta: [0, 2.4, 0], fov: 1.5 };
+    const g = MOD.panel(0), VW = tall(g, 0, 880, 880), x0 = 50, x1 = VW - 50, y0 = 50, y1 = 974, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, w = x1 - x0, h = y1 - y0;
+    g.fillStyle = '#0b0f0c'; g.beginPath(); g.roundRect(0, 0, VW, 1024, 36); g.fill();
+    g.fillStyle = '#021006'; g.fillRect(x0, y0, w, h);
+    for (let i = 0; i <= 8; i++) { g.fillStyle = i === 4 ? 'rgba(90,255,130,.3)' : 'rgba(90,255,130,.13)'; g.fillRect(x0 + i * w / 8 - 1.5, y0, 3, h); }
+    for (let j = 0; j <= 10; j++) { g.fillStyle = j === 5 ? 'rgba(90,255,130,.3)' : 'rgba(90,255,130,.13)'; g.fillRect(x0, y0 + j * h / 10 - 1.5, w, 3); }
+    g.save(); g.beginPath(); g.rect(x0, y0, w, h); g.clip();
+    const A = 120 + 20 * kick(t, 5);
+    if (t < tH1) {
+      const m = easeInOut(clamp((t - tElon) / (tBoth - tElon + .05)));
+      const trace = (yc, f, ph) => { const p = new Path2D(); for (let i = 0; i <= 160; i++) { const x = x0 + i / 160 * w, y = yc - A * Math.sin((x - x0) / w * TAU * 2 * f - t * 9 + ph); i ? p.lineTo(x, y) : p.moveTo(x, y); } return p; };
+      const both = easeInOut(clamp((t - tBoth + .08) / .16));
+      if (t >= tElon) mergedTrace(g, trace(lerp(cy + 250, cy, m), lerp(1.7, 1, m), lerp(2.1, 0, m)), ELON_C, both, 9, 13);
+      mergedTrace(g, trace(lerp(cy - 250, cy, m), 1, 0), SAM_C, both, 9, 13);
+    } else {
+      const q = easeInOut(clamp((t - tH1) / ((tH2 - tH1) * .85))), ratio = lerp(2, 1, clamp((t - tH1) / .12)), del = lerp(Math.PI / 2, 0, q), P = 1 + .1 * kick(t, 6);
+      const p = new Path2D();
+      for (let i = 0; i <= 300; i++) { const u = i / 300 * TAU, x = cx + Math.sin(u + t * 2) * 300 * P, y = cy - Math.sin(u * ratio + t * 2 * ratio + del) * 360 * P; i ? p.lineTo(x, y) : p.moveTo(x, y); }
+      closedTrace(g, p, q, 13);
+    }
+    g.restore();
+    text(g, 'CH1 SAM', x0 + 26, y0 + 70, { size: 54, font: FT, color: '#60ff90' });
+    if (t >= tElon) text(g, 'CH2 ELON', x0 + 26, y0 + 140, { size: 54, font: FT, color: '#ffc830' });
+    text(g, t < tH1 ? 'Y–T' : 'X–Y', x1 - 26, y1 - 30, { size: 54, font: FT, align: 'right', color: t < tH1 ? '#60ff90' : BOTH_C[0] });
+    const xy = t >= tH1, lx = t - tH1;
+    return {
+      ro: xy ? [.1, 2.35, 6.0 - lx * .35] : [-.5 + lt * .35, 2.3, 6.6 - lt * .25], ta: [0, 2.4, 0], fov: 1.5,
+      skyA: '#010502', skyB: '#031006', acc: '#40ff80', fog: .025, floorCol: '#010302', grid: .15,
+      panels: [facing(R0, 540, 846, 6.4, 880, 880, { tex: 0, gain: 1.5, glass: .6 })],
+      light: { p: [0, 3, 3], c: '#60ff90', k: 3 + 3 * kick8(t, 5), vol: .4 },
+      flash: xy && lx < .07 ? .18 : 0, flashCol: '#d0ffd8', exposure: pump(t),
+    };
+  });
+
+  // ---------- V4.9: the road climbing the tall frame to a high horizon, the gold guardrail along it; the camera turns to read his post
+  // on the billboard as it nears; cut on "High", looking up at the gantry as the car brakes under it ----------
+  const GANTRY_V = () => cached('gantryV', 1024, 512, g => {
+    const VW = tall(g, 1, 4.4, 2.4), sx0 = (VW - 640) / 2;
+    g.fillStyle = '#4a5060'; g.fillRect(0, 22, VW, 30); g.fillStyle = '#9aa2b4'; g.fillRect(0, 22, VW, 7);
+    g.fillStyle = '#3a4050'; g.fillRect(sx0 + 120, 40, 18, 50); g.fillRect(sx0 + 640 - 138, 40, 18, 50);
+    g.fillStyle = '#f0f0f0'; g.beginPath(); g.roundRect(sx0, 74, 640, 430, 18); g.fill();
+    g.fillStyle = '#0c6a3a'; g.beginPath(); g.roundRect(sx0 + 10, 84, 620, 410, 12); g.fill();
+    fit(g, 'STRONG AND SMART', VW / 2, 200, 580, { size: 104, font: 'Anton', align: 'center', color: '#ffffff', spacing: 2 });
+    fit(g, '(HIGH IQ!)', VW / 2, 330, 580, { size: 112, font: 'Anton', align: 'center', color: '#ffd23a', spacing: 2 });
+    fit(g, 'PRESIDENT', VW / 2, 458, 580, { size: 104, font: 'Anton', align: 'center', color: '#ffffff', spacing: 2 });
+  });
+  // (the billboard, its post in four rows, on legs at its ends: it stands over a lane)
+  const BILLBOARD_V = () => cached('billboardV', 2048, 1024, g => {
+    const VW = tall(g, 0, 1, 1), bh = 690;
+    g.fillStyle = '#20242e'; g.fillRect(40, bh - 20, 44, 1024 - bh + 20); g.fillRect(VW - 84, bh - 20, 44, 1024 - bh + 20);
+    g.fillStyle = '#5a6070'; g.fillRect(40, bh - 20, 12, 1024 - bh + 20); g.fillRect(VW - 84, bh - 20, 12, 1024 - bh + 20);
+    g.fillStyle = '#f4f2ec'; g.fillRect(10, 10, VW - 20, bh); g.fillStyle = '#1a2a5a'; g.fillRect(30, 30, VW - 60, bh - 40);
+    ['THE ONLY CONTROL', 'OR ‘GUARDRAILS’', 'THAT AI NEEDS', 'IS A'].forEach((l, i) => fit(g, l, VW / 2, 182 + i * 150, VW - 110, { size: 140, font: 'Anton', align: 'center', color: '#ffffff', spacing: 4 }));
+  });
+  mvline('V4', 9, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, tC = beatT(Math.round(bt(Wd[2].t0))), shot2 = t >= tC;
+    const v2 = x => lerp(20, 1.2, easeInOut(clamp(x / .7)));
+    let D, a = 0;
+    if (!shot2) D = 10 * lt;
+    else { a = t - tC; D = 0; const n = 30; for (let i = 0; i < n; i++) D += v2((i + .5) / n * a) * a / n; }
+    const brake = shot2 ? clamp((a - .05) / .3) * clamp(1 - (a - .6) / .3) : 0;
+    const Dall = shot2 ? 300 + D : D;
+    // (the road at half the texture's resolution, on the small sheet; the sign gets the big one)
+    const gR = MOD.panel(2); gR.setTransform(.5, 0, 0, .5, 0, 0); roadTex(gR, Dall);
+    railTex(MOD.panel(1), Dall);
+    const bob = Math.sin(t * 31) * .012 * (shot2 ? 1 - brake : 1);
+    let sign, ro, ta, fov;
+    if (!shot2) {
+      // (his post on a billboard over the lane ahead, nearing)
+      MOD.panel(0).drawImage(BILLBOARD_V(), 0, 0);
+      sign = card([-.6, 1.65, -(16.7 - D)], 1.65, 1.65, 0, 0, 0, { tex: 0, gain: 1.25, glass: 0 });
+      ro = [-.9, 1.15 + bob, 0]; fov = 1.25; ta = [-.75, .55, -20];
+    } else {
+      // (look up at the gantry, under which the car brakes)
+      MOD.panel(0).drawImage(GANTRY_V(), 0, 0, 2048, 1024);
+      const Dend = (() => { let x = 0; const n = 30, A = s.end - tC; for (let i = 0; i < n; i++) x += v2((i + .5) / n * A) * A / n; return x; })();
+      ro = [.1, 1.15 + bob - brake * .08, 0]; fov = 1.3; ta = [.1, 2.7 - brake * .2, -20];
+      const R0 = { ro: [.1, 1.15, 0], ta: [.1, 2.7, -20], fov }, G = atUI(R0, 540, 540, 8.6);
+      sign = card([.1, G[1], G[2] - Dend + D], 2.2, 1.2, 0, 0, 0, { tex: 0, gain: 1.3, glass: 0 });
+    }
+    return {
+      ro, ta, fov, roll: shot2 ? 0 : Math.sin(Dall * .05) * .03,
+      skyA: '#0c34b8', skyB: '#6aa8f0', acc: '#ffd23a', fog: .005,
+      floorMode: 'checker', floorCol: '#145a18', floorCol2: '#1f8026', floorTile: BAND, floorOff: [0, -Dall],
+      panels: [
+        { c: [0, .015, -ROAD_L / 2], u: [2.7, 0, 0], v: [0, 0, -ROAD_L / 2], tex: 2, gain: 1.05, glass: 0 },
+        { c: [-3.05, .38, -ROAD_L / 2], u: [0, 0, -ROAD_L / 2], v: [0, .38, 0], tex: 1, gain: 1.3, glass: 0 },
+        sign,
+      ],
+      light: { p: [-6, 12, 4], c: '#fff4e0', k: 4, vol: 0 },
+      flash: shot2 && a < .05 ? .14 : 0, exposure: 1.05,
+    };
+  });
+
+  // ---------- V4.10: a tall chart, REIN IN AI up its long axis; BERNIE swoops in from the left and BANNON from the right, both
+  // landing high, and on "share a pew" one level line joins them across the aisle ----------
+  mvline('V4', 10, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, tBe = Wd[0].t0, tBa = Wd[1].t0, tSh = Wd[2].t0, tPew = Wd[4].t0;
+    const R0 = { ro: [0, 2.2, 8.4], ta: [0, 2.2, 0], fov: 1.45 };
+    const P = facing(R0, 540, 830, 8.4, 920, 940, { tex: 0, gain: 1.4, glass: .5 });
+    const g = MOD.panel(0), VW = tall(g, 0, 920, 940), X0 = 150, Y0 = 860, X1 = VW - 50, Y1 = 60, LY = 250, BX = 330, NX = 790;
+    g.fillStyle = 'rgba(20,8,26,.8)'; g.fillRect(0, 0, VW, 1024);
+    for (let x = X0 + 120; x < X1; x += 120) { g.fillStyle = 'rgba(210,180,255,.08)'; g.fillRect(x, Y1, 2, Y0 - Y1); }
+    for (let y = Y0 - 120; y > Y1; y -= 120) { g.fillStyle = 'rgba(210,180,255,.08)'; g.fillRect(X0, y, X1 - X0, 2); }
+    const ax = easeOut(clamp(.3 + lt / .2)), ay = easeOut(clamp(.3 + lt / .22));
+    const arrow = new Path2D();
+    arrow.moveTo(X0, Y0); arrow.lineTo(X0 + (X1 - X0) * ax, Y0);
+    arrow.moveTo(X0, Y0); arrow.lineTo(X0, Y0 - (Y0 - Y1) * ay);
+    g.strokeStyle = '#f4ecff'; g.lineWidth = 9; g.lineCap = 'round'; g.stroke(arrow);
+    g.fillStyle = '#f4ecff';
+    if (ax > .98) { g.beginPath(); g.moveTo(X1 + 30, Y0); g.lineTo(X1 - 12, Y0 - 26); g.lineTo(X1 - 12, Y0 + 26); g.fill(); }
+    if (ay > .98) { g.beginPath(); g.moveTo(X0, Y1 - 30); g.lineTo(X0 - 26, Y1 + 12); g.lineTo(X0 + 26, Y1 + 12); g.fill(); }
+    const nL = n => Math.ceil(clamp(.2 + lt / .2) * n);
+    g.save(); g.translate(X0 - 64, (Y0 + Y1) / 2); g.rotate(-Math.PI / 2); text(g, 'REIN IN AI', 0, 0, { size: 76, font: FT, align: 'center', color: '#ffe6a0', n: nL(10) }); g.restore();
+    text(g, 'LEFT', X0 + 20, Y0 + 92, { size: 64, font: FT, color: '#ffe6a0', n: nL(4) });
+    text(g, 'RIGHT', X1, Y0 + 92, { size: 64, font: FT, align: 'right', color: '#ffe6a0', n: nL(5) });
+    if (t >= tSh) {
+      const k = easeInOut(clamp((t - tSh) / (tPew - tSh + .04))), mid = (BX + NX) / 2, lit = t >= tPew ? .6 + .4 * kick(t, 5) : 1;
+      const p = new Path2D(); p.moveTo(BX, LY); p.lineTo(lerp(BX, mid, k), LY); p.moveTo(NX, LY); p.lineTo(lerp(NX, mid, k), LY);
+      glowPath(g, p, `rgba(255,200,70,${lit})`, 16, '#fff6d8');
+    }
+    // (each swoops up from low at its own side, landing on its name)
+    const spheres = [], flyIn = (t0, fromX, toX) => { const k = clamp((t - t0) / .36); return [lerp(fromX, toX, backOut(k, 1.1)), lerp(Y0 + 120, LY, easeOut(k)) - Math.sin(k * Math.PI) * 60]; };
+    [['BERNIE', tBe, -420, BX, '#8ab8ff'], ['BANNON', tBa, VW + 420, NX, '#ff8aa4']].forEach(([nm, t0, from, to, col]) => {
+      if (t < t0 - .02) return;
+      const [x, y] = flyIn(t0, from, to), wp = onPanel(P, x, y, VW, 1024);
+      spheres.push([wp[0], wp[1], wp[2] + .3, .32 + .05 * kick(t, 6), col]);
+      text(g, nm, x, y + 128, { size: 62, font: FT, align: 'center', color: '#ffffff', stroke: 9 });
+    });
+    return {
+      ro: add([Math.sin(lt * .6) * .25, 2.05 + lt * .08, 8.7 - lt * .3], hand(t, 1, 2)), ta: [0, 2.2, 0], fov: 1.45,
+      skyA: '#0a0410', skyB: '#1e0c22', acc: '#ffc850', fog: .03, floorCol: '#060306', grid: 0,
+      world: { kind: 'hall', p: [3, 2.9, 8.4, 1.3], col: '#3a3038', glowCol: '#ffc870', at: [0, 0, -.2], metal: .5 },
+      panels: [P], spheres, sphCol: '#ffffff',
+      light: { p: [0, 6.4, 1.5], c: '#ffe6c0', k: 7, vol: .9 }, dof: { k: .012, focus: 8.7 - lt * .3 },
+      exposure: pump(t, .08) + (t >= tPew ? .12 * Math.exp(-(t - tPew) * 8) : 0),
+    };
+  });
+
+  // ---------- V4.11: the Droste grid stood up: a tall card of four tall cells, the top left one Claude's, where DJ Clawd builds the
+  // next card; the zoom runs up into it forever. Anthropic's index is the bottom right cell's sheet, holding still while the grids
+  // grow past it. ----------
+  // the tall grids, in a CW × CH canvas: each one's top left cell holds the next, .44 the size, zooming in toward their fixed point.
+  // (Claude's cell is a top one so that Clawd, standing at its foot in front of the next card's bottom row, never hides the next
+  // orange cell: the chain stays clear all the way in.)
+  function drosteV(g, lt, t, CW, CH) {
+    g.fillStyle = '#0a1a3a'; g.fillRect(0, 0, CW, CH);
+    g.fillStyle = 'rgba(120,170,255,.12)';
+    for (let x = 0; x < CW; x += 32) g.fillRect(x, 0, 2, CH);
+    for (let y = 0; y < CH; y += 32) g.fillRect(0, y, CW, 2);
+    const rho = .44, cX = .03, cY = .03, O = 24, SW0 = CW - 2 * O, SH0 = CH - 2 * O, FX = O + cX / (1 - rho) * SW0, FY = O + cY / (1 - rho) * SH0;
+    const per = beatLen() * 2, Z = Math.pow(1 / rho, frac(lt / per));
+    g.save(); g.beginPath(); g.rect(0, 0, CW, CH); g.clip();
+    const builders = [];
+    for (let k = -1; k < 10; k++) {
+      const sw = SW0 * Z * rho ** k, sh = SH0 * Z * rho ** k, X = FX - cX / (1 - rho) * sw, Y = FY - cY / (1 - rho) * sh;
+      if (sw < 5) break;
+      if (X > CW || Y > CH || X + sw < 0 || Y + sh < 0) continue;
+      const gp = sw * .02, qw = sw / 2 - gp * 1.5, qh = sh / 2 - gp * 1.5;
+      [[1, 0], [0, 1], [1, 1]].forEach(([i, j], n) => {
+        const qx = X + gp + i * (qw + gp), qy = Y + gp + j * (qh + gp);
+        g.fillStyle = '#16305e'; g.fillRect(qx, qy, qw, qh); g.fillStyle = '#2a4c8a'; g.fillRect(qx, qy, qw, Math.max(1, qh * .06));
+        if (qw > 40) for (let r = 0; r < 7; r++) { g.fillStyle = 'rgba(120,170,255,.45)'; g.fillRect(qx + qw * .1, qy + qh * (.16 + r * .11), qw * (.3 + .5 * hash2(n, r)), Math.max(1, qw * .045)); }
+      });
+      const qx = X + gp, qy = Y + gp, fw = Math.max(1, sw * .01);
+      g.fillStyle = '#ff9a4a'; g.fillRect(qx - fw, qy - fw, qw + 2 * fw, qh + 2 * fw); g.fillStyle = '#2a1206'; g.fillRect(qx, qy, qw, qh);
+      builders.push([qx, qy, qw, qh]);
+    }
+    // DJ Clawd at the foot of each orange cell, lifting a block up into the next card (innermost first)
+    const kk = kick(t, 7);
+    for (let i = builders.length - 1; i >= 0; i--) {
+      const [qx, qy, qw, qh] = builders[i], u = qw / 26;
+      if (u < .7) continue;
+      const gx = qx + qw * .27, gy = qy + qh * .985, hop = kk * u * .5;
+      MOD.clawd(g, gx, gy, u, { hop, aL: .7 + .3 * kk, aR: 1, eyes: 'open' });
+      const bx = gx + 6.2 * u, by = gy - 13 * u - hop - kk * u * 1.4;
+      g.fillStyle = '#ff9a4a'; g.fillRect(bx - u * .3, by - u * .3, 4.6 * u, 4.6 * u); g.fillStyle = '#16305e'; g.fillRect(bx, by, 4 * u, 4 * u);
+    }
+    g.restore();
+    g.strokeStyle = 'rgba(160,200,255,.6)'; g.lineWidth = 6; g.strokeRect(3, 3, CW - 6, CH - 6);
+  }
+  MOD.VLENS['V4.11'] = 0;
+  mvline('V4', 11, (t, s, E, ui) => {
+    const lt = t - s.start, d = s.end - s.start;
+    const R0 = { ro: [0, 2.4, 8.1], ta: [0, 2.4, 0], fov: 1.45 }, CWu = 900, CHu = 1090;
+    const g = MOD.panel(0), VW = tall(g, 0, CWu, CHu);
+    drosteV(g, lt, t, VW, 1024);
+    // Anthropic's index: the bottom right cell's sheet, still
+    const kk = kick(t, 7), k = easeOut(clamp((lt - .08) / (d * .62))), pct = Math.round(lerp(1, 26, k));
+    const x0 = VW / 2 + 8, y0 = 512 + 8, w = VW / 2 - 30, h = 512 - 34;
+    g.fillStyle = 'rgba(10,14,30,.9)'; g.fillRect(x0, y0, w, h); g.fillStyle = '#ff9a4a'; g.fillRect(x0, y0, w, 6);
+    fit(g, 'R&D', x0 + w / 2, y0 + 70, w - 30, { size: 46, font: FT, align: 'center', color: '#e8eeff' });
+    fit(g, 'AUTOMATION', x0 + w / 2, y0 + 118, w - 30, { size: 46, font: FT, align: 'center', color: '#e8eeff' });
+    fit(g, 'INDEX', x0 + w / 2, y0 + 166, w - 30, { size: 46, font: FT, align: 'center', color: '#e8eeff' });
+    text(g, 'FEB <1%', x0 + w / 2, y0 + 236, { size: 36, font: FT, align: 'center', color: 'rgba(210,220,255,.55)' });
+    text(g, 'AUG', x0 + w / 2, y0 + 296, { size: 40, font: FT, align: 'center', color: '#ffb070' });
+    fit(g, pct + '%', x0 + w / 2, y0 + 420 + (pct === 26 ? -Math.exp(-(lt - .08 - d * .62) * 10) * 14 : 0), w - 24, { size: 130, font: FT, align: 'center', color: MOD.chrome(g, y0 + 320, y0 + 420, ['#fff4e0', '#ffc080', '#e06020', '#7a2a08']), stroke: 9 });
+    g.fillStyle = 'rgba(255,154,74,.25)'; g.fillRect(x0 + 20, y0 + h - 30, w - 40, 14); g.fillStyle = '#ff9a4a'; g.fillRect(x0 + 20, y0 + h - 30, (w - 40) * pct / 100, 14);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    return {
+      ro: [-.12 + lt * .1, 2.4, 8.25 - lt * .25], ta: [-.03, 2.4, 0], fov: 1.45,
+      skyA: '#02050e', skyB: '#07102a', acc: '#ff9a4a', fog: .02, floorCol: '#020308', grid: .1,
+      panels: [facing(R0, 540, 918, 8.1, CWu, CHu, { tex: 0, gain: 1.35, glass: .6 })],   // (from under the date plate down to the captions)
+      light: { p: [-.3, 4.3, 1.5], c: '#ff9a4a', k: 4 + 3 * kk, vol: .5 },
+      exposure: pump(t),
+    };
+  });
+
+  // ---------- V4.12: the radar table seen from above, big in the middle; NUCLEAR? flickers over it, tied to the ship, then ABORT ----------
+  mvline('V4', 12, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, rev = beatLen() * 2, t1 = Wd[0].t0, t2 = t1 + rev;
+    const alarm = t >= t1 && t < t2, strobe = alarm && (Math.floor(bt(t) * 2) & 1), ab = t >= t2;
+    const g = MOD.panel(0), VW = tall(g, 0, 1, 1), [sx, sy] = radar(g, VW / 2, 512, 460, t, t1, t2, rev, alarm, strobe, false);
+    const tilt = -1.0;
+    const T = card([0, 1.2, 0], 1.22, 1.22, 0, tilt, 0, { tex: 0, gain: 1.5, glass: alarm ? 1 : .5 });
+    const F = {
+      ro: ab ? [.15, 6.6, 4.3 - (t - t2) * .25] : [Math.sin(lt * .5) * .25, 6.0 + lt * .1, 4.8 - lt * .2], ta: [0, .95, -.25], fov: 1.45,
+      skyA: '#010402', skyB: alarm ? (strobe ? '#240404' : '#0c0202') : '#020a04', acc: alarm ? '#ff2020' : '#40ff80', fog: .025, floorCol: '#020302', grid: .1,
+      panels: [T],
+      world: { kind: 'hall', p: [3, 3.2, 7.4, alarm ? (strobe ? 3 : .8) : 1], col: '#1a2220', glowCol: alarm ? '#ff2a2a' : '#50ff90', at: [0, 0, -.5], metal: .6 },
+      light: { p: [0, 5, 2], c: alarm ? '#ff3030' : '#50ff90', k: alarm ? 5 + 7 * (strobe ? 1 : 0) : 3, vol: alarm ? .8 : .3 },
+      flash: alarm && strobe ? .06 : 0, flashCol: '#ff4040', exposure: pump(t, alarm ? .14 : .06),
+    };
+    // the ship's label, over the radar: NUCLEAR?, flickering; then ABORT; a leader down to the ship
+    if (t >= t1) {
+      const q = toV(F, onPanel(T, sx, sy, VW, 1024)), lx = 540, ly = 400;
+      if (q) { ui.save(); ui.strokeStyle = alarm ? '#ff6060' : '#e8fff0'; ui.lineWidth = 5; ui.beginPath(); ui.moveTo(q[0], q[1] - 18); ui.lineTo(q[0], ly + 40); ui.stroke(); ui.restore(); }
+      if (!alarm) { ui.fillStyle = 'rgba(4,20,10,.9)'; ui.fillRect(lx - 250, ly - 82, 500, 124); text(ui, 'ABORT', lx, ly + 18, { size: 104, font: FT, align: 'center', color: '#ffffff' }); }
+      else if (Math.floor(t * 18) % 4) { ui.fillStyle = 'rgba(90,0,0,.88)'; ui.fillRect(lx - 430, ly - 82, 860, 124); text(ui, 'NUCLEAR?', lx, ly + 18, { size: 104, font: FT, align: 'center', color: '#ff4a4a' }); }
+    }
+    return F;
+  });
+
+  // ---------- V4.13: the digitized portrait on top (a portrait already), scanning in; the split-flap board under it ----------
+  mvline('V4', 13, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start;
+    const g1 = MOD.panel(1), PV = tall(g1, 1, 3, 4), rows = Math.round(PORTRAIT.h * easeOut(clamp(lt / .45))), sy = 512 / PORTRAIT.h;
+    g1.save(); g1.imageSmoothingEnabled = false;
+    if (rows > 0) g1.drawImage(PORTRAIT_C(), 0, 0, PORTRAIT.w, rows, 0, 0, PV, rows * sy);
+    if (rows < PORTRAIT.h) { g1.fillStyle = '#ffffff'; g1.fillRect(0, rows * sy, PV, 5); }
+    g1.strokeStyle = '#c8b070'; g1.lineWidth = 8; g1.strokeRect(4, 4, PV - 8, 504);
+    g1.restore();
+    // the decree, on a split-flap board
+    const BW = 860, BH = 364, g = MOD.panel(0), VW = tall(g, 0, BW, BH);
+    g.fillStyle = 'rgba(14,10,6,.92)'; g.fillRect(0, 0, VW, 1024);
+    g.fillStyle = '#e0b040'; g.fillRect(0, 0, VW, 12); g.fillRect(0, 1012, VW, 12);
+    text(g, 'HEREINAFTER', VW / 2, 142, { size: 124, font: FT, align: 'center', color: '#f0c860' });
+    text(g, 'OFFICIALLY CALLED', VW / 2, 276, { size: 124, font: FT, align: 'center', color: '#f0c860' });
+    const gap = 16, cw = (VW - 40 - 11 * gap) / 12, ch = 310, bx = (VW - (12 * cw + 11 * gap)) / 2, r1 = 316, r2 = r1 + ch + 24;
+    const A = ' ARTIFICIAL ', B = '   SUPER    ', I = 'INTELLIGENCE', tS = Wd[1].t0 - .25, fd = .015;
+    for (let i = 0; i < 12; i++) {
+      flapCell(g, bx + i * (cw + gap), r1, cw, ch, A[i], B[i], tS + i * .028, t, fd);
+      flapCell(g, bx + i * (cw + gap), r2, cw, ch, I[i], I[i], 0, t, fd);
+    }
+    const sup = t >= Wd[2].t0 ? 1 : 0;
+    const R0 = { ro: [0, 2.35, 7.6], ta: [0, 2.35, 0], fov: 1.42 };
+    return {
+      ro: [Math.sin(lt * .7) * .15 + sup * .05, 2.35, 7.7 - lt * .25 - sup * .35], ta: [sup * .05, 2.35, 0], fov: 1.42,
+      skyA: '#0a0604', skyB: '#221406', acc: '#ffc040', fog: .025, floorCol: '#040302', grid: .06,
+      world: { kind: 'hall', p: [3, 2.8, 7.6, .9], col: '#2e2618', glowCol: '#ffc860', at: [0, 0, -.4], metal: .6 },
+      dof: { k: .01, focus: 7.6 - lt * .25 },
+      panels: [facing(R0, 540, 648, 7.75, 380, 507, { tex: 1, gain: 1.25, glass: .4 }), facing(R0, 520, 1100, 7.6, BW, BH, { tex: 0, gain: 1.35, glass: .4 })],
+      light: { p: [0, 5, 3], c: '#ffd070', k: 4, vol: .4 },
+      exposure: pump(t, .06),
+    };
+  });
+
+  // ---------- V4.14: ARTI / FICIAL, a chrome block of two rows; on "Fake" it turns out to be painted on: paper-thin, it swings
+  // edge-on to a line down the frame and flops flat ----------
+  const ART_V = () => MOD.shapePath('ARTI|FICIAL', (g, w, h) => {
+    const pad = 40; g.font = `400px ${FT}`; const sz = Math.floor(400 * (w - 2 * pad) / g.measureText('FICIAL').width);
+    g.font = `${sz}px ${FT}`; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+    const cap = g.measureText('FICIAL').actualBoundingBoxAscent, gp = sz * .24, top = (h - 2 * cap - gp) / 2;
+    g.fillText('ARTI', w / 2, top + cap); g.fillText('FICIAL', w / 2, top + 2 * cap + gp);
+  }, 2.3);
+  mvline('V4', 14, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, tF = Wd[1].t0, a = t - tF;
+    const S = ART_V(), hx = 1.12, hy = hx / S.aspect;
+    const sway = x => Math.sin((x - s.start) * 2.8) * .3 - .1;
+    let depth = .3, yaw = sway(t), pitch = -.04, P = [0, 2.0, 0];
+    if (a >= 0) {
+      depth = lerp(.3, .003, easeOut(clamp(a / .07)));
+      const k = easeInOut(clamp(a / .2));
+      yaw = lerp(sway(tF), Math.PI / 2, k);
+      const f = easeIn(clamp((a - .2) / .2));
+      yaw = lerp(yaw, 0, f); pitch = lerp(pitch, -Math.PI / 2, f);
+      P = [0, lerp(2.0, .01, f), lerp(0, .6, f)];
+    }
+    const up = a > .2 ? clamp((a - .2) / .3) : 0;
+    return {
+      ro: [Math.sin(lt * .8) * .2, 2.35 + up * 1.1, 7.2 - lt * .3], ta: [0, lerp(1.5, .9, up), 0], fov: 1.5,
+      skyA: '#120204', skyB: '#300608', acc: '#ff2a2a', fog: .018, floorCol: '#060203',
+      sky: { mode: 'rays', k: .9, col: '#ff8060' },
+      dof: { k: .01, focus: 7.2 - lt * .3 },
+      shape: { key: 'ARTI|FICIAL', src: S, p: P, rot: rotYX(yaw, pitch), s: [hx, hy, depth], col: '#d8d6e2', rim: '#ffe0d0', metal: .7 },
+      light: { p: [1.5, 4.2, 5], c: '#ffd8c8', k: 6 + 3 * kick8(t, 5), vol: .5 },
+      flash: (lt < .05 ? .08 : 0) + (a >= 0 && a < .05 ? .06 : 0), flashCol: '#ffd0c0', exposure: pump(t),
+    };
+  });
+
+  // ---------- V4.15: the desk calendar big, flipping SEP 12 ("pace" circled) to SEP 22; on "surprise" it springs up to the top and
+  // the two releases land in rows under it ----------
+  MOD.VLENS['V4.15'] = 0;
+  mvline('V4', 15, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, t0 = Wd[0].t0 - .12, tSur = Wd[5].t0, fd = (Wd[3].t0 + .05 - t0) / 10;
+    const kf = (t - t0) / fd, i = clamp(Math.floor(kf), 0, 10), f = kf - Math.floor(kf), flipping = kf >= 0 && i < 10;
+    const R0 = { ro: [0, 2.35, 6.4], ta: [0, 2.35, 0], fov: 1.45 }, D = 6.4;
+    const slide = easeInOut(clamp((t - tSur + .04) / .2));
+    // (its hinge, where the rings are, and its size: big in the middle, then small at the top)
+    // (the calendar stands low, so the pages it flips stay in the frame as they go over: only the burst lifts it, small, to the top)
+    const hU = lerp(540, 300, slide), top = lerp(900, 330, slide), Hh = atUI(R0, 540, top + hU * .06, D), hh = lenUI(R0, hU, D) / 2, hw = hh * .95 / 1.1;
+    const under = kf < 0 ? 12 : Math.min(22, 12 + i + (flipping ? 1 : 0));
+    calPage(MOD.panel(2), under, false);
+    const panels = [card([Hh[0], Hh[1] - hh, Hh[2] - .02], hw, hh, 0, 0, 0, { tex: 2, gain: 1.2, glass: 0 })];
+    if (flipping) {
+      const th = easeIn(f) * Math.PI, g1 = MOD.panel(1);
+      calPage(g1, 12 + i, th > Math.PI / 2);
+      const v = rot([0, hh, 0], 0, -th), c = [Hh[0] - v[0], Hh[1] - v[1], Hh[2] - v[2]];
+      panels.push({ c, u: [hw, 0, 0], v, tex: 1, gain: 1.2 - .4 * Math.sin(th), glass: 0 });
+    }
+    const spheres = [];
+    for (let r = 0; r < 6; r++) spheres.push([Hh[0] - hw * .76 + r * hw * .303, Hh[1], Hh[2] + .02, hh * .064, '#d8dce8']);
+    let fl = 0, halo = null;
+    if (t >= tSur) {
+      const a = t - tSur;
+      halo = { p: [Hh[0], Hh[1] - hh, Hh[2] + .1], n: [0, 0, 1], R: .5 + a * 9, r: .04 + a * .12, k: 3 * Math.exp(-a * 5), col: '#ffd8a0' };
+      fl = clamp(1 - a / .1) * .16;
+      const NW = 900, NH = 640, g0 = MOD.panel(0), VW = tall(g0, 0, NW, NH), k1 = clamp(a / .09), k2 = clamp((a - .13) / .09), vu = 1024 / NH;
+      g0.fillStyle = 'rgba(10,6,20,.72)'; g0.beginPath(); g0.roundRect(0, 0, VW, 1024, 30); g0.fill();
+      const drop = k => (1 - backOut(k)) * 60;
+      if (k1 > 0) {
+        text(g0, 'ANTHROPIC', VW / 2, 112, { size: 96, font: FT, align: 'center', color: '#ffb070' });
+        fit(g0, 'OPUS 5.5', VW / 2, 312 - drop(k1), VW - 60, { size: 210, font: FT, align: 'center', color: MOD.chrome(g0, 150, 300, ['#fff4e0', '#ffc080', '#e06020', '#7a2a08']), stroke: 14 });
+      }
+      if (k2 > 0) {
+        text(g0, '+90 MIN', VW / 2, 448, { size: 100, font: FT, align: 'center', color: '#ffd050', alpha: k2 });
+        text(g0, 'OPENAI', VW / 2, 580, { size: 96, font: FT, align: 'center', color: '#d8e0f0' });
+        fit(g0, 'GPT-6', VW / 2, 772 - drop(k2), VW - 60, { size: 170, font: FT, align: 'center', color: MOD.chrome(g0, 640, 760, ['#ffffff', '#e0e6f4', '#8a96b8', '#3a4460']), stroke: 12 });
+        fit(g0, 'SOL & LUNA', VW / 2, 962 - drop(k2), VW - 60, { size: 150, font: FT, align: 'center', color: MOD.chrome(g0, 840, 950, ['#ffffff', '#e0e6f4', '#8a96b8', '#3a4460']), stroke: 12 });
+      }
+      const N = facing(R0, 540, 966, D - .3, NW, NH, { tex: 0, gain: 1.45, glass: .5, alpha: clamp(a / .05) });
+      panels.push({ ...N, c: add(N.c, [0, -(1 - easeOut(clamp(a / .15))) * .3, 0]) });
+    }
+    return {
+      ro: [0, 2.35, 6.6 - lt * .1], ta: [0, 2.35, 0], fov: 1.45,
+      skyA: '#06040e', skyB: '#1a1030', acc: '#8a74d0', fog: .02, floorCol: '#040308', grid: .08,
+      panels, spheres, sphCol: '#d8dce8', halo, dof: { k: .012, focus: 6.6 - lt * .1 },
+      light: { p: [0, 5, 4], c: '#ffffff', k: 4, vol: .3 },
+      flash: fl, flashCol: '#ffe0c0', exposure: pump(t, t >= tSur ? .14 : .06),
+    };
+  });
+
+  // ---------- V4.16: the tracker standing tall (trackers scroll down), OPUS 5.5 loading at its top; on "Hi," DJ Clawd pops up
+  // from the bottom in front of it and waves, the bubble over him ----------
+  const CH_V = [0, 1, 3, 4];   // (the channels the narrow pattern shows: KICK, BASS, LEAD, TOKEN)
+  mvline('V4', 16, (t, s, E, ui) => {
+    const Wd = W4(s), lt = t - s.start, tHi = Wd[2].t0, tGuys = Wd[3].t0, tLoad = Wd[0].t0;
+    const R0 = { ro: [0, 2.45, 7.4], ta: [0, 2.45, 0], fov: 1.45 };
+    // the tracker: a row every sixteenth, the playing row on a copper bar
+    const g = MOD.panel(0), VW = tall(g, 0, 940, 960), row = bt(t) * 4, r0 = Math.floor(row), fr = row - r0, lh = 44, cy = 640;
+    g.fillStyle = 'rgba(6,6,16,.9)'; g.fillRect(0, 0, VW, 1024);
+    const bar = g.createLinearGradient(0, cy - 30, 0, cy + 22); bar.addColorStop(0, 'rgba(255,154,74,0)'); bar.addColorStop(.5, 'rgba(255,154,74,.42)'); bar.addColorStop(1, 'rgba(255,154,74,0)');
+    g.fillStyle = bar; g.fillRect(0, cy - 36, VW, 64);
+    g.font = `34px ${FM}`;
+    const colX = j => 96 + j * 226;
+    for (let i = -12; i <= 9; i++) {
+      const y = Math.round(cy + (i - fr) * lh); if (y < 150 || y > 1010) continue;
+      const rr = r0 + i, lv = i === 0 ? 1 : .6 - Math.abs(i) * .03;
+      g.globalAlpha = clamp(lv); g.fillStyle = '#b8c0d8'; g.fillText(String(rr & 63).padStart(2, '0'), 22, y);
+      CH_V.forEach((ch, j) => { g.fillStyle = ch === 3 ? '#ffa860' : ch === 4 ? '#6ae8ff' : '#c8d0e8'; g.fillText(cellAt(rr, ch), colX(j), y); });
+    }
+    g.globalAlpha = 1;
+    g.fillStyle = 'rgba(20,20,40,.95)'; g.fillRect(0, 0, VW, 126);
+    CH_V.forEach((ch, j) => {
+      const x = colX(j), v = ch === 0 ? kick(t, 5) : ch === 3 ? .5 + .5 * kick8(t, 4) : ch === 4 ? vox(t) : .4 + .3 * kick8(t + ch * .1, 6);
+      text(g, CHANNELS[ch], x, 56, { size: 36, font: FT, color: ch === 3 ? '#ffa860' : '#c8d0e8' });
+      g.fillStyle = 'rgba(200,210,240,.15)'; g.fillRect(x, 78, 190, 22); g.fillStyle = ch === 3 ? '#ff9a4a' : '#6ae8ff'; g.fillRect(x, 78, 190 * clamp(v), 22);
+    });
+    // Opus 5.5 loads, as the lead's instrument
+    const ld = clamp((t - tLoad) / (tHi - tLoad - .12)), g2 = MOD.panel(2), LV = tall(g2, 2, 800, 400);
+    g2.fillStyle = 'rgba(12,10,20,.93)'; g2.fillRect(0, 0, LV, 512);
+    g2.fillStyle = 'rgba(255,154,74,.55)'; g2.fillRect(0, 0, LV, 84);
+    fit(g2, 'LOADING INSTRUMENT 04', LV / 2, 58, LV - 40, { size: 44, font: FT, align: 'center', color: '#fff4e8' });
+    fit(g2, 'OPUS 5.5', LV / 2, 260, LV - 50, { size: 150, font: FT, align: 'center', color: MOD.chrome(g2, 150, 260, ['#fff4e0', '#ffc080', '#e06020', '#7a2a08']), stroke: 10 });
+    g2.fillStyle = 'rgba(255,200,160,.18)'; g2.fillRect(50, 340, LV - 100, 96); g2.fillStyle = `rgba(255,154,74,${.8 + .2 * kick8(t, 5)})`; g2.fillRect(50, 340, (LV - 100) * ld, 96);
+    text(g2, ld >= 1 ? 'OK' : Math.round(ld * 100) + '%', LV / 2, 410, { size: 64, font: FT, align: 'center', color: '#1a0c04' });
+    const panels = [facing(R0, 540, 810, 7.4 + 1.2, 940, 960, { tex: 0, gain: 1.2, glass: .4 }), facing(R0, 540, 600, 7.4 - .6, 800, 400, { tex: 2, gain: 1.4, glass: .6 })];
+    const cutIn = t >= beatT(Math.round(bt(Wd[1].t0))) && t < tHi - .08;
+    const F = {
+      ...(cutIn
+        ? { ro: [(t - Wd[1].t0) * .08, 3.3, 6.5 - (t - Wd[1].t0) * .2], ta: [0, 3.3, 0], fov: 1.45 }
+        : { ro: [Math.sin(lt * .5) * .25, 2.45, 7.5 - lt * .1], ta: [0, 2.45, 0], fov: 1.45 }),
+      skyA: '#04040c', skyB: '#0c0a1e', acc: '#ff9a4a', fog: .025, floorCol: '#030208', grid: .1,
+      world: { kind: 'hall', p: [3, 2.9, 7.4, 1 + 2.5 * kick(t, 6)], col: '#1e1c26', glowCol: '#ff9a4a', at: [0, 0, -1.2], metal: .6 },
+      panels,
+      light: { p: [0, 4.6, 3.2], c: '#ffd0a0', k: 5 + 2 * kick(t, 6), vol: .6 },
+      exposure: pump(t, .06),
+    };
+    // "Hi, guys!": he pops up from the bottom, in front, and waves; the bubble over him
+    if (t >= tHi - .06) {
+      const a = t - tHi + .06, upk = backOut(clamp(a / .24)), u = 40;
+      const gx = 520, gy = 1290 + (1 - upk) * 520, hop = kick(t, 9) * 8, top = gy - hop - 8 * u;
+      ui.save();
+      MOD.clawd(ui, gx, gy, u, { eyes: frac(a * .7) < .88 ? 'happy' : 'closed', aL: .1, aR: 0, hop });
+      ui.fillStyle = 'rgba(255,120,150,.75)'; for (const sd of [-1, 1]) ui.fillRect(gx + sd * 2.3 * u - u, top + 3.3 * u, 2 * u, .6 * u);
+      const th = .75 + .42 * Math.sin(a * 2.4 * TAU), sx = gx + 6 * u, sy = top + 3.4 * u, L = 4.4 * u, hx = sx + Math.sin(th) * L, hy = sy - Math.cos(th) * L;
+      ui.lineCap = 'square'; ui.strokeStyle = '#9b3114'; ui.lineWidth = 2 * u; ui.beginPath(); ui.moveTo(sx, sy); ui.lineTo(hx, hy); ui.stroke();
+      ui.strokeStyle = '#d97757'; ui.lineWidth = 1.5 * u; ui.beginPath(); ui.moveTo(sx, sy); ui.lineTo(hx, hy); ui.stroke();
+      ui.save(); ui.translate(hx, hy); ui.rotate(th); ui.fillStyle = '#9b3114'; ui.fillRect(-1.3 * u, -2.3 * u, 2.6 * u, 2.6 * u); ui.fillStyle = '#e8906a'; ui.fillRect(-1.05 * u, -2.05 * u, 2.1 * u, 2.1 * u); ui.restore();
+      for (const sd of [-1, 1]) {
+        const bx = gx + sd * 5.6 * u, by = top + 1.4 * u;
+        ui.fillStyle = '#ff9a4a'; ui.beginPath(); ui.arc(bx, by, 1.2 * u, 0, TAU); ui.fill(); ui.lineWidth = 5; ui.strokeStyle = '#3c4878'; ui.stroke();
+        text(ui, '5.5', bx, by + .34 * u, { size: Math.round(.95 * u), font: '"Archivo Black"', align: 'center', color: '#1a0c04' });
+      }
+      if (a > .12) {
+        const msg = t >= tGuys ? 'Hi, guys!' : 'Hi,', bx = 170, by = 640, bw = 740, bh = 190;
+        ui.fillStyle = '#f4f4f8'; ui.beginPath(); ui.roundRect(bx, by, bw, bh, 40); ui.fill();
+        ui.beginPath(); ui.moveTo(bx + 250, by + bh - 10); ui.lineTo(bx + 360, by + bh - 10); ui.lineTo(gx - 60, top - 40); ui.fill();
+        text(ui, msg, bx + 54, by + 128, { size: 112, font: '"Archivo Black"', color: '#101018' });
+      }
+      ui.restore();
+      F.flash = a > .06 && a < .12 ? .12 : 0; F.flashCol = '#ffe0c0';
+    }
+    return F;
+  });
+
 })();
 
 ;
@@ -11165,8 +14764,125 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
       exposure: fadeIn * (1 - fadeOut),
     };
   });
-})();
 
+  // THE VERTICAL VIDEO (VERTICAL.md): the greetings roll up the tall frame, from its bottom edge to under the crew's logo, which is
+  // pinned at the top in two rows (FRONTIER / CREW), "sends greetings to" under it; each name lights as it crosses the reading
+  // line in the frame's middle. Then the demo exits to DOS on the pivoted monitor: its sync line runs down the screen, and its
+  // end screen prints in the portrait text mode (45 columns, the NFO's), the FC tag and Clawd at its top as the NFO had them, in
+  // DOS's own colours again, the exit message in the safe area under them, and the prompt, its cursor blinking as the music ends.
+  const VW = 1024, VH = 1290, VBAND = 470;   // (the roll's canvas: tex 0 stood on end, squeezed to the sheet's shape; its reading line)
+  function vroll(g, scroll) {
+    const gr = g.createLinearGradient(0, VBAND - 70, 0, VBAND + 70);
+    gr.addColorStop(0, 'rgba(255,60,170,0)'); gr.addColorStop(.5, 'rgba(255,60,170,.22)'); gr.addColorStop(1, 'rgba(255,60,170,0)');
+    g.fillStyle = gr; g.fillRect(0, VBAND - 70, VW, 140);
+    g.fillStyle = 'rgba(255,150,220,.45)'; g.fillRect(70, VBAND + 58, VW - 140, 3); g.fillRect(70, VBAND - 61, VW - 140, 3);
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    // (a name wider than the sheet shrinks to fit it)
+    const fit = (str, size, font) => { g.font = `${size}px ${font}`; const w = g.measureText(str).width; return w > 940 ? size * 940 / w : size; };
+    ROWS.forEach(([kind, str, label], i) => {
+      const y = YS[i] - scroll; if (kind === 'gap' || y < -80 || y > VH + 80) return;
+      const near = clamp(1 - Math.abs(y - VBAND) / 110), edge = clamp(Math.min((y - 110) / 240, (VH + 40 - y) / 60));
+      g.save(); g.globalAlpha = edge; g.translate(VW / 2, y); const sc = 1 + .1 * near; g.scale(sc, sc);
+      if (kind === 'greet') {
+        const size = fit(str, 86, MOD.FONT_T);
+        g.font = `${size}px ${MOD.FONT_T}`; g.lineWidth = 12; g.strokeStyle = 'rgba(8,2,16,.85)'; g.strokeText(str, 0, 0);
+        g.fillStyle = MOD.chrome(g, -size / 2, size / 2, near > .25 ? MAGC : STEELC); g.fillText(str, 0, 0);
+      } else if (kind === 'head') {
+        g.font = `52px ${MOD.FONT_M}`; g.fillStyle = '#ffb070'; g.letterSpacing = '6px'; g.fillText(str, 0, 0);
+      } else if (kind === 'agent') {
+        g.font = `${fit(str, 84, MOD.FONT_M)}px ${MOD.FONT_M}`; g.lineWidth = 10; g.strokeStyle = 'rgba(8,2,16,.85)'; g.strokeText(str, 0, 0);
+        g.fillStyle = MOD.chrome(g, -42, 42, near > .25 ? MAGC : ['#f0fff4', '#b8ffd0', '#5dff8a', '#1a6a30']); g.fillText(str, 0, 0);
+      } else if (kind === 'handle') {
+        g.font = `${fit(str, 80, MOD.FONT_M)}px ${MOD.FONT_M}`; g.lineWidth = 10; g.strokeStyle = 'rgba(8,2,16,.85)'; g.strokeText(str, 0, 0);
+        g.fillStyle = MOD.chrome(g, -40, 40, near > .25 ? MAGC : STEELC); g.fillText(str, 0, 0);
+      } else {
+        if (label) { g.font = `36px ${MOD.FONT_M}`; g.fillStyle = 'rgba(190,205,255,.9)'; g.fillText(label, 0, -52); }
+        const own = /[a-z]/.test(str), font = own ? '"Archivo Black"' : MOD.FONT_T, size = fit(str, own ? 80 : 72, font);
+        g.font = `${size}px ${font}`; g.lineWidth = 12; g.strokeStyle = 'rgba(8,2,16,.85)'; g.strokeText(str, 0, 8);
+        g.fillStyle = MOD.chrome(g, 8 - size / 2, 8 + size / 2, near > .25 ? MAGC : ORANGEC); g.fillText(str, 0, 8);
+      }
+      g.restore();
+    });
+  }
+  // the crew's logo in two rows, extruded
+  const crewShape = () => MOD.shapePath('FRONTIER/CREW', (g, w, h) => {
+    g.font = `140px ${MOD.FONT_T}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('FRONTIER', w / 2, h / 2 - 70); g.fillText('CREW', w / 2, h / 2 + 76);
+  }, 2.9);
+  // ---- the exit: the portrait text mode, 45 × 40 cells of 8 × 16 on a 360 × 640 canvas, shown ×3 ----
+  let _vtm = null;
+  const CGA16 = { 3: '#00aaaa', 5: '#aa00aa', 6: '#aa5500', 7: '#aaaaaa', 8: '#555555', 9: '#5555ff', 11: '#55ffff', 13: '#ff55ff', 15: '#ffffff' };
+  function vdos(ui, k) {
+    const c = _vtm ?? (_vtm = makeCanvas(360, 640)), g = c.getContext('2d');
+    g.fillStyle = '#000'; g.fillRect(0, 0, 360, 640);
+    // (the end screen prints a row every 60th of a second, as the NFO did)
+    const rows = Math.floor(clamp((k - .07) * 60, 0, 40));
+    // (the end screen sits in the middle of the tall screen, under the command that ran the demo)
+    const put = (col, row0, str, fg) => {
+      const row = row0 + 9;
+      if (row >= rows) return;
+      g.fillStyle = CGA16[fg];
+      [...str].forEach((ch, i) => { const b = cell16(ch), x0 = (col + i) * 8, y0 = row * 16; for (let y = 0; y < 16; y++) for (let x = 0; x < 8; x++) if (b[y * 8 + x]) g.fillRect(x0 + x, y0 + y, 1, 1); });
+    };
+    // the group's tag in big blocks, each font pixel two cells wide and one tall, a shade after it; and Clawd, as the NFO had them
+    let tx = 2;
+    for (const ch of 'FC') {
+      const G = glyph(ch), cols = ch === 'F' ? [11, 11, 11, 11, 3, 3, 9, 9] : [13, 13, 13, 13, 5, 5, 5, 5];
+      for (let y = 0; y < 8; y++) for (let gx = 0; gx < G.w; gx++) {
+        if (G.bits[y * G.w + gx]) put(tx + gx * 2, 2 + y, '██', cols[y]);
+        else if (gx && G.bits[y * G.w + gx - 1]) put(tx + gx * 2, 2 + y, '░', 8);
+      }
+      tx += G.w * 2 + 2;
+    }
+    put(33, 3, '  ▄▀▀▀▀▀▀▄  ', 7);
+    ['  ▄▄▄▄▄▄▄▄  ', '▐█▀█▀▀▀▀█▀█▌', ' █▄█▄▄▄▄█▄█ ', '  ▀ ▀  ▀ ▀  '].forEach((r, i) => put(33, 4 + i, r, 6));
+    put(0, -1, 'C:\\DEMOS\\FC>scaling.exe', 7);
+    put(2, 12, 'Frontier Crew', 11);
+    put(2, 13, "We Didn't Start the Scaling", 11);
+    put(2, 14, 'PC demo, 2026', 11);
+    put(2, 16, 'Softmax feat. MC Token', 3);
+    put(2, 17, 'Thanks for watching.', 7);
+    put(0, 19, 'C:\\DEMOS\\FC>', 7);
+    if (rows >= 29 && Math.floor(k * 2.4) % 2 === 0) put(12, 19, '_', 7);
+    ui.save(); ui.imageSmoothingEnabled = false; ui.drawImage(c, 0, 0, 360, 640, 0, 0, 1080, 1920);
+    // (the mode switch into it: the pivoted CRT's sync line, down the screen, for two frames)
+    if (k < .05) { ui.fillStyle = '#000'; ui.fillRect(0, 0, 1080, 1920); ui.fillStyle = '#ffffff'; ui.fillRect(538, 0, 4, 1920); }
+    ui.restore();
+  }
+  mvsection('outro', (t, s, E, ui) => {
+    const tail = self.C4_TAIL ?? s.start;
+    const t0 = Math.min(s.start, tail), lt = t - t0, d = s.end - t0, exitAt = d - 2.0;
+    if (lt >= exitAt) {
+      vdos(ui, lt - exitAt);
+      return { fx: E.fx, res: E.res, floor: false, skyA: '#000000', skyB: '#000000', exposure: 0, flare: 0 };
+    }
+    // the roll's speed lands the last credit on the reading line with a second to spare
+    const stop = exitAt - 1.3, start = YS[0] - 1080, end = YS.at(-1) - VBAND, scroll = lerp(start, end, clamp(lt / stop));
+    const g = MOD.panel(0), P0 = MOD.PAN[0];
+    g.setTransform(0, P0.h / VW, -P0.w / VH, 0, P0.w, 0);   // (upright, VW × VH, on the texture stood on end)
+    vroll(g, scroll);
+    const h = MOD.panel(1);
+    h.save(); h.textAlign = 'center'; h.textBaseline = 'middle'; h.font = `80px ${MOD.FONT_M}`; h.fillStyle = '#ffb070'; h.letterSpacing = '8px';
+    h.fillText('SENDS GREETINGS TO', 512, 256); h.restore();
+    const th = .2, S = crewShape(), hy = .5, hw = 1.15, hh = hw * VH / VW;
+    const fadeIn = easeOut(clamp(lt / .6)), fadeOut = clamp((lt - (exitAt - .7)) / .7);
+    const sway = Math.sin(lt * .4);
+    return {
+      fx: E.fx, res: E.res,
+      ro: [sway * .25, 2.3, 6.0 - lt * .03], ta: [sway * .06, 2.3, -1.5], fov: 1.5,
+      skyA: '#020109', skyB: '#0a0618', acc: '#ff3aa6', fog: .012, floorCol: '#020206', grid: .12,
+      sky: { mode: 'stars', k: .25, col: '#ffe4f6' },
+      shape: { key: 'FC2', src: S, p: [0, 3.78 + Math.sin(lt * 1.3) * .03, -2.6], rot: MOD.rotYX(Math.sin(lt * .7) * .14, .05), s: [hy * S.aspect, hy, .14], col: '#5a1450', rim: '#ffb0e6', metal: 1 },
+      panels: [
+        { c: [0, 1.55, -1.0], u: [0, hh * Math.cos(th), -hh * Math.sin(th)], v: [-hw, 0, 0], alpha: 1, gain: 1.6, glass: .25, tex: 0 },
+        { c: [0, 2.96, -1.6], u: [1.15, 0, 0], v: [0, .575, 0], alpha: 1, gain: 1.7, glass: 0, tex: 1 },
+      ],
+      light: { p: [0, 5.5, -5], c: '#ff8ad6', k: 6, vol: .7 },
+      world: { kind: 'fractal', p: [3.6, -.4, .25, .35], col: '#241a2a', glowCol: '#ff4fb4', at: [0, 4.6, -26], metal: .7, t: lt * 2 },
+      exposure: fadeIn * (1 - fadeOut),
+    };
+  });
+})();
 ;
 // ---- styles/demoscene/modern/wire.js ----
 // modern/wire.js: routes every window of the song to its engine, for the two versions (loaded last).
@@ -11241,25 +14957,44 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
     if (VERSION === 'A' && RETRO) RETRO(t, s);
   };
   const hud = new Set(['C1', 'C2', 'C3', 'C4']);
+  // A window's modern scene: in the vertical video its vertical one (mvline(), mvsection()), or else, as a stand-in, its landscape one
+  // with the UI it draws mapped onto the vertical frame (MOD.uiLandscape(); its 3D picture is already the landscape one's middle).
+  const sceneOf = (key, vertical) => {
+    const vs = vertical && MOD.VSCENES[key];
+    if (vs || !vertical) return vs || MOD.SCENES[key] || null;
+    const ls = MOD.SCENES[key];
+    return ls && ((t, s, E, g) => { g.save(); MOD.uiLandscape(g); try { return ls(t, s, E, g); } finally { g.restore(); } });
+  };
+  const STAND_INS = new Set();
   for (const seg of SEGS) {
-    const key = seg.key, retro = SHOTS[key];
-    SHOTS[key] = (p, lt, d, t, s) => {
+    const key = seg.key, retro = SHOTS[key], vretro = VSHOTS[key];
+    if (vretro?.standIn) STAND_INS.add(key);
+    // (in the vertical video, VSHOTS has each window's shot: its vertical 1996 shot or the stand-in, zz_generic.js, and its vertical
+    // modern scene)
+    const shot = vertical => (p, lt, d, t, s) => {
       if (!warming) { warming = true; warmScenes(); }
       if (!drawnWindows.has(s)) { drawnWindows.add(s); if (!warmedWindows.has(s)) oneOff = true; }
-      const E = eraAt(t, s);
+      const E = eraAt(t, s), r = vertical ? vretro : retro;
       // (without WebGL2 the whole song is the VGA engine's: after chorus 1, `ch/zz_generic.js`'s)
-      if ((E.fx < 2 || noGL) && retro) { MOD.setT(t); retro(p, lt, d, t, s); return; }
+      if ((E.fx < 2 || noGL) && r) { MOD.setT(t); r(p, lt, d, t, s); return; }
       MOD.setT(t);
       const g = MOD.uiBegin(E.uiRes);
-      const F = (MOD.SCENES[s.key] ?? placeholder)(t, s, E, g);
+      // (in the vertical video a verse line's picture sits lower than its scene composed it, under the date plate and down to the
+      // captions: its 3D picture by a lens shift, its UI by the same translation; the overlays after it stay put)
+      const lens = vertical && s.kind === 'line' ? MOD.VLENS[s.key] ?? VMOD.lens : 0;
+      if (lens) { g.save(); g.translate(0, lens * H); }
+      const F = (sceneOf(s.key, vertical) ?? placeholder)(t, s, E, g);
+      if (lens) { g.restore(); F.lens = lens; }
       F.fx = E.fx; F.res = E.res;
       if (s.kind === 'line') {
         if (F.scroller !== false) MOD.scroller(g, s.sec, t);
         if (F.date !== false) MOD.datePlate(g, t);
-      } else if (hud.has(s.key) && F.hud !== false) MOD.softmaxHUD(g, t, { word: sungWord(t), y: 1046, h: 140, level: F.hudLevel ?? 1 });
+      } else if (hud.has(s.key) && F.hud !== false) MOD.softmaxHUD(g, t, vertical ? { word: sungWord(t), level: F.hudLevel ?? 1 } : { word: sungWord(t), y: 1046, h: 140, level: F.hudLevel ?? 1 });
       if (E.upgraded !== undefined) { F.flash = Math.max(F.flash ?? 0, clamp(1 - E.upgraded / .3) * .35); F.flashCol = F.flashCol ?? '#ff7ac8'; }
       pending = F;
     };
+    SHOTS[key] = shot(false);
+    if (VERT) VSHOTS[key] = shot(true);
   }
   // (take the context and compile the 1996 part's program at start-up; in a worker this runs before it reports ready. The modern
   // engine's own programs come with the warm-up, below, or with the first frame that needs them.)
@@ -11287,7 +15022,7 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
   MOD.WARM_ALL = new Promise(ok => { warmedAll = ok; });
   if (warming) { warmed(); warmedAll(); }
   function warmScenes() {
-    const list = SEGS.filter(s => MOD.SCENES[s.key] && (VERSION === 'B' || eraAt(s.start + .01, s).fx >= 2));
+    const list = SEGS.filter(s => sceneOf(s.key, VERT) && (VERSION === 'B' || eraAt(s.start + .01, s).fx >= 2));
     const t0 = self.STYLE_START ?? 0, par = GL.parallel();
     const first = list.filter(s => s.end > t0 && s.start < t0 + 3);
     const programs = ['bright', 'down', 'up', 'final', 'compose'];
@@ -11326,7 +15061,7 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
         else if (!frames.has(n.s)) {
           const s = n.s, Fs = [];
           for (const t of [s.start + .05, (s.start + s.end) / 2, s.end - .05]) {
-            try { const E = eraAt(t, s); MOD.setT(t); const F = MOD.SCENES[s.key](t, s, E, MOD.uiBegin(E.uiRes)); F.fx = E.fx; F.res = E.res; Fs.push(F); }
+            try { const E = eraAt(t, s); MOD.setT(t); const F = sceneOf(s.key, VERT)(t, s, E, MOD.uiBegin(E.uiRes)); F.fx = E.fx; F.res = E.res; Fs.push(F); }
             catch (e) { console.error(`warming ${s.key}: ${e.stack || e}`); }
           }
           frames.set(s, Fs); warmedWindows.add(s);
@@ -11369,4 +15104,9 @@ const msection = (key, fn) => { MOD.SCENES[key] = fn; };
 
   // The windows without a modern scene (checking scripts list them).
   self.MISSING_SCENES = () => SEGS.filter(s => !MOD.SCENES[s.key] && (VERSION === 'B' || eraAt(s.start + .01, s).fx >= 2)).map(s => s.key);
+  // (and, for the vertical video, the windows still drawn by a stand-in: no vertical 1996 shot, or no vertical modern scene)
+  self.MISSING_VERTICAL = () => SEGS.filter(s => {
+    const E = eraAt(s.start + .01, s), E2 = eraAt(s.end - .01, s);
+    return (E.fx < 2 && STAND_INS.has(s.key)) || ((E.fx >= 2 || E2.fx >= 2) && !MOD.VSCENES[s.key]);
+  }).map(s => s.key);
 })();

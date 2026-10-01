@@ -394,7 +394,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
       .follow-on { visibility: visible; }
     }
   }
-  .fullscreen {
+  :is(.fullscreen, .vertical) {
     display: grid;
     place-items: center;
     width: 40px;
@@ -402,7 +402,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
     padding: 0;
     margin-left: auto;
     font-size: 18px;
-    .icon path { fill: none; stroke: currentColor; stroke-width: 1.4; }
+    .icon :is(path, rect) { fill: none; stroke: currentColor; stroke-width: 1.4; }
     .icon-fs-exit { display: none; }
     &[aria-pressed="true"] {
       background: var(--ink);
@@ -412,6 +412,8 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
     }
     &[hidden] { display: none; }
   }
+  /* (the two sit together at the row's end) */
+  .vertical ~ .fullscreen { margin-left: 0; }
 }
 .player[data-state="playing"] .deck-play {
   .icon-play { display: none; }
@@ -491,7 +493,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
   .deck {
     font-size: 12px;
     /* row 1: play, time and fullscreen; row 2: scrub; row 3: follow, back to top and the track menu */
-    .fullscreen { order: 1; }
+    :is(.fullscreen, .vertical) { order: 1; }
     .undock { display: grid; place-items: center; }
     .scrub { flex-basis: 100%; order: 2; }
     .modes { order: 3; }
@@ -517,11 +519,12 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
   pointer-events: auto;
   max-width: 800px;
   display: grid;
-  grid-template-columns: min(40%, 220px) auto minmax(0, 1fr) auto;
+  /* (the video a little narrower than its 40 % on a phone, so the time keeps to one line beside the two toggles) */
+  grid-template-columns: min(36%, 220px) auto minmax(0, 1fr) auto auto;
   grid-template-areas:
-    "stage play  time  fullscreen"
-    "stage modes modes modes"
-    "track scrub scrub scrub";
+    "stage play  time  vertical fullscreen"
+    "stage modes modes modes    modes"
+    "track scrub scrub scrub    scrub";
   align-items: center;
   gap: 6px 8px;
   padding: 6px;
@@ -530,22 +533,62 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
   .stage { grid-area: stage; }
   .deck { display: contents; font-size: 12px; }
   .deck-play { grid-area: play; width: 38px; height: 32px; align-self: end; }
-  .time { grid-area: time; min-width: 0; align-self: end; line-height: 32px; }
+  .time { grid-area: time; min-width: 0; align-self: end; line-height: 32px; white-space: nowrap; }
   .fullscreen { grid-area: fullscreen; margin-left: 0; align-self: end; }
+  .vertical { grid-area: vertical; margin-left: 0; align-self: end; }
   .modes { grid-area: modes; align-self: start; }
   .undock { display: grid; place-items: center; }
   .version { grid-area: track; min-width: 0; }
   .scrub { grid-area: scrub; min-width: 0; height: 22px; .ticks { display: none; } }
   @container dock (width >= 760px) {
-    grid-template-columns: min(40%, 220px) auto auto auto minmax(0, 1fr) auto;
+    grid-template-columns: min(40%, 220px) auto auto auto minmax(0, 1fr) auto auto;
     grid-template-areas:
-      "stage play  time  modes track fullscreen"
-      "stage scrub scrub scrub scrub scrub";
+      "stage play  time  modes track vertical fullscreen"
+      "stage scrub scrub scrub scrub scrub    scrub";
     :is(.modes, .version) { align-self: end; }
     .scrub { align-self: start; }
   }
   /* too big for the bar's little video; the bar's own play button is right beside it */
   .big-play { display: none; }
+}
+
+/* The vertical video (the deck's toggle): the stage is 9:16, as tall as the window has room for beside the deck, and the player
+   narrows around it, with the deck's controls in rows as in the side panel. The bottom bar's video is a narrow one. */
+.player[data-vertical] {
+  .stage { aspect-ratio: 9 / 16; }
+  &:not(.docked-bottom) {
+    max-width: calc(max(16rem, (100svh - 12rem) * 9 / 16) + 24px);
+    .deck {
+      font-size: 12px;
+      :is(.fullscreen, .vertical) { order: 1; }
+      .scrub { flex-basis: 100%; order: 2; }
+      .modes { order: 3; }
+      .version { order: 4; flex: 1 1 8rem; min-width: 0; select { width: 100%; max-width: none; padding: .15rem .25rem; } }
+    }
+  }
+  &.docked-side {
+    margin-inline: auto;
+    max-width: calc(max(14rem, (100svh - 14rem) * 9 / 16) + 16px);
+  }
+  &.docked-bottom {
+    /* (its tall thumbnail has room beside it for the track menu, which the narrow column under it hasn't; the seek bar runs under both) */
+    grid-template-columns: min(22%, 92px) auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "stage play  time  vertical fullscreen"
+      "stage modes modes modes    modes"
+      "stage track track track    track"
+      "scrub scrub scrub scrub    scrub";
+    @container dock (width >= 760px) {
+      grid-template-columns: min(22%, 92px) auto auto auto minmax(0, 1fr) auto auto;
+      grid-template-areas:
+        "stage play  time  modes track vertical fullscreen"
+        "stage scrub scrub scrub scrub scrub    scrub";
+    }
+  }
+  &[data-fullscreen] .screen :is(canvas, .poster) {
+    width: min(100%, 100vh * 9 / 16);
+    height: min(100%, 100vw * 16 / 9);
+  }
 }
 
 /* ---------- lyrics ---------- */
@@ -593,6 +636,9 @@ main { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
   gap: 1.4rem;
 }
 .dock-target:empty { display: none; }
+/* the vertical player fills the side panel's height, leaving the now-playing card only a strip at the screen's foot: it goes
+   while that player is docked there (the notes are in the lyrics beside it) */
+.side-inner:has(> .dock-target > #player[data-vertical]) .now-card { display: none; }
 
 .now-card {
   padding: 1rem 1.1rem;
@@ -4692,16 +4738,16 @@ button.lyric {
 @keyframes eurodance-twinkle { 0%, 60% { opacity: 1; } 61%, 100% { opacity: .25; } }
 
 /* the fullscreen and follow toggles' pressed state, in each theme's own terms (the zine's is the base one, inverted) */
-:root[data-theme="piano-rock"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] {
+:root[data-theme="piano-rock"] .deck :is(.fullscreen, .vertical, .follow)[aria-pressed="true"] {
   background: linear-gradient(rgb(150 154 166), rgb(196 200 210));
   color: rgb(21 18 28);
   box-shadow: inset 0 2px 3px rgb(0 0 0 / 55%);
 }
-:root[data-theme="indie-folk"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { border-color: var(--c-amber); background: var(--c-wine); color: var(--c-gold); }
-:root[data-theme="k-pop"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { background: var(--ink); color: var(--paper); box-shadow: inset 0 -3px 0 -1px var(--a, var(--toki)); }
-:root[data-theme="anisong"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { border-color: var(--pink-dk); background: var(--pink-dk); color: white; box-shadow: none; }
+:root[data-theme="indie-folk"] .deck :is(.fullscreen, .vertical, .follow)[aria-pressed="true"] { border-color: var(--c-amber); background: var(--c-wine); color: var(--c-gold); }
+:root[data-theme="k-pop"] .deck :is(.fullscreen, .vertical, .follow)[aria-pressed="true"] { background: var(--ink); color: var(--paper); box-shadow: inset 0 -3px 0 -1px var(--a, var(--toki)); }
+:root[data-theme="anisong"] .deck :is(.fullscreen, .vertical, .follow)[aria-pressed="true"] { border-color: var(--pink-dk); background: var(--pink-dk); color: white; box-shadow: none; }
 /* text mode's inverse video: the selected item */
-:root[data-theme="eurodance"] .deck :is(.fullscreen, .follow)[aria-pressed="true"] { background: var(--cyan); color: var(--bg); box-shadow: none; }
+:root[data-theme="eurodance"] .deck :is(.fullscreen, .vertical, .follow)[aria-pressed="true"] { background: var(--cyan); color: var(--bg); box-shadow: none; }
 
 /* ==========================================================================
    Geometry. Switching tracks restyles the page but never moves the player:
@@ -4740,12 +4786,14 @@ button.lyric {
     .follow { width: 9rem; height: 32px; padding: 0 .4rem; font-size: 12px; }
     /* on the narrowest phones, the bottom bar's deck has no room for a Follow button that wide beside Back to top */
     @media (width < 352px) { &.docked-bottom .follow { width: 7.5rem; font-size: 10px; } }
-    .fullscreen { width: 40px; height: 36px; }
-    &:is(.docked-side, .docked-bottom) .fullscreen { width: 36px; height: 32px; }
+    :is(.fullscreen, .vertical) { width: 40px; height: 36px; }
+    &:is(.docked-side, .docked-bottom) :is(.fullscreen, .vertical) { width: 36px; height: 32px; }
     &[data-fullscreen] .big-play { width: calc(150px * var(--grow)); }
     .time { padding: 0; }
     .version select { width: 13.5rem; max-width: none; height: 35px; }
     &.docked-side .version select { width: 100%; height: 32px; }
+    /* (the vertical player's deck wraps into rows as the side panel's does, the menu taking the rest of its row) */
+    &[data-vertical]:not(.docked-bottom) .version select { width: 100%; }
     &.docked-bottom .version select { width: 100%; height: 28px; padding-block: 0; font-size: 11px; }
     /* under the narrowest phones' little video, the longest track names fit only this small */
     @media (width < 352px) { &.docked-bottom .version select { padding-inline: 4px 2px; font-size: 10px; } }

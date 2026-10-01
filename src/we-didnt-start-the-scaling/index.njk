@@ -20,6 +20,7 @@ blurb: A riff on “We Didn’t Start the Fire”, with every line annotated, su
 {%- macro playIcon() -%}<svg class="icon icon-play" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.1 1.9 8.6 5 3.1 8.1Z"/></svg>{%- endmacro -%}
 {%- macro pauseIcon() -%}<svg class="icon icon-pause" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.6 2h1.9v6H2.6zm2.9 0h1.9v6H5.5z"/></svg>{%- endmacro -%}
 {%- macro fullscreenIcon() -%}<svg class="icon icon-fs-enter" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 3.7V1h2.7M6.3 1H9v2.7M9 6.3V9H6.3M3.7 9H1V6.3"/></svg>{%- endmacro -%}
+{%- macro verticalIcon() -%}<svg class="icon icon-vertical" viewBox="0 0 10 10" aria-hidden="true"><rect x="2.9" y=".8" width="4.2" height="8.4" rx=".7"/><path d="M4.3 7.6h1.4"/></svg>{%- endmacro -%}
 {%- macro exitFullscreenIcon() -%}<svg class="icon icon-fs-exit" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.7 1v2.7H1M9 3.7H6.3V1M6.3 9V6.3H9M1 6.3h2.7V9"/></svg>{%- endmacro -%}
 {%- macro note(line, open = false) -%}
 {%- if line.note -%}
@@ -158,6 +159,8 @@ blurb: A riff on “We Didn’t Start the Fire”, with every line annotated, su
             <input type="range" min="0" max="{{ start.dur | round }}" step="0.01" value="0" aria-label="Seek" autocomplete="off">
             <div class="ticks" aria-hidden="true"></div>
           </div>
+          {#- the vertical video: every track's video composed for a tall frame, as on phones #}
+          <button class="vertical" type="button" aria-label="Vertical video" aria-pressed="false" title="Vertical video">{{ verticalIcon() }}</button>
           {#- shown by page.mjs where the browser can put an element in fullscreen (not iPhone Safari) #}
           <button class="fullscreen" type="button" aria-label="Full screen" aria-pressed="false" hidden>{{ fullscreenIcon() }}{{ exitFullscreenIcon() }}</button>
           <label class="version">

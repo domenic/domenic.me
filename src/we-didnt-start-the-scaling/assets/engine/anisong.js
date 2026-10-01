@@ -2,7 +2,11 @@
 // core.js: canvas, time, randomness, easing, camera, shot registry, frame compositor.
 // Everything a shot draws must be a pure function of song time `t` (frames render out of order, in parallel).
 
-const W = 1920, H = 1080, TAU = Math.PI * 2;
+// The frame: 1920×1080, or 1080×1920 in the vertical video (VERT: self.VERTICAL, which the page sets before the engine's scripts run,
+// or ?vertical in a studio page). W and H are the frame's; landscape() lends code written for the 1920×1080 frame a 16:9 one.
+const VERT = !!self.VERTICAL || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('vertical'));
+let W = VERT ? 1080 : 1920, H = VERT ? 1920 : 1080;
+const TAU = Math.PI * 2;
 // In a page the canvas is #out; in a Web Worker the host sets self.OUT_CANVAS (an OffscreenCanvas) before loading the engine.
 const HAS_DOM = typeof document !== 'undefined';
 const canvas = HAS_DOM ? document.getElementById('out') : self.OUT_CANVAS;
@@ -14,7 +18,7 @@ function makeCanvas(w, h) {
   if (!HAS_DOM) return new OffscreenCanvas(w, h);
   const c = document.createElement('canvas'); c.width = w; c.height = h; return c;
 }
-// Render scale: the scene is always authored in 1920×1080 logical units; the canvas holds W·RS × H·RS pixels.
+// Render scale: the scene is authored in logical units, W × H of them; the canvas holds W·RS × H·RS pixels.
 // Set with ?scale= (studio/renderer) or setRenderScale() (embedding pages). A cache drawn at render scale adds a function that empties
 // it to SCALE_HOOKS. (Not a `typeof` check on the cache from here: the site runs a style's scripts as one, where a later script's
 // `const` isn't yet initialized while this one runs, and even `typeof` on it throws.)
@@ -107,6 +111,20 @@ const SHOTS = {};
 function line(verse, n, fn) { SHOTS[`${verse}.${n}`] = fn; }
 // section('C1', fn): the shot for a whole section window (intro, choruses, outro).
 function section(key, fn) { SHOTS[key] = fn; }
+// The vertical video's shots, composed for its 1080×1920 frame: vshot('V2.5', fn) or vshot('C1', fn), keyed by segment like line()'s
+// and section()'s. A segment without one draws its horizontal shot through landscape() (a stand-in while a style's vertical video is
+// being made).
+const VSHOTS = {};
+function vshot(key, fn) { VSHOTS[key] = fn; }
+// landscape(fn, cx, cy, zoom): draws fn(), code written for the 1920×1080 frame (W and H are 1920 and 1080 while it runs), with its
+// point (cx, cy) at the middle of the frame, scaled by zoom (by default, enough for its 1080 height to fill the vertical frame's 1920).
+function landscape(fn, cx = 960, cy = 540, zoom = 1920 / 1080) {
+  const w = W, h = H;
+  ctx.save(); ctx.translate(w / 2, h / 2); ctx.scale(zoom, zoom); ctx.translate(-cx, -cy);
+  W = 1920; H = 1080;
+  try { return fn(); } finally { W = w; H = h; ctx.restore(); }
+}
+const shotAt = key => VERT ? VSHOTS[key] ?? (SHOTS[key] && ((...a) => landscape(() => SHOTS[key](...a)))) : SHOTS[key];
 
 // ---------- per-frame state ----------
 let T = 0;           // current song time
@@ -118,7 +136,7 @@ function renderFrame(t) {
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   ctx.fillStyle = PAL.paper; ctx.fillRect(0, 0, W, H);
   const s = segAt(t);
-  const fn = s && SHOTS[s.key];
+  const fn = s && shotAt(s.key);
   ctx.save();
   try {
     if (fn) fn(clamp((t - s.start) / (s.end - s.start)), t - s.start, s.end - s.start, t, s);
@@ -1245,10 +1263,63 @@ function captionAt(t, linger = .35) {
 }
 
 // ---------- overlay switches (a shot may call these each frame) ----------
-let _noCaption = false, _noStamp = false, _captionStyle = null;
+let _noCaption = false, _noStamp = false, _captionStyle = null, _stampStyle = null;
 const hideCaption = () => { _noCaption = true; };
 const hideStamp = () => { _noStamp = true; };
-const captionStyle = s => { _captionStyle = s; };  // {color, y}
+const captionStyle = s => { _captionStyle = s; };  // {color, y}; in the vertical video also {size}, and y is the bottom strip's centre
+// (the vertical video) stampStyle({x, y, rot}): where this frame's date stamp sits, x being its right edge (default 950, 318)
+const stampStyle = s => { _stampStyle = s; };
+
+// ---------- the vertical video's caption: the line on label-maker strips, one under another ----------
+// The fewest strips the line fits on, each at most maxW wide, with the words shared out as evenly as they go (a dash stays with the
+// word before it). A word too wide for any strip gets one to itself, and the rest share as few strips as they can. Returns the
+// strips' texts, with the widest one's width as .w.
+const _stripCache = new Map();
+function captionStrips(text, size, maxW = 900) {
+  const key = `${text}|${size}|${maxW}`;
+  let out = _stripCache.get(key);
+  if (out) return out;
+  const words = [];
+  for (const w of String(text).split(/\s+/).filter(Boolean)) /^[—–-]$/.test(w) && words.length ? words[words.length - 1] += ' ' + w : words.push(w);
+  const width = s => textW(s.toUpperCase(), size, 'archivo', size * .12) + size * 1.4;
+  const n = words.length, memo = new Map();
+  // best(i, j): the least possible widest strip setting words i… on j strips, and where they break
+  const best = (i, j) => {
+    const mk = i * 8 + j;
+    if (memo.has(mk)) return memo.get(mk);
+    let r;
+    if (j === 1) r = { w: width(words.slice(i).join(' ')), cuts: [] };
+    else {
+      r = { w: Infinity, cuts: [] };
+      for (let c = i + 1; c <= n - j + 1; c++) {
+        const a = width(words.slice(i, c).join(' ')), b = best(c, j - 1), w = Math.max(a, b.w);
+        if (w < r.w - .5) r = { w, cuts: [c, ...b.cuts] };
+      }
+    }
+    memo.set(mk, r);
+    return r;
+  };
+  // the fewest strips that fit; failing that, the fewest that come as narrow as any number of strips can
+  let pick = null;
+  for (let k = 1; k <= Math.min(4, n); k++) {
+    const b = best(0, k);
+    if (b.w <= maxW) { pick = { k, ...b }; break; }
+    if (!pick || b.w < pick.w - .5) pick = { k, ...b };
+  }
+  const cuts = [0, ...pick.cuts, n];
+  out = cuts.slice(0, -1).map((c, i) => words.slice(c, cuts[i + 1]).join(' '));
+  out.w = pick.w;
+  _stripCache.set(key, out);
+  return out;
+}
+// The caption's layout: its strips and size. 54 units, or for a line that would take four strips at 54 the largest size that sets
+// it on three; and smaller, down to 44, for a word too wide for a strip.
+function captionFit(text, size) {
+  if (size === undefined) for (size = 54; size > 44 && captionStrips(text, size).length > 3; size--);
+  let strips = captionStrips(text, size);
+  if (strips.w > 900) { size = Math.max(44, Math.floor(size * 900 / strips.w)); strips = captionStrips(text, size); }
+  return { size, strips, w: strips.w };
+}
 
 // ---------- date ticker ----------
 // Each verse line carries a date string ("JUN 2017", "NOV 17 2023", "SEP 12 2026"). Choruses keep the last date.
@@ -1262,7 +1333,9 @@ function dateAt(t) {
 let _grain = null;
 function buildGrain() {
   _grain = []; _grain.rs = RS;
-  const gw = Math.round(960 * clamp(RS, .5, 2)), gh = Math.round(540 * clamp(RS, .5, 2));
+  // (the vertical video's grain is built upright, so that it isn't stretched)
+  const gw = Math.round((VERT ? 540 : 960) * clamp(RS, .5, 2)), gh = Math.round((VERT ? 960 : 540) * clamp(RS, .5, 2));
+  const gl = Math.max(gw, gh);
   for (let v = 0; v < 3; v++) {
     const c = makeCanvas(gw, gh);
     const g = c.getContext('2d'), img = g.createImageData(gw, gh), d = img.data;
@@ -1273,7 +1346,7 @@ function buildGrain() {
     }
     g.putImageData(img, 0, 0);
     // photocopy edge darkening
-    const vg = g.createRadialGradient(gw / 2, gh / 2, gw * .26, gw / 2, gh / 2, gw * .65);
+    const vg = g.createRadialGradient(gw / 2, gh / 2, gl * .26, gw / 2, gh / 2, gl * .65);
     vg.addColorStop(0, 'rgb(255 255 255 / 0)'); vg.addColorStop(1, 'rgb(150 140 130 / .55)');
     g.fillStyle = vg; g.fillRect(0, 0, gw, gh);
     _grain.push(c);
@@ -1283,7 +1356,21 @@ function buildGrain() {
 OVERLAYS.push((t, s) => {
   // caption
   const ln = lineAt(t);
-  if (ln && !_noCaption) {
+  if (ln && !_noCaption && VERT) {
+    // the vertical video: the line on strips of tape stacked up from y (the bottom strip's centre), each stuck on a little askew,
+    // the second and third a beat of a hand behind the first; the choruses' and the outro's tape is red
+    const st = _captionStyle || {};
+    const text = ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — ');
+    const { size, strips } = captionFit(text, st.size), age = t - ln.start, gap = size * 1.6 + 14;
+    strips.forEach((s, i) => {
+      const k = easeOut(clamp((age - i * .06) / .12)), j = strips.length - 1 - i;
+      if (k <= 0) return;
+      const r = hash(ln.start * 100 + i * 7);
+      ctx.globalAlpha = k;
+      dymo(s, W / 2 + (strips.length > 1 ? (i % 2 ? 1 : -1) * size * .35 : 0), (st.y ?? 1552) - j * gap + (1 - k) * 24, size, st.color ?? (ln.sec[0] === 'C' || ln.sec === 'outro' ? PAL.red : PAL.ink), { rot: (r - .5) * .045 });
+    });
+    ctx.globalAlpha = 1;
+  } else if (ln && !_noCaption) {
     const st = _captionStyle || {};
     const age = t - ln.start, k = easeOut(clamp(age / .12));
     const size = ln.text.length > 34 ? 30 : 36;
@@ -1291,15 +1378,17 @@ OVERLAYS.push((t, s) => {
     dymo(ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — '), W / 2, (st.y ?? 1022) + (1 - k) * 20, size, st.color ?? (ln.sec[0] === 'C' ? PAL.red : PAL.ink), { rot: (hash(ln.start * 100) - .5) * .03 });
     ctx.globalAlpha = 1;
   }
-  // date stamp
+  // date stamp (the vertical video's: top right of the frame's safe area, or where stampStyle() puts it)
   const d = dateAt(t);
   if (d && !_noStamp) {
-    const k = clamp(d.age / .18), rot = -.08 + (hstr(d.text) - .5) * .06;
+    const k = clamp(d.age / .18), sv = _stampStyle || {}, rot = sv.rot ?? -.08 + (hstr(d.text) - .5) * .06;
+    const ss = VERT ? 50 : 46, tw = textW(d.text, ss, 'mono', VERT ? ss * .061 : 2.8);
+    const sx = VERT ? (sv.x ?? 950) - tw / 2 - 40 : 1690, sy = VERT ? sv.y ?? 318 : 92;
     // a torn paper tag behind the stamp keeps it legible on dark scenes
     ctx.save(); ctx.globalAlpha = .9 * clamp(k * 3);
-    card(1690, 92, textW(d.text, 46, 'mono', 2.8) + 70, 96, PAL.paper, rot, { torn: 2.5, seed: 1301, shadow: [5, 6] });
+    card(sx, sy, tw + 70 * ss / 46, 96 * ss / 46, PAL.paper, rot, { torn: 2.5, seed: 1301, shadow: [5, 6] });
     ctx.restore();
-    stamp(d.text, 1690, 92, 46, PAL.red, rot, { pop: k, font: 'mono' });
+    stamp(d.text, sx, sy, ss, PAL.red, rot, { pop: k, font: 'mono' });
   }
   // grain
   if (!_grain || _grain.rs !== RS) buildGrain();
@@ -1307,7 +1396,7 @@ OVERLAYS.push((t, s) => {
   const g = _grain[_boil % 3], ox = (hash(_boil) - .5) * 40, oy = (hash(_boil + 5) - .5) * 30;
   ctx.drawImage(g, -30 + ox, -20 + oy, W + 60, H + 40);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-  _noCaption = false; _noStamp = false; _captionStyle = null;
+  _noCaption = false; _noStamp = false; _captionStyle = null; _stampStyle = null;
 });
 
 ;
@@ -1316,7 +1405,11 @@ OVERLAYS.push((t, s) => {
 // the way real anime openings animate keyframes: camera moves over the still, parallax between a background plate and character
 // cut-outs, swapped patches (blinks), beat-synced cuts and flashes, shakes, speed lines, light leaks, flares and petals.
 // Everything here is a pure function of song time. The zine's caption, date stamp and grain overlays are replaced by this style's.
+// The vertical video (VERT, 1080×1920) shares all of it: its shots are vshot()s in the chapters (styles/anime/VERTICAL.md), its
+// pictures are the same stills plus its own tall ones (vt_*), and the overlays lay themselves out for whichever frame is drawing.
 OVERLAYS.length = 0;
+// TALL(): the frame being drawn is the vertical one (false inside landscape(), which lends code a 1920×1080 frame)
+const TALL = () => W < H;
 
 // =====================================================================================================
 // PALETTE (for the drawn effects and text; the pictures bring their own colours)
@@ -1335,155 +1428,268 @@ const AP = {
 // [x, y, w, h] of its 1/16-size stand-in in img/lowres.webp.
 // <stills: generated by tools/stills.py build>
 const STILLS = {
-  "intro_sky": {"layer": "plate", "w": 1280, "h": 1280, "lo": [0, 0, 80, 80]},
-  "intro_eyes": {"layer": "full", "w": 1536, "h": 864, "lo": [928, 0, 96, 54]},
-  "intro_eyes.closed": {"layer": "patch", "of": "intro_eyes", "x": 310, "y": 310, "w": 935, "h": 375, "lo": [659, 698, 58, 23]},
-  "intro_eyes.half": {"layer": "patch", "of": "intro_eyes", "x": 310, "y": 310, "w": 935, "h": 375, "lo": [719, 698, 58, 23]},
-  "intro_wind": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 82, 96, 54]},
-  "intro_wind.laugh": {"layer": "patch", "of": "intro_wind", "x": 965, "y": 202, "w": 275, "h": 140, "lo": [957, 698, 17, 9]},
-  "card_akari": {"layer": "cutout", "w": 785, "h": 900, "lo": [343, 0, 49, 56]},
-  "card_ren": {"layer": "cutout", "w": 579, "h": 900, "lo": [394, 0, 36, 56]},
-  "card_kiri": {"layer": "cutout", "w": 632, "h": 900, "lo": [432, 0, 40, 56]},
-  "clawd_jump": {"layer": "cutout", "w": 740, "h": 501, "lo": [430, 698, 46, 31]},
-  "clawd_stand": {"layer": "cutout", "w": 733, "h": 513, "lo": [335, 698, 46, 32]},
-  "keyvisual": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 82, 96, 54]},
-  "club_room": {"layer": "plate", "w": 1536, "h": 864, "lo": [196, 82, 96, 54]},
-  "v1_1_paper": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 82, 96, 54]},
-  "v1_1_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 82, 96, 54]},
-  "v1_2_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 82, 96, 54]},
-  "v1_3_gwern": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 82, 96, 54]},
-  "v1_3_tower": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 82, 96, 54]},
-  "v1_4_clawd": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 82, 96, 54]},
-  "v1_5_asleep": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 82, 96, 54]},
-  "v1_5_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 138, 96, 54]},
-  "v1_6_sydney": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 138, 96, 54]},
-  "v1_7_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 138, 96, 54]},
-  "v1_7_city": {"layer": "plate", "w": 1536, "h": 864, "lo": [294, 138, 96, 54]},
-  "v1_8_eliezer": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 138, 96, 54]},
-  "v1_8_blown": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 138, 96, 54]},
-  "v1_9_sam": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 138, 96, 54]},
-  "v1_9_bench": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 138, 96, 54]},
-  "v1_10_chaos": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 138, 96, 54]},
-  "v1_10_board": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 138, 96, 54]},
-  "v1_11_ilya": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 194, 96, 54]},
-  "v1_11_peek": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 194, 96, 54]},
-  "v1_12_book": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 194, 96, 54]},
-  "v1_13_strawberry": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 194, 96, 54]},
-  "v1_14_gavin": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 194, 96, 54]},
-  "v1_15_geoff": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 194, 96, 54]},
-  "v1_15_salute": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 194, 96, 54]},
-  "v1_16_demis": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 194, 96, 54]},
-  "v1_16_cheer": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 194, 96, 54]},
-  "c1_door": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 194, 96, 54]},
-  "run_akari": {"layer": "cutout", "w": 713, "h": 900, "lo": [474, 0, 45, 56]},
-  "run_ren": {"layer": "cutout", "w": 642, "h": 900, "lo": [521, 0, 40, 56]},
-  "run_kiri": {"layer": "cutout", "w": 765, "h": 900, "lo": [563, 0, 48, 56]},
-  "c1_lookup": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 250, 96, 54]},
-  "v2_1_whale": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 250, 96, 54]},
-  "v2_1_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 250, 96, 54]},
-  "v2_2_gate": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 250, 96, 54]},
-  "v2_2_props": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 250, 96, 54]},
-  "v2_3_accept": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 250, 96, 54]},
-  "v2_3_wait": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 250, 96, 54]},
-  "v2_4_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 250, 96, 54]},
-  "v2_4_hub": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 250, 96, 54]},
-  "v2_5_zuck": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 250, 96, 54]},
-  "v2_5_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 306, 96, 54]},
-  "v2_6_shop": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 306, 96, 54]},
-  "v2_7_robot": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 306, 96, 54]},
-  "v2_7_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 306, 96, 54]},
-  "v2_8_podium": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 306, 96, 54]},
-  "v2_9_train": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 306, 96, 54]},
-  "v2_9_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 306, 96, 54]},
-  "v2_10_banana": {"layer": "cutout", "w": 464, "h": 802, "lo": [98, 698, 29, 50]},
-  "v2_11_clawd": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 306, 96, 54]},
-  "v2_11_line": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 306, 96, 54]},
-  "v2_12_eliezer": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 306, 96, 54]},
-  "v2_12_gasp": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 362, 96, 54]},
-  "v2_13_robot": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 362, 96, 54]},
-  "v2_14_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 362, 96, 54]},
-  "v2_15_yann": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 362, 96, 54]},
-  "v2_15_cube": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 362, 96, 54]},
-  "v2_16_page": {"layer": "full", "w": 1280, "h": 720, "lo": [129, 698, 80, 45]},
-  "v2_16_bubble": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 362, 96, 54]},
-  "c2_walk": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 362, 96, 54]},
-  "c2_goldfish": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 362, 96, 54]},
-  "c2_fish": {"layer": "cutout", "w": 447, "h": 360, "lo": [779, 698, 28, 22]},
-  "c2_watch": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 362, 96, 54]},
-  "c2_jar": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 362, 96, 54]},
-  "v3_1_window": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 418, 96, 54]},
-  "v3_agent": {"layer": "cutout", "w": 457, "h": 386, "lo": [628, 698, 29, 24]},
-  "v3_2_lobster": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 418, 96, 54]},
-  "v3_3_sandbox": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 418, 96, 54]},
-  "v3_3_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 418, 96, 54]},
-  "v3_4_bench": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 418, 96, 54]},
-  "v3_5_stage": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 418, 96, 54]},
-  "v3_5_clawd": {"layer": "cutout", "w": 659, "h": 481, "lo": [478, 698, 41, 30]},
-  "v3_5_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 418, 96, 54]},
-  "v3_club_autumn": {"layer": "plate", "w": 1536, "h": 864, "lo": [686, 418, 96, 54]},
-  "v3_7_clawd": {"layer": "cutout", "w": 938, "h": 459, "lo": [567, 698, 59, 29]},
-  "v3_8_cheer": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 418, 96, 54]},
-  "v3_9_huggy": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 418, 96, 54]},
-  "v3_9_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 474, 96, 54]},
-  "v3_9_lineup": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 474, 96, 54]},
-  "v3_agent_sweater": {"layer": "cutout", "w": 487, "h": 526, "lo": [255, 698, 30, 33]},
-  "v3_12_trophies": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 474, 96, 54]},
-  "v3_13_bag": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 474, 96, 54]},
-  "v3_15_clawd": {"layer": "cutout", "w": 736, "h": 522, "lo": [287, 698, 46, 33]},
-  "v3_15_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 474, 96, 54]},
-  "v3_16_hood": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 474, 96, 54]},
-  "v3_16_reveal": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 474, 96, 54]},
-  "v3_10_sam": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 474, 96, 54]},
-  "v3_11_noam": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 474, 96, 54]},
-  "v3_11_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 474, 96, 54]},
-  "v3_14_jeff": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 530, 96, 54]},
-  "c3_sunset": {"layer": "plate", "w": 1280, "h": 1280, "lo": [82, 0, 80, 80]},
-  "c3_hands": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 530, 96, 54]},
-  "v4_3_jensen": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 530, 96, 54]},
-  "v4_4_greg": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 530, 96, 54]},
-  "v4_5_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 530, 96, 54]},
-  "v4_5_boom": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 530, 96, 54]},
-  "v4_7_dario": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 530, 96, 54]},
-  "v4_10_pew": {"layer": "plate", "w": 1536, "h": 864, "lo": [686, 530, 96, 54]},
-  "v4_10_bernie": {"layer": "cutout", "w": 643, "h": 900, "lo": [613, 0, 40, 56]},
-  "v4_10_bannon": {"layer": "cutout", "w": 461, "h": 900, "lo": [655, 0, 29, 56]},
-  "v4_16_door": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 530, 96, 54]},
-  "v4_16_turn": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 530, 96, 54]},
-  "v4_1_board": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 586, 96, 54]},
-  "v4_2_slot": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 586, 96, 54]},
-  "v4_2_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 586, 96, 54]},
-  "v4_8_sam": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 586, 96, 54]},
-  "v4_8_elon": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 586, 96, 54]},
-  "v4_9_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 586, 96, 54]},
-  "v4_9_road": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 586, 96, 54]},
-  "v4_9_tcut": {"layer": "cutout", "w": 904, "h": 900, "lo": [686, 0, 56, 56]},
-  "v4_9_car": {"layer": "cutout", "w": 466, "h": 283, "lo": [907, 698, 29, 18]},
-  "v4_6_finish": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 586, 96, 54]},
-  "v4_11_bench": {"layer": "plate", "w": 1536, "h": 864, "lo": [784, 586, 96, 54]},
-  "v4_11_clawd": {"layer": "cutout", "w": 696, "h": 483, "lo": [521, 698, 44, 30]},
-  "v4_12_map": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 586, 96, 54]},
-  "v4_12_phew": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 642, 96, 54]},
-  "v4_13_trump": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 642, 96, 54]},
-  "v4_14_clawd": {"layer": "cutout", "w": 715, "h": 513, "lo": [383, 698, 45, 32]},
-  "v4_3_huggy": {"layer": "cutout", "w": 665, "h": 636, "lo": [211, 698, 42, 40]},
-  "v4_15_gifts": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 642, 96, 54]},
-  "v4_15_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 642, 96, 54]},
-  "c4_door": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 642, 96, 54]},
-  "c4_sky": {"layer": "plate", "w": 1280, "h": 1280, "lo": [164, 0, 80, 80]},
-  "c4_run_akari.pass2": {"layer": "cutout", "of": "run_akari", "w": 713, "h": 926, "ox": 0, "oy": 0, "lo": [296, 0, 45, 58]},
-  "c4_run_akari.air2": {"layer": "cutout", "of": "run_akari", "w": 713, "h": 900, "ox": 0, "oy": 0, "lo": [744, 0, 45, 56]},
-  "c4_run_ren.pass2": {"layer": "cutout", "of": "run_ren", "w": 642, "h": 900, "ox": 0, "oy": 0, "lo": [791, 0, 40, 56]},
-  "c4_run_ren.air2": {"layer": "cutout", "of": "run_ren", "w": 690, "h": 900, "ox": 0, "oy": 0, "lo": [833, 0, 43, 56]},
-  "c4_run_kiri.pass": {"layer": "cutout", "of": "run_kiri", "w": 769, "h": 939, "ox": -4, "oy": 0, "lo": [246, 0, 48, 59]},
-  "c4_run_kiri.air": {"layer": "cutout", "of": "run_kiri", "w": 765, "h": 900, "ox": 0, "oy": 0, "lo": [878, 0, 48, 56]},
-  "c4_crouch": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 642, 96, 54]},
-  "c4_crouch.calm3": {"layer": "patch", "of": "c4_crouch", "x": 571, "y": 231, "w": 278, "h": 239, "lo": [938, 698, 17, 15]},
-  "c4_racecu": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 642, 96, 54]},
-  "c4_race": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 642, 96, 54]},
-  "c4_race.legs2": {"layer": "patch", "of": "c4_race", "x": 0, "y": 450, "w": 1536, "h": 360, "lo": [809, 698, 96, 22]},
-  "c4_group": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 642, 96, 54]},
-  "c4_bye": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 642, 96, 54]},
-  "c4_night": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 698, 96, 54]},
+  "intro_sky": {"layer": "plate", "w": 1280, "h": 1280, "lo": [43, 601, 80, 80]},
+  "intro_eyes": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 688, 96, 54]},
+  "intro_eyes.closed": {"layer": "patch", "of": "intro_eyes", "x": 310, "y": 310, "w": 935, "h": 375, "lo": [757, 1304, 58, 23]},
+  "intro_eyes.half": {"layer": "patch", "of": "intro_eyes", "x": 310, "y": 310, "w": 935, "h": 375, "lo": [817, 1304, 58, 23]},
+  "intro_wind": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 688, 96, 54]},
+  "intro_wind.laugh": {"layer": "patch", "of": "intro_wind", "x": 965, "y": 202, "w": 275, "h": 140, "lo": [178, 1360, 17, 9]},
+  "card_akari": {"layer": "cutout", "w": 785, "h": 900, "lo": [386, 601, 49, 56]},
+  "card_ren": {"layer": "cutout", "w": 579, "h": 900, "lo": [437, 601, 36, 56]},
+  "card_kiri": {"layer": "cutout", "w": 632, "h": 900, "lo": [475, 601, 40, 56]},
+  "clawd_jump": {"layer": "cutout", "w": 740, "h": 501, "lo": [528, 1304, 46, 31]},
+  "clawd_stand": {"layer": "cutout", "w": 733, "h": 513, "lo": [433, 1304, 46, 32]},
+  "keyvisual": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 688, 96, 54]},
+  "club_room": {"layer": "plate", "w": 1536, "h": 864, "lo": [294, 688, 96, 54]},
+  "v1_1_paper": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 688, 96, 54]},
+  "v1_1_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 688, 96, 54]},
+  "v1_2_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 688, 96, 54]},
+  "v1_3_gwern": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 688, 96, 54]},
+  "v1_3_tower": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 688, 96, 54]},
+  "v1_4_clawd": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 688, 96, 54]},
+  "v1_5_asleep": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 744, 96, 54]},
+  "v1_5_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 744, 96, 54]},
+  "v1_6_sydney": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 744, 96, 54]},
+  "v1_7_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 744, 96, 54]},
+  "v1_7_city": {"layer": "plate", "w": 1536, "h": 864, "lo": [392, 744, 96, 54]},
+  "v1_8_eliezer": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 744, 96, 54]},
+  "v1_8_blown": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 744, 96, 54]},
+  "v1_9_sam": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 744, 96, 54]},
+  "v1_9_bench": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 744, 96, 54]},
+  "v1_10_chaos": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 744, 96, 54]},
+  "v1_10_board": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 800, 96, 54]},
+  "v1_11_ilya": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 800, 96, 54]},
+  "v1_11_peek": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 800, 96, 54]},
+  "v1_12_book": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 800, 96, 54]},
+  "v1_13_strawberry": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 800, 96, 54]},
+  "v1_14_gavin": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 800, 96, 54]},
+  "v1_15_geoff": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 800, 96, 54]},
+  "v1_15_salute": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 800, 96, 54]},
+  "v1_16_demis": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 800, 96, 54]},
+  "v1_16_cheer": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 800, 96, 54]},
+  "c1_door": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 856, 96, 54]},
+  "run_akari": {"layer": "cutout", "w": 713, "h": 900, "lo": [517, 601, 45, 56]},
+  "run_ren": {"layer": "cutout", "w": 642, "h": 900, "lo": [564, 601, 40, 56]},
+  "run_kiri": {"layer": "cutout", "w": 765, "h": 900, "lo": [606, 601, 48, 56]},
+  "c1_lookup": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 856, 96, 54]},
+  "v2_1_whale": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 856, 96, 54]},
+  "v2_1_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 856, 96, 54]},
+  "v2_2_gate": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 856, 96, 54]},
+  "v2_2_props": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 856, 96, 54]},
+  "v2_3_accept": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 856, 96, 54]},
+  "v2_3_wait": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 856, 96, 54]},
+  "v2_4_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 856, 96, 54]},
+  "v2_4_hub": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 856, 96, 54]},
+  "v2_5_zuck": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 912, 96, 54]},
+  "v2_5_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 912, 96, 54]},
+  "v2_6_shop": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 912, 96, 54]},
+  "v2_7_robot": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 912, 96, 54]},
+  "v2_7_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 912, 96, 54]},
+  "v2_8_podium": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 912, 96, 54]},
+  "v2_9_train": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 912, 96, 54]},
+  "v2_9_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 912, 96, 54]},
+  "v2_10_banana": {"layer": "cutout", "w": 464, "h": 802, "lo": [196, 1304, 29, 50]},
+  "v2_11_clawd": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 912, 96, 54]},
+  "v2_11_line": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 912, 96, 54]},
+  "v2_12_eliezer": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 968, 96, 54]},
+  "v2_12_gasp": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 968, 96, 54]},
+  "v2_13_robot": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 968, 96, 54]},
+  "v2_14_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 968, 96, 54]},
+  "v2_15_yann": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 968, 96, 54]},
+  "v2_15_cube": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 968, 96, 54]},
+  "v2_16_page": {"layer": "full", "w": 1280, "h": 720, "lo": [227, 1304, 80, 45]},
+  "v2_16_bubble": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 968, 96, 54]},
+  "c2_walk": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 968, 96, 54]},
+  "c2_goldfish": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 968, 96, 54]},
+  "c2_fish": {"layer": "cutout", "w": 447, "h": 360, "lo": [877, 1304, 28, 22]},
+  "c2_watch": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 968, 96, 54]},
+  "c2_jar": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 1024, 96, 54]},
+  "v3_1_window": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 1024, 96, 54]},
+  "v3_agent": {"layer": "cutout", "w": 457, "h": 386, "lo": [726, 1304, 29, 24]},
+  "v3_2_lobster": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 1024, 96, 54]},
+  "v3_3_sandbox": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 1024, 96, 54]},
+  "v3_3_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 1024, 96, 54]},
+  "v3_4_bench": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 1024, 96, 54]},
+  "v3_5_stage": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 1024, 96, 54]},
+  "v3_5_clawd": {"layer": "cutout", "w": 659, "h": 481, "lo": [576, 1304, 41, 30]},
+  "v3_5_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 1024, 96, 54]},
+  "v3_club_autumn": {"layer": "plate", "w": 1536, "h": 864, "lo": [784, 1024, 96, 54]},
+  "v3_7_clawd": {"layer": "cutout", "w": 938, "h": 459, "lo": [665, 1304, 59, 29]},
+  "v3_8_cheer": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 1024, 96, 54]},
+  "v3_9_huggy": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 1080, 96, 54]},
+  "v3_9_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 1080, 96, 54]},
+  "v3_9_lineup": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 1080, 96, 54]},
+  "v3_agent_sweater": {"layer": "cutout", "w": 487, "h": 526, "lo": [353, 1304, 30, 33]},
+  "v3_12_trophies": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 1080, 96, 54]},
+  "v3_13_bag": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 1080, 96, 54]},
+  "v3_15_clawd": {"layer": "cutout", "w": 736, "h": 522, "lo": [385, 1304, 46, 33]},
+  "v3_15_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 1080, 96, 54]},
+  "v3_16_hood": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 1080, 96, 54]},
+  "v3_16_reveal": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 1080, 96, 54]},
+  "v3_10_sam": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 1080, 96, 54]},
+  "v3_11_noam": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 1080, 96, 54]},
+  "v3_11_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 1136, 96, 54]},
+  "v3_14_jeff": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 1136, 96, 54]},
+  "c3_sunset": {"layer": "plate", "w": 1280, "h": 1280, "lo": [125, 601, 80, 80]},
+  "c3_hands": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 1136, 96, 54]},
+  "v4_3_jensen": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 1136, 96, 54]},
+  "v4_4_greg": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 1136, 96, 54]},
+  "v4_5_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 1136, 96, 54]},
+  "v4_5_boom": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 1136, 96, 54]},
+  "v4_7_dario": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 1136, 96, 54]},
+  "v4_10_pew": {"layer": "plate", "w": 1536, "h": 864, "lo": [784, 1136, 96, 54]},
+  "v4_10_bernie": {"layer": "cutout", "w": 643, "h": 900, "lo": [656, 601, 40, 56]},
+  "v4_10_bannon": {"layer": "cutout", "w": 461, "h": 900, "lo": [698, 601, 29, 56]},
+  "v4_16_door": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 1136, 96, 54]},
+  "v4_16_turn": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 1192, 96, 54]},
+  "v4_1_board": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 1192, 96, 54]},
+  "v4_2_slot": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 1192, 96, 54]},
+  "v4_2_ren": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 1192, 96, 54]},
+  "v4_8_sam": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 1192, 96, 54]},
+  "v4_8_elon": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 1192, 96, 54]},
+  "v4_9_akari": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 1192, 96, 54]},
+  "v4_9_road": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 1192, 96, 54]},
+  "v4_9_tcut": {"layer": "cutout", "w": 904, "h": 900, "lo": [729, 601, 56, 56]},
+  "v4_9_car": {"layer": "cutout", "w": 466, "h": 283, "lo": [110, 1360, 29, 18]},
+  "v4_6_finish": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 1192, 96, 54]},
+  "v4_11_bench": {"layer": "plate", "w": 1536, "h": 864, "lo": [882, 1192, 96, 54]},
+  "v4_11_clawd": {"layer": "cutout", "w": 696, "h": 483, "lo": [619, 1304, 44, 30]},
+  "v4_12_map": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 1248, 96, 54]},
+  "v4_12_phew": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 1248, 96, 54]},
+  "v4_13_trump": {"layer": "full", "w": 1536, "h": 864, "lo": [196, 1248, 96, 54]},
+  "v4_14_clawd": {"layer": "cutout", "w": 715, "h": 513, "lo": [481, 1304, 45, 32]},
+  "v4_3_huggy": {"layer": "cutout", "w": 665, "h": 636, "lo": [309, 1304, 42, 40]},
+  "v4_15_gifts": {"layer": "full", "w": 1536, "h": 864, "lo": [294, 1248, 96, 54]},
+  "v4_15_kiri": {"layer": "full", "w": 1536, "h": 864, "lo": [392, 1248, 96, 54]},
+  "c4_door": {"layer": "full", "w": 1536, "h": 864, "lo": [490, 1248, 96, 54]},
+  "c4_sky": {"layer": "plate", "w": 1280, "h": 1280, "lo": [207, 601, 80, 80]},
+  "c4_run_akari.pass2": {"layer": "cutout", "of": "run_akari", "w": 713, "h": 926, "ox": 0, "oy": 0, "lo": [339, 601, 45, 58]},
+  "c4_run_akari.air2": {"layer": "cutout", "of": "run_akari", "w": 713, "h": 900, "ox": 0, "oy": 0, "lo": [787, 601, 45, 56]},
+  "c4_run_ren.pass2": {"layer": "cutout", "of": "run_ren", "w": 642, "h": 900, "ox": 0, "oy": 0, "lo": [834, 601, 40, 56]},
+  "c4_run_ren.air2": {"layer": "cutout", "of": "run_ren", "w": 690, "h": 900, "ox": 0, "oy": 0, "lo": [876, 601, 43, 56]},
+  "c4_run_kiri.pass": {"layer": "cutout", "of": "run_kiri", "w": 769, "h": 939, "ox": -4, "oy": 0, "lo": [289, 601, 48, 59]},
+  "c4_run_kiri.air": {"layer": "cutout", "of": "run_kiri", "w": 765, "h": 900, "ox": 0, "oy": 0, "lo": [921, 601, 48, 56]},
+  "c4_crouch": {"layer": "full", "w": 1536, "h": 864, "lo": [588, 1248, 96, 54]},
+  "c4_crouch.calm3": {"layer": "patch", "of": "c4_crouch", "x": 571, "y": 231, "w": 278, "h": 239, "lo": [141, 1360, 17, 15]},
+  "c4_racecu": {"layer": "full", "w": 1536, "h": 864, "lo": [686, 1248, 96, 54]},
+  "c4_race": {"layer": "full", "w": 1536, "h": 864, "lo": [784, 1248, 96, 54]},
+  "c4_race.legs2": {"layer": "patch", "of": "c4_race", "x": 0, "y": 450, "w": 1536, "h": 360, "lo": [907, 1304, 96, 22]},
+  "c4_group": {"layer": "full", "w": 1536, "h": 864, "lo": [882, 1248, 96, 54]},
+  "c4_bye": {"layer": "full", "w": 1536, "h": 864, "lo": [0, 1304, 96, 54]},
+  "c4_night": {"layer": "full", "w": 1536, "h": 864, "lo": [98, 1304, 96, 54]},
+  "vt_intro_sky": {"layer": "plate", "w": 768, "h": 1728, "lo": [0, 0, 48, 108]},
+  "vt_intro_eyes": {"layer": "full", "w": 864, "h": 1536, "lo": [168, 110, 54, 96]},
+  "vt_intro_eyes.closed": {"layer": "patch", "of": "vt_intro_eyes", "x": 10, "y": 610, "w": 850, "h": 345, "lo": [0, 1360, 53, 22]},
+  "vt_intro_eyes.half": {"layer": "patch", "of": "vt_intro_eyes", "x": 10, "y": 610, "w": 850, "h": 345, "lo": [55, 1360, 53, 22]},
+  "vt_intro_wind": {"layer": "full", "w": 864, "h": 1536, "lo": [224, 110, 54, 96]},
+  "vt_intro_wind.laugh": {"layer": "patch", "of": "vt_intro_wind", "x": 350, "y": 750, "w": 255, "h": 170, "lo": [160, 1360, 16, 11]},
+  "vt_v1_1_paper": {"layer": "full", "w": 864, "h": 1536, "lo": [280, 110, 54, 96]},
+  "vt_v1_1_akari": {"layer": "full", "w": 864, "h": 1536, "lo": [336, 110, 54, 96]},
+  "vt_v1_2_kiri": {"layer": "full", "w": 864, "h": 1536, "lo": [392, 110, 54, 96]},
+  "vt_v1_3_gwern": {"layer": "full", "w": 864, "h": 1536, "lo": [448, 110, 54, 96]},
+  "vt_v1_3_tower": {"layer": "full", "w": 768, "h": 1728, "lo": [50, 0, 48, 108]},
+  "vt_v1_4_clawd": {"layer": "full", "w": 864, "h": 1536, "lo": [504, 110, 54, 96]},
+  "vt_v1_5_asleep": {"layer": "full", "w": 864, "h": 1536, "lo": [560, 110, 54, 96]},
+  "vt_v1_5_ren": {"layer": "full", "w": 864, "h": 1536, "lo": [616, 110, 54, 96]},
+  "vt_v1_6_sydney": {"layer": "full", "w": 864, "h": 1536, "lo": [672, 110, 54, 96]},
+  "vt_v1_7_kiri": {"layer": "full", "w": 864, "h": 1536, "lo": [728, 110, 54, 96]},
+  "vt_v1_8_eliezer": {"layer": "full", "w": 864, "h": 1548, "lo": [200, 0, 54, 97]},
+  "vt_v1_8_blown": {"layer": "full", "w": 864, "h": 1536, "lo": [784, 110, 54, 96]},
+  "vt_v1_9_sam": {"layer": "full", "w": 864, "h": 1536, "lo": [840, 110, 54, 96]},
+  "vt_v1_10_chaos": {"layer": "full", "w": 864, "h": 1536, "lo": [896, 110, 54, 96]},
+  "vt_v1_11_ilya": {"layer": "full", "w": 864, "h": 1536, "lo": [952, 110, 54, 96]},
+  "vt_v1_11_peek": {"layer": "full", "w": 864, "h": 1548, "lo": [256, 0, 54, 97]},
+  "vt_v1_12_book": {"layer": "full", "w": 864, "h": 1548, "lo": [312, 0, 54, 97]},
+  "vt_v1_13_strawberry": {"layer": "full", "w": 864, "h": 1536, "lo": [0, 209, 54, 96]},
+  "vt_v1_15_geoff": {"layer": "full", "w": 864, "h": 1548, "lo": [368, 0, 54, 97]},
+  "vt_v1_16_demis": {"layer": "full", "w": 864, "h": 1536, "lo": [56, 209, 54, 96]},
+  "vt_v1_16_cheer": {"layer": "full", "w": 864, "h": 1536, "lo": [112, 209, 54, 96]},
+  "vt_c1_door": {"layer": "full", "w": 864, "h": 1536, "lo": [168, 209, 54, 96]},
+  "vt_c1_lookup": {"layer": "full", "w": 864, "h": 1536, "lo": [224, 209, 54, 96]},
+  "vt_card_akari": {"layer": "cutout", "w": 785, "h": 1369, "lo": [896, 503, 49, 86]},
+  "vt_card_ren": {"layer": "cutout", "w": 579, "h": 1354, "lo": [947, 503, 36, 85]},
+  "vt_card_kiri": {"layer": "cutout", "w": 654, "h": 1356, "lo": [0, 601, 41, 85]},
+  "vt_v2_1_whale": {"layer": "full", "w": 864, "h": 1536, "lo": [280, 209, 54, 96]},
+  "vt_v2_1_ren": {"layer": "full", "w": 864, "h": 1536, "lo": [336, 209, 54, 96]},
+  "vt_v2_2_gate": {"layer": "full", "w": 864, "h": 1536, "lo": [392, 209, 54, 96]},
+  "vt_v2_2_props": {"layer": "full", "w": 864, "h": 1536, "lo": [448, 209, 54, 96]},
+  "vt_v2_3_accept": {"layer": "full", "w": 864, "h": 1536, "lo": [504, 209, 54, 96]},
+  "vt_v2_3_wait": {"layer": "full", "w": 864, "h": 1536, "lo": [560, 209, 54, 96]},
+  "vt_v2_4_kiri": {"layer": "full", "w": 864, "h": 1536, "lo": [616, 209, 54, 96]},
+  "vt_v2_4_hub": {"layer": "full", "w": 864, "h": 1536, "lo": [672, 209, 54, 96]},
+  "vt_v2_5_zuck": {"layer": "full", "w": 864, "h": 1548, "lo": [424, 0, 54, 97]},
+  "vt_v2_5_ren": {"layer": "full", "w": 864, "h": 1536, "lo": [728, 209, 54, 96]},
+  "vt_v2_6_shop": {"layer": "full", "w": 864, "h": 1536, "lo": [784, 209, 54, 96]},
+  "vt_v2_7_robot": {"layer": "full", "w": 864, "h": 1536, "lo": [840, 209, 54, 96]},
+  "vt_v2_7_akari": {"layer": "full", "w": 864, "h": 1536, "lo": [896, 209, 54, 96]},
+  "vt_v2_8_podium": {"layer": "full", "w": 864, "h": 1536, "lo": [952, 209, 54, 96]},
+  "vt_v2_9_train": {"layer": "full", "w": 864, "h": 1536, "lo": [0, 307, 54, 96]},
+  "vt_v2_9_akari": {"layer": "full", "w": 864, "h": 1536, "lo": [56, 307, 54, 96]},
+  "vt_v2_11_clawd": {"layer": "full", "w": 864, "h": 1548, "lo": [480, 0, 54, 97]},
+  "vt_v2_11_line": {"layer": "full", "w": 864, "h": 1536, "lo": [112, 307, 54, 96]},
+  "vt_v2_12_eliezer": {"layer": "full", "w": 864, "h": 1548, "lo": [536, 0, 54, 97]},
+  "vt_v2_12_gasp": {"layer": "full", "w": 864, "h": 1548, "lo": [592, 0, 54, 97]},
+  "vt_v2_13_robot": {"layer": "full", "w": 864, "h": 1536, "lo": [168, 307, 54, 96]},
+  "vt_v2_14_kiri": {"layer": "full", "w": 864, "h": 1536, "lo": [224, 307, 54, 96]},
+  "vt_v2_15_yann": {"layer": "full", "w": 864, "h": 1536, "lo": [280, 307, 54, 96]},
+  "vt_v2_15_cube": {"layer": "full", "w": 864, "h": 1536, "lo": [336, 307, 54, 96]},
+  "vt_v2_16_bubble": {"layer": "full", "w": 864, "h": 1536, "lo": [392, 307, 54, 96]},
+  "vt_c2_walk": {"layer": "full", "w": 864, "h": 1548, "lo": [648, 0, 54, 97]},
+  "vt_c2_goldfish": {"layer": "full", "w": 864, "h": 1536, "lo": [448, 307, 54, 96]},
+  "vt_c2_watch": {"layer": "full", "w": 864, "h": 1536, "lo": [504, 307, 54, 96]},
+  "vt_c2_jar": {"layer": "full", "w": 864, "h": 1536, "lo": [560, 307, 54, 96]},
+  "vt_v3_1_window": {"layer": "full", "w": 864, "h": 1536, "lo": [616, 307, 54, 96]},
+  "vt_v3_2_lobster": {"layer": "full", "w": 864, "h": 1536, "lo": [672, 307, 54, 96]},
+  "vt_v3_3_sandbox": {"layer": "full", "w": 864, "h": 1536, "lo": [728, 307, 54, 96]},
+  "vt_v3_3_kiri": {"layer": "full", "w": 864, "h": 1536, "lo": [784, 307, 54, 96]},
+  "vt_v3_4_bench": {"layer": "full", "w": 864, "h": 1536, "lo": [840, 307, 54, 96]},
+  "vt_v3_5_stage": {"layer": "plate", "w": 864, "h": 1536, "lo": [896, 307, 54, 96]},
+  "vt_v3_5_akari": {"layer": "full", "w": 864, "h": 1536, "lo": [952, 307, 54, 96]},
+  "vt_v3_6_lutnick": {"layer": "cutout", "w": 712, "h": 900, "lo": [971, 601, 44, 56]},
+  "vt_v3_club_autumn": {"layer": "plate", "w": 864, "h": 1536, "lo": [0, 405, 54, 96]},
+  "vt_v3_8_cheer": {"layer": "full", "w": 864, "h": 1536, "lo": [56, 405, 54, 96]},
+  "vt_v3_9_huggy": {"layer": "full", "w": 864, "h": 1536, "lo": [112, 405, 54, 96]},
+  "vt_v3_9_lineup": {"layer": "plate", "w": 864, "h": 1536, "lo": [168, 405, 54, 96]},
+  "vt_v3_10_sam": {"layer": "full", "w": 864, "h": 1536, "lo": [224, 405, 54, 96]},
+  "vt_v3_11_noam": {"layer": "full", "w": 864, "h": 1536, "lo": [280, 405, 54, 96]},
+  "vt_v3_12_trophies": {"layer": "full", "w": 864, "h": 1536, "lo": [336, 405, 54, 96]},
+  "vt_v3_13_bag": {"layer": "full", "w": 864, "h": 1536, "lo": [392, 405, 54, 96]},
+  "vt_v3_14_jeff": {"layer": "full", "w": 864, "h": 1536, "lo": [448, 405, 54, 96]},
+  "vt_v3_15_kiri": {"layer": "full", "w": 864, "h": 1548, "lo": [704, 0, 54, 97]},
+  "vt_v3_16_hood": {"layer": "full", "w": 864, "h": 1536, "lo": [504, 405, 54, 96]},
+  "vt_v3_16_reveal": {"layer": "full", "w": 864, "h": 1536, "lo": [560, 405, 54, 96]},
+  "vt_c3_sunset": {"layer": "plate", "w": 768, "h": 1728, "lo": [100, 0, 48, 108]},
+  "vt_c3_hands": {"layer": "full", "w": 864, "h": 1536, "lo": [616, 405, 54, 96]},
+  "vt_v4_1_board": {"layer": "full", "w": 864, "h": 1548, "lo": [760, 0, 54, 97]},
+  "vt_v4_2_slot": {"layer": "full", "w": 864, "h": 1536, "lo": [672, 405, 54, 96]},
+  "vt_v4_2_ren": {"layer": "full", "w": 864, "h": 1536, "lo": [728, 405, 54, 96]},
+  "vt_v4_3_jensen": {"layer": "full", "w": 864, "h": 1536, "lo": [784, 405, 54, 96]},
+  "vt_v4_4_greg": {"layer": "full", "w": 864, "h": 1548, "lo": [816, 0, 54, 97]},
+  "vt_v4_5_kiri": {"layer": "full", "w": 864, "h": 1536, "lo": [840, 405, 54, 96]},
+  "vt_v4_5_boom": {"layer": "full", "w": 864, "h": 1536, "lo": [896, 405, 54, 96]},
+  "vt_v4_6_finish": {"layer": "full", "w": 864, "h": 1536, "lo": [952, 405, 54, 96]},
+  "vt_v4_7_dario": {"layer": "full", "w": 864, "h": 1548, "lo": [872, 0, 54, 97]},
+  "vt_v4_8_sam": {"layer": "full", "w": 864, "h": 1536, "lo": [0, 503, 54, 96]},
+  "vt_v4_8_elon": {"layer": "full", "w": 864, "h": 1536, "lo": [56, 503, 54, 96]},
+  "vt_v4_9_akari": {"layer": "full", "w": 864, "h": 1536, "lo": [112, 503, 54, 96]},
+  "vt_v4_9_road": {"layer": "full", "w": 864, "h": 1548, "lo": [928, 0, 54, 97]},
+  "vt_v4_10_pew": {"layer": "full", "w": 864, "h": 1548, "lo": [0, 110, 54, 97]},
+  "vt_v4_11_bench": {"layer": "full", "w": 864, "h": 1536, "lo": [168, 503, 54, 96]},
+  "vt_v4_12_map": {"layer": "full", "w": 864, "h": 1536, "lo": [224, 503, 54, 96]},
+  "vt_v4_12_phew": {"layer": "full", "w": 864, "h": 1536, "lo": [280, 503, 54, 96]},
+  "vt_v4_13_trump": {"layer": "full", "w": 864, "h": 1548, "lo": [56, 110, 54, 97]},
+  "vt_v4_15_gifts": {"layer": "full", "w": 864, "h": 1536, "lo": [336, 503, 54, 96]},
+  "vt_v4_15_kiri": {"layer": "full", "w": 864, "h": 1536, "lo": [392, 503, 54, 96]},
+  "vt_v4_16_door": {"layer": "full", "w": 864, "h": 1548, "lo": [112, 110, 54, 97]},
+  "vt_v4_16_turn": {"layer": "full", "w": 864, "h": 1536, "lo": [448, 503, 54, 96]},
+  "vt_c4_door": {"layer": "full", "w": 864, "h": 1536, "lo": [504, 503, 54, 96]},
+  "vt_c4_sky": {"layer": "plate", "w": 768, "h": 1728, "lo": [150, 0, 48, 108]},
+  "vt_c4_crouch": {"layer": "full", "w": 864, "h": 1536, "lo": [560, 503, 54, 96]},
+  "vt_c4_racecu": {"layer": "full", "w": 864, "h": 1536, "lo": [616, 503, 54, 96]},
+  "vt_c4_race": {"layer": "full", "w": 864, "h": 1536, "lo": [672, 503, 54, 96]},
+  "vt_c4_group": {"layer": "full", "w": 864, "h": 1536, "lo": [728, 503, 54, 96]},
+  "vt_c4_bye": {"layer": "full", "w": 864, "h": 1536, "lo": [784, 503, 54, 96]},
+  "vt_c4_night": {"layer": "full", "w": 864, "h": 1536, "lo": [840, 503, 54, 96]},
 };
 // </stills>
 // When the song shows each still, window by window: [name, from, to] in seconds from the window's start (from a pass over every frame).
@@ -1506,8 +1712,8 @@ const STILL_USE = {
   "V1.14": [["intro_eyes",0,2.6],["v1_14_gavin",0,2.6],["intro_eyes.closed",1.6,1.8],["intro_eyes.half",1.7,2.6]],
   "V1.15": [["v1_15_geoff",0,1.7],["v1_15_salute",1.6,3.5]],
   "V1.16": [["v1_16_demis",0,2.2],["v1_16_cheer",2.1,3.7]],
-  "C1": [["c1_door",0,2.1],["c4_run_akari.pass2",2,5],["c4_run_kiri.pass",2,4.9],["c4_run_ren.air2",2,5],["clawd_jump",2,5],["intro_sky",2,5],["run_kiri",2,5],["c4_run_akari.air2",2.1,4.9],["c4_run_kiri.air",2.1,5],["c4_run_ren.pass2",2.1,5],["run_akari",2.1,5],["run_ren",2.1,4.9],["card_akari",4.9,7.9],["card_ren",5.6,7.9],["card_kiri",6.3,7.9],["clawd_jump",7.1,10.1],["intro_sky",7.8,10.1],["c1_lookup",10,12.6]],
-  "V2.1": [["v2_1_whale",0,1.5],["v2_1_ren",1.4,3]],
+  "C1": [["c1_door",0,2.1],["c4_run_akari.pass2",2,5.8],["c4_run_kiri.pass",2,5.9],["c4_run_ren.air2",2,5.8],["clawd_jump",2,7.9],["intro_sky",2,7.9],["run_kiri",2,5.8],["c4_run_akari.air2",2.1,5.9],["c4_run_kiri.air",2.1,5.7],["c4_run_ren.pass2",2.1,5.7],["run_akari",2.1,5.7],["run_ren",2.1,5.9],["card_akari",7.8,9.9],["card_ren",8.3,9.9],["card_kiri",8.9,9.9],["clawd_jump",9.4,9.9],["c1_lookup",9.8,13.2]],
+  "V2.1": [["v2_1_whale",0,1.4],["v2_1_ren",1.3,2.4]],
   "V2.2": [["v2_2_gate",0,1.5],["v2_2_props",1.4,3]],
   "V2.3": [["v2_3_accept",0,1.5],["v2_3_wait",1.4,3.2]],
   "V2.4": [["v2_4_kiri",0,1.2],["v2_4_hub",1.1,3],["clawd_jump",2.3,3]],
@@ -1520,12 +1726,12 @@ const STILL_USE = {
   "V2.11": [["v2_11_clawd",0,1.5],["v2_11_line",1.4,3.3]],
   "V2.12": [["v2_12_eliezer",0,1.4],["v2_12_gasp",1.3,2.6]],
   "V2.13": [["v2_13_robot",0,2.6]],
-  "V2.14": [["v2_13_robot",0,3.2],["v2_14_kiri",1.2,3.2]],
+  "V2.14": [["v2_13_robot",0,3.1],["v2_14_kiri",1.2,3.1]],
   "V2.15": [["v2_15_yann",0,1.5],["v2_15_cube",1.4,3]],
-  "V2.16": [["v2_16_bubble",0,4.1],["v2_16_page",0,1.2],["clawd_jump",1.8,3.7]],
-  "C2": [["c2_walk",0,2.3],["clawd_jump",0,2.3],["c2_fish",2.2,5.2],["c2_goldfish",2.2,5.2],["c2_watch",5.1,8.1],["c2_jar",8,11.7],["c2_watch",11.6,13],["clawd_jump",11.6,13]],
-  "V3.1": [["v3_1_window",0,2.6],["v3_agent",0,2.6]],
-  "V3.2": [["v3_2_lobster",0,3.1],["clawd_jump",1.7,3.1]],
+  "V2.16": [["v2_16_bubble",0,4.3],["v2_16_page",0,1.1],["clawd_jump",1.8,3.7]],
+  "C2": [["c2_walk",0,2.1],["clawd_jump",0,2.1],["c2_fish",2,5],["c2_goldfish",2,5],["c2_watch",4.9,7.9],["c2_jar",7.8,12.4],["c2_watch",12.3,13.5],["clawd_jump",12.3,13.5]],
+  "V3.1": [["v3_1_window",0,2.4],["v3_agent",0,2.4]],
+  "V3.2": [["v3_2_lobster",0,2.6],["clawd_jump",1.5,2.6]],
   "V3.3": [["v3_3_sandbox",0,1.5],["v3_3_kiri",1.4,3]],
   "V3.4": [["v3_4_bench",0,3]],
   "V3.5": [["v3_5_clawd",0,1.5],["v3_5_stage",0,1.5],["v3_5_akari",1.4,3.4]],
@@ -1557,10 +1763,87 @@ const STILL_USE = {
   "V4.14": [["clawd_stand",0,0.4],["v4_14_clawd",0.3,1.2],["clawd_jump",1.1,2.1]],
   "V4.15": [["v4_15_gifts",0,1.7],["v4_15_kiri",1.6,3]],
   "V4.16": [["v4_16_door",0,1.7],["v4_16_turn",1.6,3.7]],
-  "C4": [["c4_door",0,1.5],["clawd_jump",0,5],["c4_run_akari.pass2",1.4,4.9],["c4_run_ren.air2",1.4,4.9],["c4_sky",1.4,5],["run_kiri",1.4,4.9],["c4_run_akari.air2",1.5,5],["c4_run_kiri.pass",1.5,5],["run_ren",1.5,5],["c4_run_kiri.air",1.6,4.8],["c4_run_ren.pass2",1.6,4.8],["run_akari",1.6,4.8],["card_akari",4.9,5.3],["card_ren",5.2,7.2],["card_kiri",5.6,7.2],["clawd_jump",6,7.2],["card_akari",6.3,7.2],["c4_crouch",7.1,9.2],["c4_crouch.calm3",7.1,9.2],["c4_racecu",9.1,10.1],["c4_race",10,11.3],["clawd_jump",10,17.2],["c4_race.legs2",10.1,11.3],["c4_group",11.2,17.2],["c4_bye",17.1,19.7],["c4_night",19.6,22.1],["clawd_stand",19.6,22.1],["c4_night",25.6,30.2],["clawd_stand",25.6,30.2]],
+  "C4": [["c4_door",0,1.5],["clawd_jump",0,5],["c4_run_akari.pass2",1.4,4.9],["c4_run_ren.air2",1.4,4.9],["c4_sky",1.4,5],["run_kiri",1.4,4.9],["c4_run_akari.air2",1.5,5],["c4_run_kiri.pass",1.5,5],["run_ren",1.5,5],["c4_run_kiri.air",1.6,4.7],["c4_run_ren.pass2",1.6,4.7],["run_akari",1.6,4.7],["card_akari",4.9,5.3],["card_ren",5.2,7.2],["card_kiri",5.6,7.2],["clawd_jump",6,7.2],["card_akari",6.3,7.2],["c4_crouch",7.1,9.2],["c4_crouch.calm3",7.1,9.2],["c4_racecu",9.1,10.1],["c4_race",10,11.3],["clawd_jump",10,17.2],["c4_race.legs2",10.1,11.3],["c4_group",11.2,17.2],["c4_bye",17.1,19.7],["c4_night",19.6,22.1],["clawd_stand",19.6,22.1],["c4_night",25.6,30.2],["clawd_stand",25.6,30.2]],
   "outro": [["keyvisual",0,7.7]],
 };
 // </still-use>
+// The same for the vertical video (tools/still_use.mjs --vertical).
+// <still-use-vertical: generated by tools/still_use.mjs --vertical>
+const STILL_USE_V = {
+  "intro": [["vt_intro_sky",0,3.1],["clawd_jump",1.8,3.1],["vt_intro_eyes",3,4.6],["vt_intro_eyes.closed",3,3.5],["vt_intro_eyes.half",3.4,3.6],["vt_intro_wind",4.5,6],["vt_intro_wind.laugh",4.5,5.1],["card_akari",6,7.5],["card_ren",7.4,9],["card_kiri",8.9,10.4],["clawd_jump",10.3,14.6],["card_akari",11.7,14.6],["card_kiri",11.7,14.6],["card_ren",11.7,14.6],["vt_intro_sky",11.7,14.6]],
+  "V1.1": [["vt_v1_1_paper",0,1.5],["vt_v1_1_akari",1.4,3.2]],
+  "V1.2": [["vt_v1_2_kiri",0,1.5],["card_akari",2.2,3.4],["clawd_jump",2.2,3.4]],
+  "V1.3": [["vt_v1_3_gwern",0,1.5],["vt_v1_3_tower",1.4,2.4]],
+  "V1.4": [["vt_v1_4_clawd",0,3.3]],
+  "V1.5": [["vt_v1_5_asleep",0,1.2],["vt_v1_5_ren",1.1,3]],
+  "V1.6": [["vt_v1_6_sydney",0,3]],
+  "V1.7": [["vt_v1_7_kiri",0,1.2],["v1_7_city",1.1,3.2]],
+  "V1.8": [["vt_v1_8_eliezer",0,1.3],["clawd_jump",1.2,2.4],["vt_v1_8_blown",1.2,2.4]],
+  "V1.9": [["vt_v1_9_sam",0,2.8],["v1_9_bench",1.2,2.8]],
+  "V1.10": [["vt_v1_10_chaos",0,1.5],["v1_10_board",1.4,3.2]],
+  "V1.11": [["vt_v1_11_ilya",0,1.7],["vt_v1_11_peek",1.6,3.4]],
+  "V1.12": [["vt_v1_12_book",0,2.4]],
+  "V1.13": [["vt_v1_13_strawberry",0,2.8]],
+  "V1.14": [["v1_14_gavin",0,2.6],["vt_intro_eyes",0,2.6],["vt_intro_eyes.closed",1.6,1.8],["vt_intro_eyes.half",1.7,2.6]],
+  "V1.15": [["vt_v1_15_geoff",0,3.5],["clawd_stand",1.6,3.5],["v1_15_salute",1.6,3.5]],
+  "V1.16": [["vt_v1_16_demis",0,2.2],["clawd_jump",2.1,3.7],["vt_v1_16_cheer",2.1,3.7]],
+  "C1": [["vt_c1_door",0,2.1],["c4_run_akari.pass2",2,5.8],["c4_run_kiri.pass",2,5.9],["c4_run_ren.air2",2,5.8],["clawd_jump",2,7.9],["run_kiri",2,5.8],["vt_intro_sky",2,7.9],["c4_run_akari.air2",2.1,5.9],["c4_run_kiri.air",2.1,5.7],["c4_run_ren.pass2",2.1,5.7],["run_akari",2.1,5.7],["run_ren",2.1,5.9],["vt_card_akari",7.8,9.9],["vt_card_ren",8.3,9.9],["vt_card_kiri",8.9,9.9],["clawd_jump",9.4,9.9],["vt_c1_lookup",9.8,13.2]],
+  "V2.1": [["vt_v2_1_whale",0,1.4],["vt_v2_1_ren",1.3,2.4]],
+  "V2.2": [["vt_v2_2_gate",0,1.5],["vt_v2_2_props",1.4,3]],
+  "V2.3": [["vt_v2_3_accept",0,1.5],["vt_v2_3_wait",1.4,3.2]],
+  "V2.4": [["vt_v2_4_kiri",0,1.2],["vt_v2_4_hub",1.1,3],["clawd_jump",2.3,3]],
+  "V2.5": [["vt_v2_5_zuck",0,1.5],["vt_v2_5_ren",1.4,3]],
+  "V2.6": [["vt_v2_6_shop",0,3]],
+  "V2.7": [["vt_v2_7_robot",0,2.8],["vt_v2_7_akari",1.1,1.9]],
+  "V2.8": [["vt_v2_8_podium",0,2.6]],
+  "V2.9": [["vt_v2_9_train",0,1.9],["vt_v2_9_akari",1.8,2.8]],
+  "V2.10": [["clawd_jump",0,3.2],["v2_10_banana",0,3.2]],
+  "V2.11": [["vt_v2_11_clawd",0,1.5],["vt_v2_11_line",1.4,3.3]],
+  "V2.12": [["vt_v2_12_eliezer",0,1.4],["vt_v2_12_gasp",1.3,2.6]],
+  "V2.13": [["vt_v2_13_robot",0,2.6]],
+  "V2.14": [["vt_v2_1_whale",0,3.1],["vt_v2_9_train",0,3.1],["vt_v2_8_podium",0.2,3.1],["vt_v2_13_robot",0.7,3.1],["vt_v2_7_robot",0.7,3.1],["vt_v2_6_shop",0.8,3.1],["vt_v2_14_kiri",1.2,3.1]],
+  "V2.15": [["vt_v2_15_yann",0,1.5],["vt_v2_15_cube",1.4,3]],
+  "V2.16": [["vt_v2_16_bubble",0,4.3],["clawd_jump",1.8,3.7]],
+  "C2": [["clawd_jump",0,2.1],["vt_c2_walk",0,2.1],["c2_fish",2,5],["vt_c2_goldfish",2,5],["vt_c2_watch",4.9,7.9],["clawd_jump",7.8,13.5],["clawd_stand",7.8,12.3],["vt_c2_jar",7.8,12.4],["vt_c2_watch",12.3,13.5]],
+  "V3.1": [["v3_agent",0,2.4],["vt_v3_1_window",0,2.4]],
+  "V3.2": [["vt_v3_2_lobster",0,2.6],["clawd_jump",1.5,2.6]],
+  "V3.3": [["vt_v3_3_sandbox",0,1.5],["vt_v3_3_kiri",1.4,3]],
+  "V3.4": [["vt_v3_4_bench",0,3]],
+  "V3.5": [["v3_5_clawd",0,1.5],["vt_v3_5_stage",0,1.5],["vt_v3_5_akari",1.4,3.4]],
+  "V3.6": [["v3_5_clawd",0,1.9],["vt_v3_5_stage",0,1.9]],
+  "V3.7": [["v3_7_clawd",0,3],["vt_v3_club_autumn",0,3]],
+  "V3.8": [["v3_7_clawd",0,0.2],["vt_v3_club_autumn",0,1.5],["clawd_jump",0.1,1.5],["vt_v3_8_cheer",1.4,3.2]],
+  "V3.9": [["vt_v3_9_huggy",0,1.7],["v3_9_kiri",0.9,1.7],["card_kiri",1.6,3.1],["card_ren",1.6,3.1],["v3_agent_sweater",1.6,3.1],["vt_v3_9_lineup",1.6,3.1]],
+  "V3.10": [["card_kiri",0,1.5],["card_ren",0,1.5],["v3_agent_sweater",0,2.6],["vt_v3_9_lineup",0,1.5],["vt_v3_10_sam",1.4,2.6]],
+  "V3.11": [["vt_v3_11_noam",0,2.8],["v3_11_ren",1.4,2.8]],
+  "V3.12": [["vt_v3_12_trophies",0,3.2]],
+  "V3.13": [["vt_v3_13_bag",0,3]],
+  "V3.14": [["vt_v3_14_jeff",0,3]],
+  "V3.15": [["v3_15_clawd",0,1.5],["vt_v3_club_autumn",0,1.5],["vt_v3_15_kiri",1.4,2.8]],
+  "V3.16": [["vt_v3_16_hood",0,1.4],["vt_v3_16_reveal",1.3,4.3]],
+  "C3": [["card_akari",0,2.3],["card_kiri",0,2.3],["card_ren",0,2.3],["clawd_stand",0,2.3],["vt_c3_sunset",0,6.6],["c4_run_kiri.air",2.2,4.9],["c4_run_ren.pass2",2.2,4.9],["clawd_jump",2.2,5.2],["run_akari",2.2,4.9],["c4_run_akari.pass2",2.3,5],["c4_run_ren.air2",2.3,5],["run_kiri",2.3,5],["c4_run_akari.air2",2.4,5.2],["c4_run_kiri.pass",2.4,5.2],["run_ren",2.4,5.2],["vt_card_akari",5.1,6.6],["vt_card_ren",5.4,6.6],["vt_card_kiri",5.8,6.6],["clawd_jump",6.2,6.6],["vt_c3_hands",6.5,8.1],["card_akari",8,12.6],["card_kiri",8,12.6],["card_ren",8,12.6],["clawd_jump",8,12.6],["vt_c3_sunset",8,12.6]],
+  "V4.1": [["vt_v4_1_board",0,2.4],["v3_agent",0.7,2.4]],
+  "V4.2": [["vt_v4_2_slot",0,2.1],["vt_v4_2_ren",2,3.5]],
+  "V4.3": [["vt_v4_3_jensen",0,2.6],["v4_3_huggy",1.1,2.6]],
+  "V4.4": [["vt_v4_4_greg",0,3],["card_akari",1.1,3],["card_ren",1.1,3],["card_kiri",1.2,3]],
+  "V4.5": [["vt_v4_5_kiri",0,1.2],["vt_v4_5_boom",1.1,2.4]],
+  "V4.6": [["vt_v4_6_finish",0,2.8]],
+  "V4.7": [["clawd_stand",0,3],["vt_v4_7_dario",0,3]],
+  "V4.8": [["vt_v4_8_sam",0,3.3],["vt_v4_8_elon",0.1,3.3],["v4_14_clawd",2.3,3.3]],
+  "V4.9": [["vt_v4_9_akari",0,1.3],["v4_9_car",1.2,3.2],["v4_9_tcut",1.2,3.2],["vt_v4_9_road",1.2,3.2]],
+  "V4.10": [["v4_10_bannon",0,2.4],["v4_10_bernie",0,2.4],["vt_v4_10_pew",0,2.4]],
+  "V4.11": [["v4_11_clawd",0,3.2],["vt_v4_11_bench",0,3.2],["card_kiri",1.7,3.2]],
+  "V4.12": [["vt_v4_12_map",0,1.9],["vt_v4_12_phew",1.8,3.2]],
+  "V4.13": [["vt_v4_13_trump",0,1.7],["club_room",1.6,3.5],["v1_15_salute",1.6,3.5],["clawd_stand",2.4,3.5]],
+  "V4.14": [["clawd_stand",0,0.4],["v4_14_clawd",0.3,1.2],["clawd_jump",1.1,2.1]],
+  "V4.15": [["vt_v4_15_gifts",0,1.7],["vt_v4_15_kiri",1.6,3]],
+  "V4.16": [["vt_v4_16_door",0,1.7],["vt_v4_16_turn",1.6,3.7]],
+  "C4": [["clawd_jump",0,5],["vt_c4_door",0,1.5],["c4_run_akari.pass2",1.4,4.9],["c4_run_ren.air2",1.4,4.9],["run_kiri",1.4,4.9],["vt_c4_sky",1.4,5],["c4_run_akari.air2",1.5,5],["c4_run_kiri.pass",1.5,5],["run_ren",1.5,5],["c4_run_kiri.air",1.6,4.7],["c4_run_ren.pass2",1.6,4.7],["run_akari",1.6,4.7],["card_akari",4.9,5.3],["card_ren",5.2,5.7],["card_kiri",5.6,6.1],["clawd_jump",6,7.2],["vt_card_akari",6.3,7.2],["vt_card_kiri",6.3,7.2],["vt_card_ren",6.3,7.2],["vt_c4_crouch",7.1,9.2],["vt_c4_racecu",9.1,10.1],["clawd_jump",10,17.2],["vt_c4_race",10,11.3],["vt_c4_group",11.2,17.2],["vt_c4_bye",17.1,19.7],["clawd_stand",19.6,22.1],["vt_c4_night",19.6,22.1],["clawd_stand",25.6,30.2],["vt_c4_night",25.6,30.2]],
+  "outro": [["card_akari",0,7.7],["card_kiri",0,7.7],["card_ren",0,7.7],["clawd_jump",0,7.7],["vt_intro_sky",0,7.7]],
+};
+// </still-use-vertical>
+// (the map for the video being played, and the stills it ever shows: outside offline renders, only those download)
+const USE = VERT ? STILL_USE_V : STILL_USE, SHOWN = new Set(Object.values(USE).flatMap(l => l.map(e => e[0])));
 
 // IMGS[name] is what a still draws with: its full picture, decoded, or else its low-res stand-in (LO[name], cut from img/lowres.webp,
 // drawn scaled up). The full pictures download in the background, soonest needed first: from the playhead on, in the order the song
@@ -1568,6 +1851,7 @@ const STILL_USE = {
 // reorders the queue, and a still that a frame drew low-res goes to the front. STYLE_READY, which the studio and the site's worker wait
 // for before the first frame, settles once the stand-ins and the pictures for the first few seconds from STYLE_START (the host's
 // playhead, default 0) are in, and until then nothing else downloads, so that on a slow connection they have it to themselves;
+// (the order, and which pictures load at all, come from USE: STILL_USE, or STILL_USE_V in the vertical video)
 // STYLE_ALL once every picture is (offline renders wait for that, so they never draw a stand-in). When a picture the last frame drew
 // low-res arrives, the kit calls the host's STYLE_STALE(), so that a paused player can redraw.
 // Downloading and decoding are separate stages. LOAD_PARALLEL pictures download at once: the site's host (Netlify) starts sending a file
@@ -1614,7 +1898,7 @@ const needsWork = n => !FULL.has(n) && (_keep.has(n) || !FILES[n]);
 // shown for the last time, in song order; last, any it never shows. A patch or a frame of a cut-out comes right after its base.
 function neededFrom(t) {
   const next = new Map(), past = new Map();
-  for (const s of SEGS) for (const [n, a, b] of STILL_USE[s.key] ?? []) {
+  for (const s of SEGS) for (const [n, a, b] of USE[s.key] ?? []) {
     if (s.start + b >= t) next.set(n, Math.min(next.get(n) ?? Infinity, Math.max(0, s.start + a - t)));
     else if (!past.has(n)) past.set(n, s.start + a);
   }
@@ -1625,7 +1909,7 @@ function neededFrom(t) {
 // KEEP_DRAWN s, up to KEEP_BYTES: the ones on screen now or just drawn first, then the soonest needed, then the most recently shown.
 function keepFrom(t) {
   const rank = new Map(), now = performance.now();
-  for (const s of SEGS) for (const [n, a, b] of STILL_USE[s.key] ?? []) {
+  for (const s of SEGS) for (const [n, a, b] of USE[s.key] ?? []) {
     const from = s.start + a - t, since = t - s.start - b;
     const r = since <= 0 ? (from <= KEEP_AHEAD ? Math.max(0, from) : null) : (since <= KEEP_BEHIND ? KEEP_AHEAD + since : null);
     if (r !== null) rank.set(n, Math.min(rank.get(n) ?? Infinity, r));
@@ -1654,7 +1938,8 @@ function reorderStills(t, jump = false) {
     _keep = keepFrom(t);
     for (const n of FULL) if (!_keep.has(n)) releaseStill(n);
   }
-  _queue = Object.keys(STILLS).filter(needsWork).sort((a, b) => key(a) - key(b));
+  // (a still this video never shows, like the other video's, only loads if a frame draws it: the still-use map is out of date)
+  _queue = Object.keys(STILLS).filter(n => needsWork(n) && (KEEP_ALL || SHOWN.has(n) || _keep.has(n))).sort((a, b) => key(a) - key(b));
   if (jump) requeueStills(); else pumpStills();
 }
 const pending = n => !FILES[n] && !(_tries.get(n) >= LOAD_TRIES), urgent = n => _key(n) <= NOW_LEAD || _lowLast.includes(n);
@@ -1918,8 +2203,14 @@ function starShape(cx, cy, r, col, inner = .45, n = 5, rot = -Math.PI / 2) {
   for (let i = 0; i < n * 2; i++) { const a = rot + i * Math.PI / n, rr = i % 2 ? r * inner : r; i ? ctx.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr) : ctx.moveTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr); }
   ctx.closePath(); ctx.fill();
 }
+// fillFrame(): fill the whole frame whatever the transform (with the current fillStyle; it resets the transform). In the vertical video
+// that's the whole canvas, so that a flash or a grade inside landscape() still covers the tall frame.
+function fillFrame() {
+  if (VERT) { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillRect(0, 0, canvas.width, canvas.height); }
+  else { ctx.setTransform(RS, 0, 0, RS, 0, 0); ctx.fillRect(0, 0, W, H); }
+}
 // grade(col, a, blend): a full-frame colour grade ('multiply' for night, 'screen' for haze, 'overlay', 'color'…).
-function grade(col, a = 1, blend = 'multiply') { if (a <= 0) return; ctx.save(); ctx.setTransform(RS, 0, 0, RS, 0, 0); ctx.globalCompositeOperation = blend; ctx.globalAlpha = clamp(a); ctx.fillStyle = col; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+function grade(col, a = 1, blend = 'multiply') { if (a <= 0) return; ctx.save(); ctx.globalCompositeOperation = blend; ctx.globalAlpha = clamp(a); ctx.fillStyle = col; fillFrame(); ctx.restore(); }
 // letterbox(k): cinematic black bars (k 0..1 slides them in).
 function letterbox(k, hgt = 110) { if (k <= 0) return; ctx.fillStyle = '#0E0B18'; ctx.fillRect(0, 0, W, hgt * k); ctx.fillRect(0, H - hgt * k, W, hgt * k); }
 
@@ -2044,7 +2335,7 @@ function speedBars(t, o = {}) {
   ctx.restore();
 }
 // flash(k, col): a full-frame colour flash (white by default); k 0..1.
-function flash(k, col = '#FFFFFF') { if (k <= 0) return; ctx.save(); ctx.setTransform(RS, 0, 0, RS, 0, 0); ctx.globalAlpha = clamp(k); ctx.fillStyle = col; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+function flash(k, col = '#FFFFFF') { if (k <= 0) return; ctx.save(); ctx.globalAlpha = clamp(k); ctx.fillStyle = col; fillFrame(); ctx.restore(); }
 // burst(x, y, r, k, cols): a firework/impact burst (radiating rays + a ring), k 0..1 through its life.
 function burst(x, y, r, k, cols = ['#FFFFFF', '#FFD86A', '#FF8FB8']) {
   if (k <= 0 || k >= 1) return;
@@ -2056,7 +2347,7 @@ function burst(x, y, r, k, cols = ['#FFFFFF', '#FFD86A', '#FF8FB8']) {
   addGlow(x, y, r * 1.4, '#FFE0B0', .7 * (1 - k));
 }
 // impactFrame(k, col): the anime "impact frame": the picture inverted to a two-tone negative for a few frames on a hit.
-function impactFrame(k) { if (k <= 0) return; ctx.save(); ctx.setTransform(RS, 0, 0, RS, 0, 0); ctx.globalCompositeOperation = 'difference'; ctx.globalAlpha = clamp(k); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+function impactFrame(k) { if (k <= 0) return; ctx.save(); ctx.globalCompositeOperation = 'difference'; ctx.globalAlpha = clamp(k); ctx.fillStyle = '#FFFFFF'; fillFrame(); ctx.restore(); }
 // zoomBlur(k, cx, cy): a radial zoom burst of whatever is on the canvas (a few scaled, faded copies of the frame over itself).
 function zoomBlur(k, cx = W / 2, cy = H / 2) {
   if (k <= 0) return;
@@ -2111,7 +2402,9 @@ function titleLogo(x, y, s = 1, k = 1, t = 0) {
   logoText('START THE', 10, -70, 58, { font: 'archivo', k: k2, rot: -.06, grad: ['#6FD0FF', '#3D8BFF', '#6A5CFF'] });
   logoText('SCALING', 0, 56, 124, { font: 'rammetto', k: k3, rot: -.06, grad: ['#FFB6D0', '#FF4F8B', '#FF9A4A'], spacing: 3 });
   if (k4 > 0) {
-    txt('— a scaling-club opening —', 20, 158, 24, '#FFFFFF', { font: 'code', alpha: k4, rot: -.06, stroke: 'rgb(42 35 80 / .7)', sw: 6 });
+    // (on a phone, in the tall frame, the subtitle is set bigger, to be read)
+    if (TALL()) txt('— a scaling-club opening —', 16, 172, 40, '#FFFFFF', { font: 'code', alpha: k4, rot: -.06, stroke: 'rgb(42 35 80 / .8)', sw: 9 });
+    else txt('— a scaling-club opening —', 20, 158, 24, '#FFFFFF', { font: 'code', alpha: k4, rot: -.06, stroke: 'rgb(42 35 80 / .7)', sw: 6 });
     sparkle(250, -12, 40 * k4 * (1 + .15 * Math.sin(t * 6)), 1, '#FFFFFF'); sparkle(-260, 104, 24 * k4, 1, '#FFF4B0');
   }
   ctx.restore();
@@ -2130,10 +2423,12 @@ function nameCard(name, role, x, y, k, col = '#FF5A9A', o = {}) {
   ctx.restore();
 }
 // nameTag(name, note, x, y, k, col): the caption for a real person named in the lyrics (always an anime extra or off-screen, never a
-// likeness): the name big and a note under it, on a slanted white chip with a coloured edge; slides in with k.
+// likeness): the name big and a note under it, on a slanted white chip with a coloured edge; slides in with k. (x, y) is the chip's
+// left edge and its name line; in the vertical frame it is 1.35× as big (the name 76 units tall), for a phone.
 function nameTag(name, note, x, y, k, col = '#2FA890') {
   if (k <= 0) return;
   ctx.save(); ctx.globalAlpha *= clamp(k * 2); ctx.translate(x + (1 - easeOut(k)) * -60, y);
+  if (TALL()) ctx.scale(1.35, 1.35);
   ctx.save(); ctx.transform(1, 0, -.2, 1, 0, 0); ctx.fillStyle = 'rgb(255 255 255 / .93)';
   const w = Math.max(textW(name, 56, 'rammetto'), textW(note, 22, 'code')) + 60; ctx.fillRect(-20, -48, w, 110); ctx.fillStyle = col; ctx.fillRect(-20, -48, 12, 110); ctx.restore();
   txt(name, 10, -10, 56, '#1E2A3A', { font: 'rammetto', align: 'left' });
@@ -2186,10 +2481,14 @@ function diagSplit(c1, c2, t, o = {}) {
   const a = o.a ?? .35, x = o.x ?? W * .58;
   ctx.fillStyle = c2; ctx.beginPath(); ctx.moveTo(x - H * a, H); ctx.lineTo(x + H * a, 0); ctx.lineTo(W, 0); ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
   ctx.save(); ctx.globalAlpha = .18; ctx.fillStyle = '#FFFFFF';
-  for (let i = -4; i < 14; i++) { const xx = ((i * 160 + t * (o.speed ?? 240)) % 2400 + 2400) % 2400 - 300; ctx.beginPath(); ctx.moveTo(xx, H); ctx.lineTo(xx + 50, H); ctx.lineTo(xx + 50 + H * .6, 0); ctx.lineTo(xx + H * .6, 0); ctx.closePath(); ctx.fill(); }
+  // (in a tall frame the stripes lean further, so they start further left)
+  const per = TALL() ? 2800 : 2400, x0 = TALL() ? -1250 : -300;
+  for (let i = -4; i < 14; i++) { const xx = ((i * 160 + t * (o.speed ?? 240)) % per + per) % per + x0; ctx.beginPath(); ctx.moveTo(xx, H); ctx.lineTo(xx + 50, H); ctx.lineTo(xx + 50 + H * .6, 0); ctx.lineTo(xx + H * .6, 0); ctx.closePath(); ctx.fill(); }
   ctx.restore();
   ctx.save(); ctx.globalAlpha = .25; ctx.fillStyle = '#FFFFFF';
-  for (let i = 0; i < 60; i++) { const px_ = (i % 12) * 170 + (Math.floor(i / 12) % 2) * 85, py = Math.floor(i / 12) * 230 + 60; ctx.beginPath(); ctx.arc(((px_ + t * 30) % (W + 100) + W + 100) % (W + 100) - 50, py, 7, 0, TAU); ctx.fill(); }
+  // (12 dots a row, 5 rows, in the 16:9 frame)
+  const cols = Math.ceil((W + 100) / 170), rows = Math.ceil((H - 60) / 230);
+  for (let i = 0; i < cols * rows; i++) { const px_ = (i % cols) * 170 + (Math.floor(i / cols) % 2) * 85, py = Math.floor(i / cols) * 230 + 60; ctx.beginPath(); ctx.arc(((px_ + t * 30) % (W + 100) + W + 100) % (W + 100) - 50, py, 7, 0, TAU); ctx.fill(); }
   ctx.restore();
 }
 
@@ -2202,23 +2501,26 @@ let _bloomK = null, _noVig = false;
 const setBloom = k => { _bloomK = k; };
 const noVignette = () => { _noVig = true; };
 let _bl = null;
+// (its buffers are the frame's shape: 480 × 270 and down, or 270 × 480 in the vertical video)
 function bloomPass(k) {
   if (k <= 0) return;
-  if (!_bl) { _bl = { a: makeCanvas(480, 270), b: makeCanvas(240, 135), c: makeCanvas(120, 68) }; for (const c of Object.values(_bl)) c.g = c.getContext('2d', { willReadFrequently: true }); }
+  const [bw, bh] = VERT ? [270, 480] : [480, 270];
+  if (!_bl) { _bl = { a: makeCanvas(bw, bh), b: makeCanvas(bw / 2, bh / 2), c: makeCanvas(Math.round(bw / 4), Math.round(bh / 4)) }; for (const c of Object.values(_bl)) c.g = c.getContext('2d', { willReadFrequently: true }); }
   const { a, b, c } = _bl;
-  a.g.globalCompositeOperation = 'copy'; a.g.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, 480, 270);
-  b.g.globalCompositeOperation = 'copy'; b.g.drawImage(a, 0, 0, 240, 135);
-  const img = b.g.getImageData(0, 0, 240, 135), d = img.data, thr = 214;
+  a.g.globalCompositeOperation = 'copy'; a.g.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, bw, bh);
+  b.g.globalCompositeOperation = 'copy'; b.g.drawImage(a, 0, 0, bw / 2, bh / 2);
+  const img = b.g.getImageData(0, 0, bw / 2, bh / 2), d = img.data, thr = 214;
   for (let i = 0; i < d.length; i += 4) { const l = d[i] * .3 + d[i + 1] * .59 + d[i + 2] * .11, f = l > thr ? ((l - thr) / (255 - thr)) ** 1.5 : 0; d[i] *= f; d[i + 1] *= f; d[i + 2] *= f; }
   b.g.putImageData(img, 0, 0);
-  c.g.globalCompositeOperation = 'copy'; c.g.drawImage(b, 0, 0, 120, 68);
+  c.g.globalCompositeOperation = 'copy'; c.g.drawImage(b, 0, 0, c.width, c.height);
   ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = 'screen'; ctx.imageSmoothingQuality = 'high';
   ctx.globalAlpha = .6 * k; ctx.drawImage(b, 0, 0, canvas.width, canvas.height);
   ctx.globalAlpha = .9 * k; ctx.drawImage(c, 0, 0, canvas.width, canvas.height);
   ctx.restore();
 }
+// (sized by the frame's short side: in the vertical video it darkens the top and bottom, not the sides)
 function vignette() {
-  const g = ctx.createRadialGradient(W / 2, H * .45, H * .5, W / 2, H * .45, H * 1.1);
+  const m = Math.min(W, H), g = ctx.createRadialGradient(W / 2, H * .45, m * .5, W / 2, H * .45, m * 1.1);
   g.addColorStop(0, 'rgb(90 60 140 / 0)'); g.addColorStop(1, 'rgb(90 60 140 / .22)');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
 }
@@ -2227,6 +2529,7 @@ function drawCaption(t) {
   const cap = captionAt(t); if (!cap || _noCaption) return;
   const ln = cap.ln, st = _captionStyle || {};
   const text = ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — ');
+  if (TALL()) return drawCaptionTall(t, cap, text, tallCapStyle(t));
   const age = t - cap.on, kin = easeOut(clamp(age / .16)), kout = clamp((cap.last + .35 - t) / .2);
   const chorus = ln.sec[0] !== 'V', size = st.size ?? (text.length > 44 ? 40 : 46), y = st.y ?? 1004, font = 'Archivo Black';
   ctx.save(); ctx.globalAlpha = kin * kout;
@@ -2255,6 +2558,115 @@ function drawCaption(t) {
   txt('♪', nx, ny + 1, 26, '#FFFFFF', { font: 'archivo' });
   ctx.restore();
 }
+// ---------- the vertical video's lyric block: the karaoke lines wrapped to the safe area, low in the frame, the date card on top ----------
+// The lines are centred on x 540, at most CAP_W wide (x 110–970), up to three lines 1.28 sizes apart, standing on the block's foot: the
+// last line's middle at CAP_FOOT (1556), so the lettering ends at y ≈ 1600, just above the Reels caption, and grows upward (one line
+// y ≈ 1515–1600, three ≈ 1350–1600). The date card sits on the block's top left, at the height the tallest line of its date's run
+// needs, so it holds still while its date does (y ≈ 1230–1330 above three-line lyrics, ≈ 1390–1495 above one-line ones). So in a
+// vertical shot, faces and the gag stay above y ≈ 1320 (FACE_Y1). captionStyle({ y }) (or placeCaption) moves the block by its first
+// line's middle instead (up into the sky, say), the date card with it; { size } sets the lettering.
+const CAP_FOOT = 1556, CAP_W = 860, CAP_SIZE = 64, CAP_LH = 1.28;
+// placeCaption(sec, n, style): a sung line that keeps a place of its own wherever it shows, so that it doesn't jump when it lingers
+// into the next shot: e.g. a chorus's last line whose shot sits low and puts the lyric block up in the sky, placeCaption('C1', 4,
+// { y: 470 }), stays up there for its last moments over the next verse's first shot. (n counts the section's sung lines from 1, as
+// linesOf() lists them.) A shot's captionStyle() still wins over it. Call it once, when the chapter loads.
+const CAP_PLACE = {};
+function placeCaption(sec, n, style) { CAP_PLACE[`${sec}.${n}`] = style; }
+// (the lyric block's style at t: the caption's line's own place, then the shot's captionStyle())
+function tallCapStyle(t) {
+  const cap = captionAt(t), pl = cap ? CAP_PLACE[`${cap.ln.sec}.${linesOf(cap.ln.sec).indexOf(cap.ln) + 1}`] : null;
+  return { ...pl, ..._captionStyle };
+}
+const _capWraps = new Map();
+// the line broken into at most three balanced lines at `size`: [{ text, from }] (from: its first character's index in the text)
+function capWrap(text, size) {
+  const key = `${text}|${size}`;
+  if (_capWraps.has(key)) return _capWraps.get(key);
+  ctx.save(); ctx.font = `${size}px "Archivo Black"`;
+  const sp_ = size * .02, wOf = str => ctx.measureText(str).width + sp_ * str.length;
+  const words = text.split(' ');
+  const greedy = lim => { const L = [[]]; for (const w of words) { const cur = L[L.length - 1]; if (cur.length && wOf([...cur, w].join(' ')) > lim) L.push([w]); else cur.push(w); } return L; };
+  // (as few lines as fit, then the narrowest width that keeps that many, so the lines come out even)
+  const n = greedy(CAP_W).length;
+  let lo = 0, hi = CAP_W;
+  for (let i = 0; i < 14; i++) { const mid = (lo + hi) / 2; if (greedy(mid).length <= n) hi = mid; else lo = mid; }
+  let from = 0;
+  const out = greedy(hi).map(ws => { const str = ws.join(' '), r = { text: str, from, w: wOf(str) }; from += str.length + 1; return r; });
+  ctx.restore();
+  _capWraps.set(key, out);
+  return out;
+}
+// (a caption's wrapped lines and their size: three lines at most, or a little smaller lettering)
+function capLines(text, size) {
+  let lines = capWrap(text, size);
+  if (lines.length > 3) { size = Math.round(size * .86); lines = capWrap(text, size); }
+  return { lines, size };
+}
+const capText = ln => ln.text.replace(/\s*—\s*$/, '').replace(/\s+—\s+/g, ' — ');
+function drawCaptionTall(t, cap, text, st) {
+  const ln = cap.ln, age = t - cap.on, kin = easeOut(clamp(age / .16)), kout = clamp((cap.last + .35 - t) / .2);
+  const { lines, size } = capLines(text, st.size ?? CAP_SIZE), lh = size * CAP_LH;
+  const chorus = ln.sec[0] !== 'V', y0 = st.y ?? CAP_FOOT - (lines.length - 1) * lh, font = 'Archivo Black';
+  const lit = charsSung(ln, text, t) ?? clamp((t - ln.start) / Math.max(.4, ln.end - ln.start - .15)) * text.length;
+  const col = st.col ?? (chorus ? ['#FFE07A', '#FF9A4A'] : ['#FFB0D0', '#FF5A9A']), sp_ = size * .02;
+  ctx.save(); ctx.globalAlpha = kin * kout;
+  ctx.font = `${size}px "${font}"`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  lines.forEach((L, j) => {
+    const chars = [...L.text], ws = chars.map(c => ctx.measureText(c).width), sx = Math.min(1, CAP_W / L.w), x0 = W / 2 - L.w * sx / 2;
+    const y = y0 + j * lh + (1 - kin) * (16 + j * 10);
+    ctx.save(); ctx.translate(x0, y); ctx.scale(sx, 1);
+    const draw = pass => {
+      let x = 0;
+      chars.forEach((c, i) => {
+        const k = clamp(lit - L.from - i), bounce = k > 0 && k < 1 ? -Math.sin(k * Math.PI) * size * .08 : 0;
+        if (pass === 0) { ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgb(30 24 70 / .9)'; ctx.lineWidth = size * .24; ctx.strokeText(c, x, bounce); }
+        else if (pass === 1) { ctx.strokeStyle = k > 0 ? col[1] : '#FFFFFF'; ctx.lineWidth = size * .1; ctx.strokeText(c, x, bounce); }
+        else { ctx.fillStyle = k >= 1 ? linGrad(0, -size / 2, 0, size / 2, [[0, '#FFFFFF'], [.5, col[0]], [1, col[0]]]) : '#FFFFFF'; ctx.fillText(c, x, bounce); }
+        x += ws[i] + sp_;
+      });
+    };
+    ctx.shadowColor = 'rgb(255 120 180 / .5)'; ctx.shadowBlur = 18; draw(0); ctx.shadowBlur = 0; draw(1); draw(2);
+    ctx.restore();
+    // the ♪ badge before the first line
+    if (j === 0) {
+      const nx = x0 - size * .72, ny = y, r = size * .36;
+      fillP(ellPath(nx, ny, r, r), chorus ? '#FF9A4A' : '#FF5A9A'); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 4; ctx.stroke(ellPath(nx, ny, r, r));
+      txt('♪', nx, ny + 1, size * .42, '#FFFFFF', { font: 'archivo' });
+    }
+  });
+  ctx.restore();
+}
+// (the date card's place in the tall frame: on the lyric block's top left, wherever a shot moves the caption; at the block's default
+// place, as high as the tallest caption of its date's run (the lines sung from its date's first line to the next date's) needs)
+const _dateRunLines = new Map();
+function dateRunLines(seg) {
+  if (_dateRunLines.get(seg)?.lines === LINES) return _dateRunLines.get(seg).n;
+  const i0 = SEGS.indexOf(seg);
+  let end = DUR;
+  for (let i = i0 + 1; i < SEGS.length; i++) if (SEGS[i].date && SEGS[i].date !== seg.date) { end = SEGS[i].start; break; }
+  let n = 1;
+  for (const ln of LINES) if (ln.start >= seg.start - .01 && ln.start < end) n = Math.max(n, capLines(capText(ln), CAP_SIZE).lines.length);
+  _dateRunLines.set(seg, { lines: LINES, n });
+  return n;
+}
+function drawDateCardTall(d, st) {
+  const size = st.size ?? CAP_SIZE, w = 320, h = 104, x = 100;
+  const top = st.y ?? CAP_FOOT - (dateRunLines(d.seg) - 1) * size * CAP_LH, y = top - size * .62 - 22 - h;
+  const k = easeOut(clamp(d.age / .28));
+  ctx.save(); ctx.translate(x, y); ctx.transform(1, 0, -.18, 1, 0, 0);
+  ctx.beginPath(); ctx.rect(-40, -20, (w + 80) * k, h + 40); ctx.clip();
+  ctx.fillStyle = 'rgb(40 30 90 / .25)'; ctx.fillRect(8, 8, w, h);
+  ctx.fillStyle = 'rgb(255 255 255 / .94)'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = linGrad(0, 0, 0, h, [[0, '#FF6FA8'], [1, '#FF9A4A']]); ctx.fillRect(0, 0, 16, h);
+  ctx.restore();
+  const parts = d.text.split(/\s+/), yr = parts[parts.length - 1], md = parts.slice(0, -1).join(' ');
+  ctx.save(); ctx.globalAlpha = clamp((d.age - .08) / .2);
+  txt(md || '·', x + 40, y + 28, 30, '#5A4E86', { font: 'code', align: 'left' });
+  txt(yr, x + 32, y + 72, 62, '#2A2350', { font: 'archivo', align: 'left' });
+  txt('★', x + w - 46, y + 24, 28, '#FF6FA8', { font: 'archivo' });
+  ctx.restore();
+  if (d.age < .6) sparkle(x + w - 30, y + 4, 32 * Math.sin(clamp(d.age / .6) * Math.PI), 1, '#FFFFFF');
+}
 // ---------- the date card: a slanted white tab, the month small over the year big, a coloured stripe; wipes in on change ----------
 function dateInfo(t) {
   let cur = null;
@@ -2263,6 +2675,7 @@ function dateInfo(t) {
 }
 function drawDateCard(t) {
   const d = dateInfo(t); if (!d || _noStamp) return;
+  if (TALL()) return drawDateCardTall(d, tallCapStyle(t));
   const parts = d.text.split(/\s+/), yr = parts[parts.length - 1], md = parts.slice(0, -1).join(' ');
   const k = easeOut(clamp(d.age / .28)), x = W - 60, y = 58, w = 300, h = 92;
   ctx.save(); ctx.translate(x, y); ctx.transform(1, 0, -.18, 1, 0, 0);
@@ -2287,6 +2700,126 @@ OVERLAYS.push((t, s) => {
   }
   _noCaption = false; _noStamp = false; _captionStyle = null; _bloomK = null; _noVig = false;
 });
+
+// =====================================================================================================
+// THE VERTICAL VIDEO: helpers for the vshot()s (styles/anime/VERTICAL.md has the conventions)
+// =====================================================================================================
+// Where things go in the tall frame: what must be read inside SAFE (an organic Reel covers the top ~220 px with its header, the bottom
+// ~270 with its account name, caption and audio label, and the right edge below y ≈ 1000 with its buttons); faces and the gag above
+// FACE_Y1, clear of the lyric block (its foot at y ≈ 1600, the date card above it). Below the block (y 1600–1920) nothing needs
+// reading, but it is picture: the end of a stack, where a falling thing lands, a crowd; not a stretched floor.
+const SAFE = { x0: 60, x1: 960, y0: 250, y1: 1600 }, FACE_Y1 = 1320;
+
+// stackPanels(n, fn, o): the tall frame cut into n manga-panel bands, stacked top to bottom, their seams slanted o.slant px across the
+// frame (default 90; negative: falling to the right) with white gutters o.gutter wide (16). fn(i, rect) paints band i, clipped to its
+// slanted shape; rect = [x, y, w, h] is the band's bounding box (hand it to still()'s rect). o.y0 / o.y1: the stack's extent (default
+// the frame); o.weights: relative band heights; o.gutterCol.
+function stackPanels(n, fn, o = {}) {
+  const y0 = o.y0 ?? 0, y1 = o.y1 ?? H, sl = o.slant ?? 90, g = o.gutter ?? 16, wts = o.weights ?? Array(n).fill(1), tot = wts.reduce((a, b) => a + b, 0);
+  const seams = [y0]; for (let i = 0; i < n; i++) seams.push(seams[i] + (y1 - y0) * wts[i] / tot);
+  // a seam's y at x: centred on its nominal y, rising by sl from left to right
+  const sy = (j, x) => j === 0 ? y0 - Math.abs(sl) : j === n ? y1 + Math.abs(sl) : seams[j] + sl / 2 - sl * x / W;
+  for (let i = 0; i < n; i++) {
+    const top = Math.min(sy(i, 0), sy(i, W)), bot = Math.max(sy(i + 1, 0), sy(i + 1, W));
+    ctx.save(); ctx.beginPath(); ctx.moveTo(0, sy(i, 0)); ctx.lineTo(W, sy(i, W)); ctx.lineTo(W, sy(i + 1, W)); ctx.lineTo(0, sy(i + 1, 0)); ctx.closePath(); ctx.clip();
+    fn(i, [0, top, W, bot - top]);
+    ctx.restore();
+  }
+  ctx.save(); ctx.strokeStyle = o.gutterCol ?? '#FFFFFF'; ctx.lineWidth = g;
+  for (let j = 1; j < n; j++) { ctx.beginPath(); ctx.moveTo(-10, sy(j, -10)); ctx.lineTo(W + 10, sy(j, W + 10)); ctx.stroke(); }
+  ctx.restore();
+}
+// mangaPage(rects, fn, o): a manga page: paper, and panels with inked borders. rects = [[x, y, w, h], …]; fn(i, rect) paints panel
+// i, clipped to it (hand rect to still()'s rect). For a wide picture that must be seen whole (a 16:9 still's row of three), a panel
+// 1080 × 600 or so under the Reels header, with another panel below it, beats a slice. o.paper, o.ink, o.bw (border width, 7).
+function mangaPage(rects, fn, o = {}) {
+  ctx.fillStyle = o.paper ?? '#FBF7EF'; ctx.fillRect(0, 0, W, H);
+  rects.forEach((r, i) => {
+    ctx.save(); ctx.beginPath(); ctx.rect(...r); ctx.clip(); fn(i, r); ctx.restore();
+    ctx.save(); ctx.strokeStyle = o.ink ?? '#2A2440'; ctx.lineWidth = o.bw ?? 7; ctx.strokeRect(...r); ctx.restore();
+  });
+}
+// skyAbove(y0, y1, w, col, fade): fills the band y0–y1 across x 0–w with col, fading into the picture below over its top `fade` px: a
+// wide picture's sky carried on above it, where a panel bleeds off the top of the frame.
+function skyAbove(y0, y1, w, col, fade = 60) {
+  ctx.save(); ctx.fillStyle = col; ctx.fillRect(0, y0, w, y1 - y0);
+  ctx.fillStyle = linGrad(0, y1, 0, y1 + fade, [[0, alpha(col, 1)], [1, alpha(col, 0)]]); ctx.fillRect(0, y1 - 1, w, fade + 1);
+  ctx.restore();
+}
+// stillEdge(name, v, rect, edge, over): where a still framed `free` doesn't reach an edge of rect, its own top (edge 0) or bottom
+// (edge 1) row of pixels stretched out to that edge: a wall, a floor, a sky or a sweater carried on with no seam (v: what still()
+// returned; over: how many px it overlaps the picture, more for a still that rocks a little). Prefer it to a fill colour, which never
+// quite matches the picture and leaves a hard line across the frame.
+function stillEdge(name, v, rect, edge, over = 1) {
+  const I = STILLS[name], B = IMGS[name]; if (!I || !B) return;
+  const ky = B.height / I.h, [x0, y0] = v.pt(0, edge), [x1] = v.pt(1, edge);
+  ctx.save(); ctx.beginPath(); ctx.rect(...rect); ctx.clip();
+  if (edge) { if (y0 < rect[1] + rect[3]) ctx.drawImage(B, 0, B.height - 2 * ky, B.width, 2 * ky, x0 - over, y0 - over, x1 - x0 + 2 * over, rect[1] + rect[3] - y0 + over); }
+  else if (y0 > rect[1]) ctx.drawImage(B, 0, 0, B.width, 2 * ky, x0 - over, rect[1], x1 - x0 + 2 * over, y0 - rect[1] + over);
+  ctx.restore();
+}
+// cardLong(name, x, y, h, o): a cast card (card_akari, card_ren, card_kiri) carried on down to the knees (vt_card_*, the same drawing at
+// the same scale with its legs added), drawn where cut(name, x, y, h, o) would draw the card itself: h and o.anchor are the card's,
+// and so are the fractions its pt() takes. A photocard strip's bust then runs on to the foot of the tall frame. cardFloor(name, av, y)
+// is the card's height at which, anchored at fraction av at y, the long card's foot reaches the frame's bottom edge.
+function cardLong(name, x, y, h, o = {}) {
+  const L = 'vt_' + name, A = STILLS[name], B = STILLS[L];
+  if (!B) return cut(name, x, y, h, o);
+  const kx = A.w / B.w, ky = A.h / B.h, [au, av] = o.anchor ?? [.5, 1];
+  const c = cut(L, x, y, h / ky, { ...o, anchor: [au * kx, av * ky] });
+  return { s: c.s, pt: (u, v) => c.pt(u * kx, v * ky) };
+}
+function cardFloor(name, av, y) {
+  const A = STILLS[name], B = STILLS['vt_' + name];
+  return B ? (H + 15 - y) / (B.h / A.h - av) : 0;
+}
+// stripFoot(x, w, col, y0): the foot of a photocard strip: its picture fades into col from y0 (1150) down, under the lyric block, so the
+// bust cut-outs' cropped bottom edges never show.
+function stripFoot(x, w, col, y0 = 1150) {
+  ctx.save(); ctx.fillStyle = linGrad(0, y0, 0, y0 + 420, [[0, alpha(col, 0)], [.65, alpha(col, .85)], [1, alpha(col, 1)]]); ctx.fillRect(x, y0, w, H - y0); ctx.restore();
+}
+// whipPan(b, stops, o): a camera that holds on each stop and whips to the next on its beat: stops = [[beat, value], …] (a framing's x,
+// say); the whip takes o.len beats (.4), eased. → { v, whip } (whip: 0..1, how hard it's moving now, for speed lines or a blur).
+function whipPan(b, stops, o = {}) {
+  const len = o.len ?? .4;
+  let v = stops[0][1], whip = 0;
+  for (let i = 1; i < stops.length; i++) {
+    const [b1, v1] = stops[i], k = clamp((b - b1) / len);
+    if (k > 0) { v = lerp(v, v1, ease(k)); if (k < 1) whip = Math.sin(k * Math.PI); }
+  }
+  return { v, whip };
+}
+// vKeyVisual(t, bb, o): the vertical key visual, the intro's title drop (bb = beats into it, 0 → about 8) and the vertical poster: the
+// spring sky, the title logo high in the frame, and the cast below it in a triangle: Ren at the back on the left, Kiri at the back on
+// the right, Akari in front between them with her peace sign, Clawd hopping in at the bottom left; their waists sink into a glowing
+// haze along the bottom. They rise into place one by one as the logo builds. For the poster: o.logo [x, y, s], o.logoK (the logo's
+// build, default from bb), o.cast (a y offset for the three), o.clawd [x, y].
+function vKeyVisual(t, bb, o = {}) {
+  const push = 1 + .035 * ease(clamp(bb / 8));
+  still('vt_intro_sky', { x: .5, y: lerp(.24, .3, ease(clamp(bb / 8))), z: 1.06 * push });
+  rays(-120, -160, { t, a: .2, n: 8, ang: 1.0, len: 3200 });
+  petals(t, { n: 14, seed: 21, s: 1.6, depth: true });
+  const rise = (b0, len = .9) => (1 - easeOut(clamp((bb - b0) / len))) * 420, dy = o.cast ?? 0;
+  // (a slow push in about the group)
+  ctx.save(); ctx.translate(W / 2, H * .62); ctx.scale(push, push); ctx.translate(-W / 2, -H * .62);
+  cut('card_kiri', 790, 860 + dy + rise(.2), 1000, { anchor: [.5, .29] });
+  // (Ren's card is cut off at his thighs: in the video he stands a little lower and larger than on the poster, so that edge is below
+  // the frame rather than showing through the haze)
+  const [ry, rh] = o.cast === undefined ? [990, 1100] : [930, 1040];
+  cut('card_ren', 285, ry + dy + rise(.5), rh, { anchor: [.45, .14] });
+  cut('card_akari', 565, 1150 + dy + rise(.8), 1120, { anchor: [.42, .19] });
+  // the haze the group stands in (and the bottom of the frame, under the Reels caption, stays soft)
+  // (in the video, a lighter haze: the three run on down to the frame's edge, seen through it)
+  const [h1, h2] = o.cast === undefined ? [.6, .78] : [.8, .97];
+  ctx.fillStyle = linGrad(0, 1380 + dy, 0, H, [[0, 'rgb(255 248 252 / 0)'], [.55, `rgb(255 248 252 / ${h1})`], [1, `rgb(255 250 252 / ${h2})`]]); ctx.fillRect(0, 1380 + dy, W, H);
+  const hop = Math.abs(Math.sin(frac(bb / 2) * Math.PI)), ck = easeOut(clamp((bb - 1.4) / .7));
+  const [cx, cy] = o.clawd ?? [235, 1700 + dy];
+  if (ck > 0) cut('clawd_jump', lerp(-200, cx, ck), cy - hop * 70, 330, { rot: .12 - .06 * Math.sin(bb * Math.PI), sq: (1 - hop) * .05 });
+  ctx.restore();
+  petals(t, { n: 10, seed: 27, s: 2.2, depth: true });
+  const [lx, ly, ls] = o.logo ?? [540, 445, 1.06];
+  titleLogo(lx, ly, ls, o.logoK ?? clamp((bb - .8) / 3), t);
+}
 
 // =====================================================================================================
 // PLACEHOLDER for windows nobody has painted yet: the club room plate, the window's key and lyric on a card, Clawd bobbing
@@ -2399,6 +2932,101 @@ function placeholder(t, s) {
     if (bb > 3.8 && bb < 5.5) flare(1640, 120, Math.sin(clamp((bb - 3.8) / 1.7) * Math.PI));
     flash(1 - clamp(bb / .5));
   });
+
+  // =====================================================================================================
+  // THE VERTICAL INTRO (1080×1920): the same five beats, composed for the tall frame. A tall tilt down the sky to the railing; a
+  // face-filling close-up whose eyes open; Akari in the wind, her hair sweeping up the frame; the cast cards as tall busts with their
+  // names across their chests; the title over the cast stacked up the frame (vKeyVisual, the vertical poster's art too).
+  // =====================================================================================================
+  // the cast card's caption: the name as big as fits, the role broken at its " · " into lines under it
+  function vNameCard(name, role, x, y, k, col) {
+    if (k <= 0) return;
+    const size = Math.min(100, 900 / textW(name, 1, 'rammetto') * .97);
+    nameCard(name, '', x, y, k, col, { size });
+    const e = easeOut(clamp(k)), parts = role.split(' · ');
+    ctx.save(); ctx.globalAlpha *= clamp(k * 2);
+    parts.forEach((l, i) => txt(l, x + 12 + (1 - e) * -200, y + size * .78 + 20 + i * 52, 41, '#FFFFFF', { font: 'code', align: 'left', stroke: '#2A2350', sw: 9 }));
+    ctx.restore();
+  }
+  vshot('intro', (p, lt, d, t, seg) => {
+    hideCaption(); hideStamp();
+    const b = bpOf(t) - Math.round(bpOf(seg.start));
+    // ---------- the sky: a long tilt down the tall plate from the high blue to the railing; Clawd hops up onto it ----------
+    if (b < 8) {
+      const k = ease(clamp(b / 7.2));
+      const v = still('vt_intro_sky', { x: .5, y: k, z: lerp(1.5, 1.04, k) });
+      rays(-120, -160, { t, a: .24, n: 9, ang: 1.0, len: 3200 });
+      petals(t, { n: 30, seed: 3, s: 1.6, depth: true });
+      if (b > 4.6) {
+        // up from below the frame in an arc, a squash on landing on the top rail, then a bob on every beat
+        const [rx, ry] = v.pt(.6, .765), hop = clamp((b - 4.6) / .9), land = b - 5.5;
+        const x = lerp(rx + 220, rx, easeOut(hop)), y = hop < 1 ? lerp(H + 300, ry, easeOut(hop)) - Math.sin(hop * Math.PI) * 300 : ry;
+        const sq = hop < 1 ? -.08 : .14 * Math.exp(-land * 5) * Math.cos(land * 14) + .04 * pulse(t);
+        if (land > 0 && land < 1.2) burst(rx, ry - 120, 340, land / 1.2, ['#FFFFFF', '#FFE070', '#FFB0C8']);
+        cut('clawd_jump', x, y + 10, 330, { sq, rot: hop < 1 ? (1 - hop) * .5 : 0 });
+        if (land > 0) sparkleField(t, { n: 7, r: 26, seed: 4, x0: rx - 260, x1: rx + 260, y0: ry - 440, y1: ry - 80 });
+      }
+      // the OP credit, high on the left of the open sky
+      const ck = clamp((b - 1) / .6) * clamp((5 - b) / .6);
+      if (ck > 0) [['OPENING THEME', 34, 'code'], ["We Didn't Start", 66, 'archivo'], ['the Scaling', 66, 'archivo']].forEach(([l, sz, f], i) =>
+        txt(l, 90, 520 + i * 80 - (i ? 0 : 6), sz, '#FFFFFF', { font: f, align: 'left', alpha: ck, stroke: 'rgb(60 90 160 / .55)', sw: 8 }));
+      flare(250, 150 + (1 - k) * 80, .85 + .2 * Math.sin(t * 3));
+      flash(1 - clamp(b / .6));
+      return;
+    }
+    // ---------- the eyes: her face fills the tall frame; the eyes open in three drawings, star glints cross them ----------
+    if (b < 12) {
+      const bb = b - 8;
+      const patches = bb < 1 ? ['vt_intro_eyes.closed'] : bb < 1.35 ? ['vt_intro_eyes.half'] : [];
+      const v = still('vt_intro_eyes', { x: .5, y: .52, z: 1.04 + bb * .03 }, { patches });
+      leak(.4 + .12 * Math.sin(t * 2), { side: 'left', col: '#FFC08A' });
+      if (bb > 2.2) { const g = Math.sin(clamp((bb - 2.2) / 1.2) * Math.PI); for (const u of [.25, .75]) { const [x, y] = v.pt(u, .522); glint(x + 26, y - 56, 74, g); } }
+      sparkleField(t, { n: 10, r: 22, seed: 12, y0: 120, y1: 640 });
+      flash(1 - clamp(bb / .25));
+      return;
+    }
+    // ---------- the wind: her hair sweeps up the frame in one arc; she laughs, then opens her eyes to beam at us; a slow push in ----------
+    if (b < 16) {
+      const bb = b - 12, k = ease(clamp(bb / 4));
+      still('vt_intro_wind', { x: lerp(.5, .53, k), y: lerp(.48, .52, k), z: lerp(1.02, 1.22, k) }, { patches: bb < 1.5 ? ['vt_intro_wind.laugh'] : [] });
+      rays(-120, -160, { t, a: .2, n: 8, ang: 1.0, len: 3200 });
+      petals(t, { n: 56, seed: 9, s: 2.2, depth: true, wind: 420, fall: 70 });
+      sparkleField(t, { n: 10, r: 22, seed: 5 });
+      leak(.28, { side: 'right', col: '#FFD0E0' });
+      cutFlash(bb, .9, .35);
+      return;
+    }
+    // ---------- the cast reveal: a tall bust per four beats whips in, the name slams across the chest, a push in, a flash out ----------
+    if (b < 32) {
+      const i = Math.floor((b - 16) / 4), bb = (b - 16) - i * 4, slide = easeOut(clamp(bb / .5)), push = 1 + bb * .02;
+      if (i < 3) {
+        const C = CARDS[i];
+        diagSplit(C.c1, C.c2, t, { x: W * .5, a: .22 * C.side, speed: 300 * C.side });
+        speedLines(W * .5, 820, t, { n: 80, r0: 440, a: .3 });
+        const x = W * (C.side > 0 ? .54 : .46) + (1 - slide) * 900 * C.side;
+        const v = cut(C.cut, x, H + 80 + bb * 6, 1420 * push, { shadow: false });
+        if (C.lenses) { const pts = C.lenses.map(([u, w]) => v.pt(u, w)), r = v.s * 632 * .042; lensFlash(pts, r, r * .8, Math.sin(clamp((bb - 1.2) / .9) * Math.PI)); }
+        vNameCard(C.name, C.role, 80, 1250, clamp((bb - .4) / .5), C.col);
+        sparkleField(t, { n: 10, r: 24, seed: 11 + i });
+      } else {
+        // Clawd's card: he bounces on every beat
+        diagSplit('#FFE4CC', '#FF9E6A', t, { x: W * .5, a: .22, speed: 300 });
+        speedLines(W * .5, 820, t, { n: 80, r0: 400, a: .3 });
+        const hop = Math.abs(Math.sin(frac(b) * Math.PI));
+        cut('clawd_jump', W * .5 + (1 - slide) * 900, 1080 - hop * 110, 640 * push, { sq: (1 - hop) * .07, shadow: .3 });
+        vNameCard('CLAWD', 'club mascot · helpful, harmless, orange', 80, 1250, clamp((bb - .4) / .5), '#E8783E');
+        sparkleField(t, { n: 12, r: 26, seed: 19 });
+      }
+      flash(.8 * (1 - clamp(bb / .25)));
+      if (bb > 3.6) flash((bb - 3.6) / .4 * .9);
+      return;
+    }
+    // ---------- the title drop: white flash, the cast rises into a stack up the frame, the logo builds letter by letter ----------
+    const bb = b - 32;
+    vKeyVisual(t, bb);
+    if (bb > 3.8 && bb < 5.5) flare(900, 240, Math.sin(clamp((bb - 3.8) / 1.7) * Math.PI));
+    flash(1 - clamp(bb / .5));
+  });
 })();
 
 ;
@@ -2505,12 +3133,27 @@ function placeholder(t, s) {
     }
   });
 
+  // the hood's shadow over the essayist's eyes, so his face stays a secret until V3.16's reveal: a soft dark oval filling the hood's
+  // opening (centre c and radii r, fractions of the still), opaque from the top down past his eyes and fading out above his smirk
+  // (fade: [v0, v1])
+  function hoodShade(v, c, r, fade, a = .985) {
+    const [cx, cy] = v.pt(...c), rx = Math.abs(v.pt(c[0] + r[0], c[1])[0] - cx), ry = Math.abs(v.pt(c[0], c[1] + r[1])[1] - cy);
+    const [, y1] = v.pt(.5, fade[0]), [, y2] = v.pt(.5, fade[1]);
+    const y0 = cy - ry, at = y => clamp((y - y0) / (y2 - y0));
+    ctx.save(); ctx.filter = `blur(${(9 * v.s * RS).toFixed(1)}px)`;
+    ctx.fillStyle = linGrad(0, y0, 0, y2, [[0, `rgb(4 14 18 / ${a * .7})`], [at(y0 + ry * .25), `rgb(4 14 18 / ${a})`], [at(y1), `rgb(4 14 18 / ${a})`], [1, 'rgb(4 14 18 / 0)']]);
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, TAU); ctx.fill(); ctx.restore();
+  }
+  const GWERN_HOOD = { c: [.53, .31], r: [.12, .22], fade: [.48, .516] };
+  const GWERN_HOOD_V = { c: [.5, .558], r: [.17, .078], fade: [.598, .615] };
+
   // ---------- V1.3 "Gwern said 'stack the compute high'": the hooded essayist points up; then the GPU tower into the clouds ----------
   line('V1', 3, (p, lt, d, t, seg) => {
     const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4]);
     if (i === 0) {
       const k = ease(clamp((b - .5) / 3.5));
-      still('v1_3_gwern', { x: .5, y: lerp(.5, .42, k), z: lerp(1.05, 1.2, k) });
+      const v = still('v1_3_gwern', { x: .5, y: lerp(.5, .42, k), z: lerp(1.05, 1.2, k) });
+      hoodShade(v, GWERN_HOOD.c, GWERN_HOOD.r, GWERN_HOOD.fade);
       nameTag('GWERN', 'pseudonymous essayist', 90, 150, clamp((b - .7) / .5), '#2BB5A8');
       sayBubble('stack the compute high.', 1320, 180, 44, clamp((b - 1.4) / 1.6), 1150, 330);
       if (b < 1) flash(.6 * (1 - clamp((b - .5) / .2)));
@@ -2785,6 +3428,444 @@ function placeholder(t, s) {
       if (bb > 4.4) flash((bb - 4.4) / .6);
     }
   });
+
+  // =====================================================================================================
+  // THE VERTICAL VERSE 1 (1080×1920): every line keeps its gag and its cut, composed for the tall frame, mostly on tall stills
+  // (vt_v1_*, see shots/vt_c02_v1.json). Faces and gags stay above FACE_Y1, clear of the lyric block (the caption from CAP_Y down,
+  // the date card above it on the left). Same beats as the horizontal shots, so the cuts land together.
+  // =====================================================================================================
+  // ---------- V1.1: the paper from above; a glow runs along the title and the spark races down the fuse off the bottom of the frame;
+  // then Akari holds up the paper as the spark shoots up from below and bursts over her head ----------
+  vshot('V1.1', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4.5]);
+    if (i === 0) {
+      // the camera starts on the title and follows the spark down the cord
+      const run = clamp((bb - 1.5) / 2.8), k = ease(clamp(bb / 4.5));
+      const v = still('vt_v1_1_paper', { x: .5, y: lerp(.36, .62, k), z: lerp(1.32, 1.12, k) });
+      const sw = clamp(bb / 1.5);
+      if (sw < 1) { const [x, y] = v.pt(lerp(.22, .79, sw), .222); addGlow(x, y, 150, '#FFB050', .8); sparkle(x, y, 52, 1, '#FFF4C0'); }
+      // the spark: from where the cord crosses the title, down the cord and out of the bottom of the frame
+      if (bb > 1.2) {
+        const [x0, y0] = v.pt(.505, .25), [x1, y1] = v.pt(.505, .97), e = easeIn(run), y = lerp(y0, Math.max(y1, H + 120), e);
+        sparks(x0 + Math.sin(t * 9) * 4, y, t, { r: 110 + 25 * pulse2(t) });
+        // the cord behind it is burnt
+        ctx.save(); ctx.globalAlpha = .55; ctx.strokeStyle = '#3A2A20'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0, y - 30); ctx.stroke(); ctx.restore();
+      }
+      leak(.28, { side: 'top', col: '#FFD9A0' });
+      cutFlash(bb, .5);
+    } else {
+      const k = ease(clamp(bb / 4));
+      const v = still('vt_v1_1_akari', { x: .5, y: lerp(.42, .36, k), z: lerp(1.04, 1.16, k) });
+      // the spark shoots up from the bottom of the frame past the paper and bursts over her head
+      const up = easeOut(clamp(bb / .7)), [hx, hy] = v.pt(.47, .02);
+      if (up < 1) { const y = lerp(H + 100, hy, up); sparks(hx + (1 - up) * 120, y, t, { r: 120 }); speedBars(t, { n: 14, a: .35 * (1 - up), ang: -Math.PI / 2, speed: 5000 }); }
+      if (bb > .6 && bb < 1.9) burst(hx, hy + 40, 520, (bb - .6) / 1.3, ['#FFFFFF', '#FFE070', '#FFB0C8']);
+      for (const [u, w] of [[.39, .225], [.565, .2]]) { const [x, y] = v.pt(u, w); glint(x, y - 10, 46, Math.sin(clamp((bb - .8) / 1.4) * Math.PI)); }
+      petals(t, { n: 22, seed: 2, s: 1.6, depth: true });
+      cutFlash(bb, .9, .35);
+    }
+  });
+
+  // ---------- V1.2: the mob boss in her tall chair, Clawd the cat in her lap; her glasses flash. Then the tablet, upright: a straight
+  // power law falling down the screen, a point every half beat; Akari (with Clawd on her head) pops up from below: OK!! ----------
+  vshot('V1.2', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4]);
+    if (i === 0) {
+      // (a pull back from her face to the whole chair: she and Clawd end the move wholly in the frame)
+      const k = ease(clamp((b - .5) / 3.5));
+      const v = still('vt_v1_2_kiri', { x: .5, y: lerp(.4, .5, k), z: lerp(1.14, 1.0, k) });
+      const g = Math.sin(clamp((b - 1) / 1) * Math.PI);
+      lensFlash([v.pt(.452, .226), v.pt(.6, .222)], 52 * v.s, 42 * v.s, g);
+      const [mx, my] = v.pt(.5, .275);
+      sayBubble("It's a power law.", 540, my + 190, 52, clamp((b - 2) / 1.2), mx, my + 30);
+      if (b < 1) flash(.6 * (1 - clamp((b - .5) / .2)));
+    } else {
+      // the tablet held upright fills the frame: log compute across, log loss down; the fitted line falls corner to corner, and Akari
+      // pops up in front of the tablet's lower half
+      ctx.fillStyle = '#20264A'; ctx.fillRect(0, 0, W, H);
+      const bez = 56, x0 = 170, y0 = 300, x1 = 960, y1 = 1150;
+      ctx.fillStyle = '#0E1330'; ctx.fill(rrPath(bez, bez + 120, W - bez * 2, H, 30));
+      ctx.strokeStyle = 'rgb(120 150 255 / .18)'; ctx.lineWidth = 2;
+      for (let gx = 0; gx <= 5; gx++) { const x = lerp(x0, x1, gx / 5); ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); }
+      for (let gy = 0; gy <= 6; gy++) { const y = lerp(y0, y1, gy / 6); ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); }
+      txt('compute (log) →', x1, y1 + 50, 40, '#9FB4FF', { font: 'code', align: 'right' });
+      txt('loss (log) →', x0 - 62, (y0 + y1) / 2, 40, '#9FB4FF', { font: 'code', rot: Math.PI / 2 });
+      const n = clamp(Math.floor(bb * 2) + 1, 0, 8), line = u => [lerp(x0 + 50, x1 - 50, u), lerp(y0 + 50, y1 - 50, u)];
+      // the fitted line, and on the last beats it escapes past the bezel
+      const ext = clamp((bb - 3) / .8), [ax, ay] = line(-.15), [bx_, by_] = line(1 + ext * .7), kk = clamp(bb / 1.5);
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.strokeStyle = 'rgb(255 170 80 / .35)'; ctx.lineWidth = 30; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(lerp(ax, bx_, kk), lerp(ay, by_, kk)); ctx.stroke(); ctx.restore();
+      ctx.strokeStyle = '#FFB050'; ctx.lineWidth = 9; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(lerp(ax, bx_, kk), lerp(ay, by_, kk)); ctx.stroke();
+      for (let j = 0; j < n; j++) {
+        const [x, y] = line((j + .5) / 8), age = bb - j / 2, e = backOut(clamp(age / .25), 3);
+        fillP(ellPath(x, y, 20 * e, 20 * e), '#FFFFFF'); addGlow(x, y, 60 * e, '#7FD8FF', .8 * (1 - clamp(age)));
+      }
+      txt('L ∝ C^−α', 780, 380, 72, '#FFE3B0', { font: 'archivo', alpha: clamp((bb - 2) / .5) });
+      // Akari pops up from the bottom left under the line, Clawd riding on her head, bobbing on the beat; her waist runs off the bottom
+      // of the frame
+      const pk = easeOut(clamp((bb - 2.2) / .4)), bob = pulse(t, 5) * 18, ay_ = 960 + (1 - pk) * 1300 + bob;
+      if (pk > 0) {
+        const a = cut('card_akari', 300, ay_, 1260, { anchor: [.42, .19] });
+        const [hx, hy] = a.pt(.42, .02);
+        cut('clawd_jump', hx + 10, hy + 40 + bob * .4, 230, { rot: -.08 + .08 * Math.sin(bb * Math.PI) });
+      }
+      popLabel('OK!!', 730, 980 - bob, 64, clamp((bb - 2.6) / .3), { fill: '#FFE070', rot: .08 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V1.3: the hooded essayist, his smirk; on the beat the camera whips up his raised arm to the pointing finger, and he says
+  // it. Then the GPU tower: from Akari and Ren gaping at its foot, a tilt up the whole tall tower into the clouds, thumping on every
+  // beat ----------
+  vshot('V1.3', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4]);
+    if (i === 0) {
+      // (held on his face, above the lyric block; then up to the hand, his face sinking out through the bottom of the frame)
+      const { v: fy_, whip } = whipPan(b, [[0, .583], [1.6, .333]], { len: .5 });
+      const v = still('vt_v1_3_gwern', { x: .55, y: fy_, z: lerp(1.2, 1.5, ease(clamp((b - 1.6) / .5))) + .02 * clamp(b / 4) });
+      hoodShade(v, GWERN_HOOD_V.c, GWERN_HOOD_V.r, GWERN_HOOD_V.fade);
+      speedBars(t, { n: 18, a: .4 * whip, ang: Math.PI / 2, speed: 5000 });
+      nameTag('GWERN', 'pseudonymous essayist', 70, 330, clamp((b - .4) / .5) * (1 - clamp((b - 1.6) / .3)), '#2BB5A8');
+      sayBubble('stack the compute high.', 500, 640, 50, clamp((b - 2.1) / 1.4), 560, 1150);
+      sparkleField(t, { n: 6, r: 22, seed: 31, x0: 700, x1: 1000, y0: 60, y1: 420, col: '#C8FFF4' });
+      if (b < 1) flash(.6 * (1 - clamp((b - .5) / .2)));
+    } else {
+      // tilt up the tower; every beat it thumps (a punch, a shake, a flash of light at the top)
+      // (it opens on their faces, just above the lyric block, 1.45× in, and pulls back as it climbs)
+      const k = ease(clamp((bb - .3) / 2.4)), h = hit(frac(bb), .35), [sx, sy] = shake(t, 8 * h);
+      const v = still('vt_v1_3_tower', { x: .5, y: lerp(1, 0, k), z: lerp(1.45, 1.02, k) * punch(frac(bb), .025) }, { dx: sx, dy: sy });
+      const [tx, ty] = v.pt(.49, .03);
+      addGlow(tx, Math.max(ty, 80), 300, '#7FF0FF', .35 * h + .2);
+      sparkleField(t, { n: 12, r: 22, seed: 33, x0: W * .25, x1: W * .75, y0: 0, y1: H * .6, col: '#C8FFFF' });
+      speedBars(t, { n: 16, a: .3 * (1 - k), ang: Math.PI / 2, speed: 4200 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // the desk's front panel, painted down from under its top to the floor: Clawd sits at it with nothing showing underneath (the tall
+  // still gave him a row of feet under the desk)
+  const DESK = { tl: [.2, .771], tr: [.8, .771], br: [.806, .942], bl: [.194, .942] };
+  function deskFront(v) {
+    const [a, b, c, d] = [DESK.tl, DESK.tr, DESK.br, DESK.bl].map(q => v.pt(...q)), u = v.s;
+    const P = new Path2D(); P.moveTo(...a); P.lineTo(...b); P.lineTo(...c); P.lineTo(...d); P.closePath();
+    ctx.fillStyle = linGrad(0, a[1], 0, d[1], [[0, '#8796AC'], [.12, '#A3B1C4'], [1, '#B4C0D2']]); ctx.fill(P);
+    // light from the window on the left, a seam down the middle, the shadow it casts on the floor
+    ctx.save(); ctx.clip(P);
+    ctx.fillStyle = 'rgb(255 255 255 / .22)'; ctx.fillRect(a[0], a[1], (b[0] - a[0]) * .06, d[1] - a[1]);
+    ctx.strokeStyle = 'rgb(60 70 100 / .25)'; ctx.lineWidth = 2.5 * u; ctx.beginPath(); ctx.moveTo((a[0] + b[0]) / 2, a[1] + 14 * u); ctx.lineTo((c[0] + d[0]) / 2, c[1] - 10 * u); ctx.stroke();
+    ctx.restore();
+    ctx.strokeStyle = '#3B2C22'; ctx.lineWidth = 3.4 * u; ctx.lineJoin = 'round'; ctx.stroke(P);
+  }
+  // ---------- V1.4: Clawd at his desk doing 23×47, in panels that double on the beats (1, 2 stacked, 2×2, 2×4, 4×4) ----------
+  vshot('V1.4', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), lvl = clamp(Math.floor(b / 2), 0, 4), n = 1 << lvl, cols = [1, 1, 2, 2, 4][lvl], rows = n / cols;
+    const pw = W / cols, ph = H / rows, lb = b - lvl * 2;
+    for (let j = 0; j < n; j++) {
+      const x = (j % cols) * pw, y = Math.floor(j / cols) * ph;
+      const v = still('vt_v1_4_clawd', { x: .5 + (hash2(9, j) - .5) * .08, y: n === 1 ? .5 : .56, z: (n === 1 ? 1.1 : 1.04) + .03 * Math.sin(t * 2 + j) }, { rect: [x, y, pw, ph] });
+      ctx.save(); ctx.beginPath(); ctx.rect(x, y, pw, ph); ctx.clip(); deskFront(v); ctx.restore();
+      if (j) { ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = .35; ctx.fillStyle = TINTS[j % TINTS.length]; ctx.fillRect(x, y, pw, ph); ctx.restore(); }
+      const ak = clamp((lb - .3 - hash2(5, j) * .8) / .3), ok = ANSWERS[j].endsWith('✓');
+      popLabel(ANSWERS[j], x + pw * (n === 1 ? .7 : .66), y + ph * (n === 1 ? .3 : .26), Math.max(30, 72 / Math.sqrt(cols * Math.sqrt(rows))), ak, { fill: ok ? '#C8F5D8' : '#FFD0D8', col: ok ? '#1E7A45' : '#B02040' });
+      ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 8; ctx.strokeRect(x, y, pw, ph);
+    }
+    popLabel('23 × 47 = ?', 330, 310, 56, clamp(b / .3), { fill: '#FFFFFF' });
+    if (b > 7.5) {
+      const k = clamp((b - 7.5) / .3);
+      ctx.save(); ctx.translate(W / 2, 860); ctx.rotate(-.05); ctx.scale(backOut(k, 2), backOut(k, 2));
+      ctx.fillStyle = 'rgb(40 30 80 / .3)'; ctx.fill(rrPath(-460 + 10, -150 + 14, 920, 300, 44));
+      ctx.fillStyle = '#FFE070'; ctx.fill(rrPath(-460, -150, 920, 300, 44)); ctx.strokeStyle = '#2A2350'; ctx.lineWidth = 9; ctx.stroke(rrPath(-460, -150, 920, 300, 44));
+      txt('GPT-3 · 175B', 0, -40, 92, '#2A2350', { font: 'rammetto' });
+      txt('two-digit multiplication:', 0, 52, 38, '#2A2350', { font: 'code' });
+      txt('~29% right', 0, 102, 38, '#2A2350', { font: 'code' });
+      ctx.restore();
+    }
+    cutFlash(lb, .6, .25);
+  });
+
+  // ---------- V1.5: night, Akari asleep under the glowing chat window ("users: 1"); a smash cut to morning: Ren in the doorway, frozen
+  // mid-sip, as the counter rolls over like an odometer ----------
+  vshot('V1.5', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 3.5]);
+    if (i === 0) {
+      const k = ease(clamp(bb / 3.5));
+      const v = still('vt_v1_5_asleep', { x: lerp(.45, .52, k), y: .5, z: lerp(1.04, 1.16, k) });
+      grade('#1A2150', .3, 'multiply');
+      const [lx, ly] = v.pt(.2, .34);
+      addGlow(lx, ly, 380, '#9FD4FF', .4 + .06 * Math.sin(t * 7));
+      // a little "z" drifting up from her
+      const [zx, zy] = v.pt(.62, .45);
+      for (let j = 0; j < 3; j++) { const ph = frac(t * .8 + j / 3); txt('z', zx + 40 + ph * 120 + j * 10, zy - 80 - ph * 220, 40 + ph * 30, '#FFFFFF', { font: 'archivo', alpha: Math.sin(ph * Math.PI) * .9 }); }
+      popLabel('users: 1', 540, 330, 56, clamp(bb / .3), { fill: '#FFFFFF', font: 'archivo' });
+      cutFlash(bb, .5);
+    } else {
+      // morning: a zoom punch on Ren, the counter rolls over like an odometer on his chest
+      const [sx, sy] = shake(t, 12 * hit(bb, .5));
+      still('vt_v1_5_ren', { x: .55, y: .45, z: 1.1 * punch(bb, .12) }, { dx: sx, dy: sy });
+      speedLines(W * .58, 520, t, { n: 70, r0: 420, a: .3 * hit(bb, 1.2) });
+      const r = clamp(bb / 3), n = r < .4 ? lerp(1, 1e6, (r / .4) ** 3) : lerp(1e6, 1e8, ((r - .4) / .6) ** 2);
+      popLabel(`users: ${fmt(n)}`, 540, 1010, 56, 1, { fill: '#FFFFFF', font: 'archivo' });
+      if (r > .35 && r < .5) sparkle(860, 960, 50, 1);
+      flash(1 - clamp(bb / .25), '#FFF6DE');
+    }
+  });
+
+  // ---------- V1.6: the love-struck chat on the laptop pours hearts up the frame; the camera follows them up to the columnist's
+  // frightened face ("…leave your wife?"), then whips back down as 5 TURNS MAX slams onto the chat ----------
+  vshot('V1.6', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [sx, sy] = shake(t, 3);
+    // (closer on the chat, so its eyes clear the lyric block)
+    const { v: fy_, whip } = whipPan(b, [[0, .69], [1.8, .37], [4.6, .69]], { len: .55 }), { v: fz } = whipPan(b, [[0, 1.6], [1.8, 1.35], [4.6, 1.6]], { len: .55 });
+    const v = still('vt_v1_6_sydney', { x: .52, y: fy_, z: fz + .03 * Math.sin(t) }, { dx: sx, dy: sy });
+    // the hearts rise off the chat face up to his face
+    const [hx, hy] = v.pt(.5, .6), [fx, fy] = v.pt(.55, .22);
+    heartStream(t, hx, hy, { n: 30, spread: 420, dx: fx - hx, rise: hy - fy + 80, r: 30 });
+    speedBars(t, { n: 16, a: .35 * whip, ang: Math.PI / 2, speed: 5000 });
+    const up = clamp((b - 1.8) / .5) * (1 - clamp((b - 4.6) / .4));
+    nameTag('KEVIN', 'tech columnist', 70, 330, up, '#FF6FA0');
+    sayBubble('…leave your wife? ♥', 540, 1010, 48, clamp((b - 2.4) / 1.4) * (b < 4.7 ? 1 : 0), hx, hy, { col: '#D02070' });
+    // the stamp lands on the chat face, not on him
+    const [cx, cy] = v.pt(.5, .7);
+    stampMark('5 TURNS MAX', cx, cy - 40, 84, clamp((b - 5.1) / 1.2));
+    cutFlash(b, .6);
+  });
+
+  // ---------- V1.7: Kiri aims the remote at us and presses PAUSE; nothing pauses: over the city the sun and moon whip round on every
+  // beat and the calendar tears off a month every half beat ----------
+  vshot('V1.7', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 3.5]);
+    if (i === 0) {
+      const pr = hit(bb - 1, .5);
+      const v = still('vt_v1_7_kiri', { x: .5, y: .583, z: 1.2 * (1 + .06 * pr) });
+      const [rx, ry] = v.pt(.55, .64);
+      speedLines(rx, ry, t, { n: 60, r0: 360, a: .35 * pr });
+      popLabel('⏸ PAUSE', 620, 790, 76, clamp((bb - 1) / .3), { fill: '#FFE070', rot: -.05 });
+      cutFlash(bb, .6);
+    } else {
+      // a time-lapse: the sky cycles day → dusk → night on every beat, the calendar tears off a month on every half beat
+      still('v1_7_city', { x: .52, y: .5, z: 1.0 });
+      const ph = frac(bb), day = .5 + .5 * Math.cos(ph * TAU);
+      grade('#0C1234', (1 - day) * .85, 'multiply'); grade('#FF9A6A', Math.sin(ph * TAU * 2) ** 2 * .25 * (1 - day), 'screen');
+      // city lights come on at night
+      if (day < .45) for (let j = 0; j < 80; j++) { ctx.fillStyle = alpha(j % 3 ? '#FFE9A0' : '#FFFFFF', (.45 - day) * 2 * hash2(81, j)); ctx.fillRect(hash2(82, j) * W, 1080 + hash2(83, j) * 640, 7, 6); }
+      const sa = ph * TAU - Math.PI / 2, [cx_, cy_] = [W / 2 + Math.cos(sa) * 620, 1250 + Math.sin(sa) * 900];
+      addGlow(cx_, cy_, 190, day > .5 ? '#FFF2C0' : '#CFE0FF', .9); fillP(ellPath(cx_, cy_, 62, 62), day > .5 ? '#FFF8E0' : '#E8F0FF');
+      speedBars(t, { n: 30, a: .25, speed: 5000 });
+      const m = clamp(Math.floor(bb * 2), 0, MONTHS.length - 1), mk = frac(bb * 2);
+      ctx.save(); ctx.translate(560, 640); ctx.rotate(.04); ctx.scale(1.25, 1.25);
+      ctx.fillStyle = 'rgb(30 20 60 / .3)'; ctx.fillRect(-150 + 10, -150 + 12, 300, 300);
+      ctx.fillStyle = '#FFFFFF'; ctx.fillRect(-150, -150, 300, 300); ctx.fillStyle = '#F04E4E'; ctx.fillRect(-150, -150, 300, 80);
+      txt('2023', 0, -110, 40, '#FFFFFF', { font: 'archivo' }); txt(MONTHS[Math.min(m + 1, MONTHS.length - 1)], 0, 40, 110, '#2A2350', { font: 'rammetto' });
+      if (m < MONTHS.length - 1) { ctx.save(); ctx.globalAlpha = 1 - mk; ctx.translate(mk * 300, -mk * 200); ctx.rotate(mk * 1.2); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(-150, -70, 300, 220); txt(MONTHS[m], 0, 40, 110, '#2A2350', { font: 'rammetto' }); ctx.restore(); }
+      ctx.restore();
+      popLabel('⏸ ???', 300, 330, 64, clamp(bb / .3), { fill: '#FFFFFF', rot: -.06 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V1.8: Eliezer shouts under the tall SHUT IT ALL DOWN cover, a punch and a shake on the beat; then the blast: an impact
+  // frame hits Akari head-on, her hair streaming up, and Clawd tumbles up through the frame past her ----------
+  vshot('V1.8', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 3.5]);
+    if (i === 0) {
+      const h = hit(b - 2, .6), [sx, sy] = shake(t, 16 * h);
+      const v = still('vt_v1_8_eliezer', { x: .5, y: .5, z: 1.04 * punch(b - 2, .08) }, { dx: sx, dy: sy });
+      const [mx, my] = v.pt(.5, .47);
+      speedLines(mx, my, t, { n: 90, r0: 420, a: .5 * h });
+      nameTag('ELIEZER', 'decision theorist', 70, 330, clamp((b - .7) / .5), '#F04E4E');
+      if (b < 1) flash(.6 * (1 - clamp((b - .5) / .2)));
+    } else {
+      const [sx, sy] = shake(t, 24 * hit(bb, 1.2) + 5);
+      still('vt_v1_8_blown', { x: .5, y: .48, z: 1.1 }, { dx: sx, dy: sy });
+      speedBars(t, { n: 50, a: .5, speed: 6000, ang: -Math.PI / 2 });
+      // Clawd, flung up and across the frame past her, spinning (in view the whole cut)
+      const fl = clamp(bb / 2.6);
+      cut('clawd_jump', lerp(130, 930, fl), lerp(1050, 260, fl) - Math.sin(fl * Math.PI) * 120, 320, { rot: -.4 + fl * 5 });
+      impactFrame(bb < .25 ? 1 : 0);
+      zoomBlur(hit(bb, .8));
+    }
+  });
+
+  // ---------- V1.9: Sam spins out of the revolving door on one beat and back in on the next; then a manga page: the club on the bench
+  // in the top panel, their heads snapping left, right, left on the beats (the picture mirrors), and Sam below, still spinning ----------
+  vshot('V1.9', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    if (i === 0) {
+      const beat = Math.floor(bb), fb = frac(bb), out = beat % 2 === 0;
+      still('vt_v1_9_sam', { x: .5, y: .454, z: 1.1, r: (1 - easeOut(clamp(fb / .3))) * (out ? .25 : -.25) }, { flip: !out });
+      nameTag('SAM', 'OpenAI CEO', 70, 330, clamp(bb / .4), '#8A6BD8');
+      flash(.5 * (1 - clamp(fb / .2)), out ? '#FFD0D8' : '#D0FFE0');
+    } else {
+      const beat = Math.floor(bb), fb = frac(bb), flip = beat % 2 === 1, jolt = (1 - easeOut(clamp(fb / .2))) * (flip ? -30 : 30);
+      mangaPage([[0, 0, W, 830], [0, 852, W, 1100]], (j, rect) => {
+        // (the bench whole, under the Reels header, in a panel that bleeds off the top: its sky carries on above it, petals drifting)
+        if (j === 0) { still('v1_9_bench', { x: .5, y: .5, z: 1 }, { rect: [0, 190, W, 640], flip, dx: jolt }); skyAbove(0, 190, W, '#CBE5F6', 70); petals(t, { n: 12, seed: 19, s: 1.4, depth: true }); }
+        // (his face at y ≈ 1010, above the lyric block)
+        else still('vt_v1_9_sam', { x: .5, y: .45, z: 1.0, r: (1 - easeOut(clamp(fb / .3))) * (flip ? -.25 : .25) }, { rect, flip: !flip });
+      });
+      speedBars(t, { n: 10, a: .35 * (1 - clamp(fb / .25)), speed: 6000, y0: -960, y1: -150 });
+      cutFlash(fb, .25, .2);
+    }
+  });
+
+  // ---------- V1.10: Akari drowning in the weekend: a buzzing phone in each hand, the day ticking over on every beat; then the empty
+  // boardroom down its long table: EXPIRED ----------
+  const DAYS = ['FRI', 'SAT', 'SUN', 'MON'];
+  vshot('V1.10', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4]);
+    if (i === 0) {
+      const [sx, sy] = shake(t, 6);
+      const v = still('vt_v1_10_chaos', { x: .5, y: .476, z: 1.05 }, { dx: sx, dy: sy });
+      for (let j = 0; j < 4; j++) {
+        const on = frac(b * 2 + j * .25) < .5, [px, py] = v.pt(j % 2 ? .78 : .2, j < 2 ? .17 : .33);
+        popLabel(['BZZT', 'bzzt!', 'BZZ', 'ping!'][j], px + (j % 2 ? -40 : 40), py, 48, on ? 1 : 0, { fill: '#FFFFFF', rot: (j % 2 ? .1 : -.1) });
+      }
+      const day = DAYS[clamp(Math.floor(b + 1), 0, 3)];
+      popLabel(day, 540, 300, 64, clamp((b - .2) / .3) * (.85 + .15 * pulse(t)), { fill: '#FFE070' });
+      if (b < 1) flash(.6 * (1 - clamp((b - .5) / .2)));
+    } else {
+      const k = ease(clamp(bb / 3.5));
+      still('v1_10_board', { x: .48, y: .5, z: lerp(1.0, 1.12, k) });
+      grade('#FFB070', .15, 'soft-light');
+      stampMark('EXPIRED', W * .5, 820, 150, clamp((bb - 1) / 1.1), { rot: -.16 });
+      cutFlash(bb, .7);
+    }
+  });
+
+  // ---------- V1.11: Ilya in profile, staring up into a glow at the top of the frame, sparkles in his eyes; then the club, stacked in
+  // the doorway like a totem pole down to the floor, Clawd peeking at its foot, all trying to see ----------
+  vshot('V1.11', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 5]);
+    if (i === 0) {
+      // a slow push in on his face; the glow breathes, and what he sees glints in his eyes
+      const k = ease(clamp((b - .5) / 4.5));
+      const v = still('vt_v1_11_ilya', { x: lerp(.6, .64, k), y: lerp(.476, .45, k), z: lerp(1.05, 1.2, k) });
+      const [gx, gy] = v.pt(.95, .12);
+      addGlow(gx, gy, 600, '#FFF4D0', .25 + .1 * Math.sin(t * 3));
+      sparkleField(t, { n: 16, r: 24, seed: 44, x0: W * .45, y0: 0, y1: H * .45, col: '#FFF4C0' });
+      const [ex, ey] = v.pt(.815, .335);
+      glint(ex, ey, 12 * v.s, Math.sin(clamp((b - 1.5) / 2) * Math.PI));
+      nameTag('ILYA', 'OpenAI chief scientist', 70, 330, clamp((b - .7) / .5), '#C8A040');
+      if (b < 1) flash(.6 * (1 - clamp((b - .5) / .2)));
+    } else {
+      // the doorway down to the floor (the faces at y ≈ 280, 660, 1050; Clawd's under the lyric block); the light they stare into
+      // falls in from the right
+      const k = ease(clamp(bb / 4.5));
+      still('vt_v1_11_peek', { x: .5, y: lerp(.5, .47, k), z: lerp(1.0, 1.05, k) });
+      leak(.3 + .08 * Math.sin(t * 3), { side: 'right', col: '#FFF0C0' });
+      sparkleField(t, { n: 10, r: 22, seed: 45, x0: 860, x1: 1060, y0: 250, y1: 1400, col: '#FFF4C0' });
+      for (let j = 0; j < 3; j++) popLabel('?', 860 + j * 50, 430 + j * 300, 72, clamp((bb - 1.2 - j * .35) / .25), { fill: '#FFFFFF', rot: (j - 1) * .2 });
+      cutFlash(bb, .6);
+    }
+  });
+
+  // ---------- V1.12: the rulebook drops into the frame from above and slams onto the club table (streaks, a thud, dust, the three
+  // jolted back); ADOPTED 523–46 lands on its starry cover ----------
+  vshot('V1.12', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), land = b - 1, drop = clamp((b - .4) / .6);
+    const h = hit(land, .7), [sx, sy] = shake(t, 22 * h);
+    const v = still('vt_v1_12_book', { x: .5, y: .56, z: 1.03 * punch(land, .05) }, { dx: sx, dy: sy + (drop < 1 ? -(1 - easeIn(drop)) * 140 : 0) });
+    if (drop < 1) { speedBars(t, { n: 30, a: .45, ang: Math.PI / 2, speed: 7000 }); flash(.3 * (1 - drop), '#FFFFFF'); }
+    if (land > 0 && land < 1.5) {
+      const [bx, by] = v.pt(.5, .93);
+      for (let j = 0; j < 14; j++) { const a = Math.PI + (j / 13) * Math.PI, r = 160 + easeOut(land / 1.5) * 460; ctx.save(); ctx.globalAlpha = .5 * (1 - land / 1.5); blob(bx + Math.cos(a) * r, by - 260 + Math.sin(a) * r * .3, 100, 66, '#F4EEE4', 1); ctx.restore(); }
+    }
+    // (on the book's top edge, the cover's lower part being under the lyric block)
+    stampMark('ADOPTED', 610, 1030, 108, clamp((b - 4.5) / 1.2), { sub: '523 – 46', col: '#2856C8', rot: -.1 });
+    cutFlash(b, .5);
+  });
+
+  // ---------- V1.13: Akari and the strawberry mascot ponder side by side, hand on chin; a chain of thought climbs the empty wall
+  // beside them a link per beat and a half (think → check → think again → answer!) and the answer lights up: o1 ----------
+  vshot('V1.13', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 8));
+    // (both faces between the Reels header and the lyric block: hers at y ≈ 300, the strawberry's at ≈ 1110)
+    const v = still('vt_v1_13_strawberry', { x: .52, y: .587, z: lerp(1.1, 1.14, k) });
+    const pts = [[.68, .55], [.86, .49], [.72, .43], [.86, .37]].map(([u, w]) => v.pt(u, w));
+    for (let j = 0; j < LINKS.length; j++) {
+      const lk = clamp((b - .8 - j * 1.4) / .35);
+      if (j && lk > 0) glowPath([pts[j - 1], pts[j]], clamp(lk * 1.5), { col: '#FF7FA8', w: 10 });
+      popLabel(LINKS[j], Math.min(pts[j][0], 900), pts[j][1], 50, lk, { fill: j === 3 ? '#FFE070' : '#FFFFFF' });
+    }
+    const bulb = clamp((b - 6.6) / .3), [ox, oy] = v.pt(.78, .3);
+    if (bulb > 0) { addGlow(ox, oy, 340, '#FFF0A0', .8 * bulb); popLabel('o1', ox, oy, 130, bulb, { fill: '#FFF7C8', font: 'rammetto' }); }
+    cutFlash(b, .6);
+  });
+
+  // ---------- V1.14: the staring contest stacked: his unblinking eyes in the top panel, hers in the tall one below, the shake building
+  // across the seam; she blinks first, VETO slams onto the seam ----------
+  vshot('V1.14', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), tension = clamp((b - .5) / 4.5), [sx, sy] = shake(t, 2 + 9 * tension);
+    const blink = b > 5 && b < 5.35, after = b >= 5.35;
+    // (the top panel's eyes sit 70 px below its middle, out of the Reels header; the bottom panel's at y 960, above the lyric block)
+    stackPanels(2, (j, rect) => {
+      if (j === 0) still('v1_14_gavin', { x: .5, y: .45, z: 1.4 + tension * .1 }, { rect, dx: sx, dy: sy + 70 });
+      else still('vt_intro_eyes', { x: .5, y: .522, z: 1.0 + tension * .08 }, { rect, dx: -sx, dy: 960 - (rect[1] + rect[3] / 2) - sy, patches: blink ? ['vt_intro_eyes.closed'] : after ? ['vt_intro_eyes.half'] : [] });
+    }, { weights: [700, 1220], slant: 60 });
+    nameTag('GAVIN', 'governor', 70, 300, clamp((b - .7) / .5), '#3D7BE0');
+    stampMark('VETO', W * .5, 700, 150, clamp((b - 5.5) / 1.1), { sub: 'SB 1047', rot: -.12 });
+    cutFlash(b, .6);
+  });
+
+  // ---------- V1.15: the white-haired laureate holds up his medal and wags a finger at us under the confetti: "be careful!"; then a
+  // manga page: his stern glare in the top panel, and below it the club snapping to attention in a row, saluting and sweating (and
+  // Clawd saluting too, in a strip at the foot of the page) ----------
+  vshot('V1.15', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 5]);
+    if (i === 0) {
+      const k = ease(clamp(bb / 5)), wag = Math.sin(t * 16) * .006;
+      const v = still('vt_v1_15_geoff', { x: .5, y: lerp(.53, .5, k), z: lerp(1.03, 1.12, k), r: wag });
+      confetti(t, { n: 70, seed: 15 });
+      nameTag('GEOFF', 'Nobel laureate, physics', 70, 330, clamp((bb - .4) / .5), '#C8A040');
+      const [mx, my] = v.pt(.5, .56);
+      sayBubble('be careful!', 760, 520, 58, clamp((bb - 2.2) / .9), mx + 40, my);
+      cutFlash(bb, .6);
+    } else {
+      const [sx, sy] = shake(t, 10 * hit(bb, .4)), wag = Math.sin(t * 16) * .01;
+      mangaPage([[0, 0, W, 830], [0, 846, W, 620], [0, 1482, W, 460]], (j, rect) => {
+        // (his eyes at y ≈ 450, below the Reels header)
+        if (j === 0) still('vt_v1_15_geoff', { x: .5, y: .42, z: 1.18, r: wag }, { rect, dy: 60 });
+        else if (j === 1) {
+          // (their faces at y ≈ 1040, above the lyric block; it slams in on the cut)
+          still('v1_15_salute', { x: .5, y: .5, z: 1.0 * punch(bb, .08) }, { rect, dx: sx, dy: sy });
+          speedLines(W / 2, 1040, t, { n: 50, r0: 420, a: .25 * hit(bb, 1) });
+        } else {
+          diagSplit('#FFE4CC', '#FF9E6A', t, { x: W * .5, a: .1, speed: 200 });
+          cut('clawd_stand', 760, 1880 - 8 * pulse(t), 300, { rot: -.05, sq: .03 * pulse(t) });
+        }
+      });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V1.16: the grinning laureate holds his glowing protein up on one palm; then the club's cheer, Clawd tossed up into the
+  // sky above them, frozen in a freeze frame with a flare, and the white-out into the chorus ----------
+  vshot('V1.16', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 6]);
+    if (i === 0) {
+      const k = ease(clamp((b - .5) / 5.5));
+      const v = still('vt_v1_16_demis', { x: lerp(.5, .45, k), y: lerp(.557, .5, k), z: lerp(1.0, 1.1, k) });
+      // the folded protein glows and twinkles on his palm
+      const [px, py] = v.pt(.35, .26);
+      addGlow(px, py, 300, '#B8E0FF', .3 + .15 * Math.sin(t * 4));
+      sparkleField(t, { n: 14, r: 26, seed: 16, x0: px - 280, x1: px + 280, y0: py - 240, y1: py + 220 });
+      confetti(t, { n: 60, seed: 16 });
+      nameTag('DEMIS', 'Nobel laureate, chemistry', 470, 330, clamp((b - .7) / .5), '#2BB5A8');
+      if (b < 1) flash(.6 * (1 - clamp((b - .5) / .2)));
+    } else {
+      // the cheer: a quick push, then a freeze frame with a flare, and the white-out into the chorus
+      const frz = bb > 3, k = frz ? 1 : easeOut(clamp(bb / 3));
+      const tf = frz ? t - (bb - 3) * beatLen() : t;   // the freeze stops Clawd, the confetti and the petals too
+      const v = still('vt_v1_16_cheer', { x: .5, y: .5, z: lerp(1.0, 1.08, k) });
+      // Clawd, tossed up out of their arms into the sky, spinning
+      const tb = frz ? 3 : bb, up = Math.sin(clamp(tb / 3.6) * Math.PI);
+      cut('clawd_jump', 540 + Math.sin(tb * 1.3) * 60, lerp(900, 330, up), 300, { rot: tb * .9 - .3 });
+      confetti(tf, { n: 70, seed: 17 });
+      petals(tf, { n: 24, seed: 18, s: 1.8, depth: true });
+      if (frz) { flare(820, 260, .8); grade('#FFF4E0', .12, 'screen'); }
+      cutFlash(bb, .8);
+      if (bb > 4.4) flash((bb - 4.4) / .6);
+    }
+  });
 })();
 
 ;
@@ -2934,6 +4015,95 @@ function placeholder(t, s) {
     cutFlash(bb, .8);
     if (bb > FRZ + 1.6) flash((bb - FRZ - 1.6) / .8);
   });
+
+  // =====================================================================================================
+  // THE VERTICAL CHORUS 1 (1080×1920): the same five shots on the same beats. The door bursts open at us; the run climbs a steep curve
+  // up the tall frame, the three on a diagonal; the curve shoots straight up with Clawd on its tip; the faces become four tall
+  // photocard strips; the three look up from the foot of the frame (the lyric block moves up into the sky) as the curve bursts out
+  // of its top.
+  // =====================================================================================================
+  placeCaption('C1', 4, { y: 470 });
+  vshot('C1', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg);
+    // ---------- "We didn't start the scaling": the door bursts open, the three run out at us into the noon sun in slow motion ----------
+    if (b < 5.5) {
+      const k = ease(clamp((b - .5) / 5));
+      const v = still('vt_c1_door', { x: .5, y: lerp(.5, .45, k), z: lerp(1.0, 1.14, k) });
+      const [sx, sy] = v.pt(.55, .07);
+      rays(sx, sy, { t, a: .25, n: 11, ang: Math.PI / 2, spread: 2.4, len: 2400 });
+      petals(t * .5, { n: 60, seed: 31, s: 2.2, depth: true, wind: 300, fall: 50 });
+      flare(sx, Math.max(sy, 120), .7);
+      flash(1 - clamp((b - .5) / .4));
+      return;
+    }
+    // ---------- "It was always training": the three run up a steep glowing curve on a diagonal, the sky sliding down behind ----------
+    if (b < 16) {
+      const bb = b - 5.5, scroll = bb * 100;
+      // the curve, in a world strip that scrolls left, so it steepens under them as they climb; Akari's feet stay at (800, 760), and
+      // Kiri's face, the lowest, stays above the lyric block
+      const raw = curvePts(scroll, -400, H * 1.2, W * 3.2, -H * .6, 2.1), lift = 760 - onCurve(raw, 800)[0];
+      const pts = raw.map(([x, y]) => [x, y + lift]);
+      // (the camera starts down on the rooftop railing they have just run up from, and climbs with them into the sky)
+      const climb = 1 - (1 - clamp(bb / 10.5)) ** 2;
+      still('vt_intro_sky', { x: .5, y: lerp(.7, .3, climb), z: 1.3 });
+      speedBars(t, { n: 36, a: .35, speed: 3600, ang: -.75 });
+      curve(pts, 1, { w: 18 });
+      // the three, each a third of a stride apart, a new drawing every third of a beat; their faces stay above the lyric block
+      const onRun = (who, x, h, ph) => { const [y, a] = onCurve(pts, x); return runner(who, x, y + 8, h, b + ph, { rot: a * .55 }); };
+      onRun('kiri', 230, 470, .67);
+      onRun('ren', 520, 480, .33);
+      const ak = onRun('akari', 800, 480, 0);
+      const [hx, hy] = ak.pt(.78, .04);
+      cut('clawd_jump', hx, hy + 40, 140, { rot: -.1 + .1 * Math.sin(b * Math.PI) });
+      petals(t, { n: 30, seed: 32, s: 1.8, depth: true, wind: -700, fall: 260 });
+      cutFlash(bb, .8);
+      return;
+    }
+    // ---------- "And the curves kept gaining": the curve shoots straight up the tall sky, Clawd riding its tip; the camera tilts with it ----------
+    if (b < 21.5) {
+      const bb = b - 16, k = ease(clamp(bb / 5.5));
+      // (it starts on the rooftop railing, the tip rising from behind it, and tilts up the sky after the tip)
+      still('vt_intro_sky', { x: .5, y: lerp(.62, .12, k), z: 1.12 });
+      const tipY = lerp(1080, -260, clamp(bb / 5.5) ** 1.8);
+      const pts = Array.from({ length: 40 }, (_, i) => { const u = i / 39; return [lerp(-80, W * .6, u ** .5), lerp(H + 150, tipY, u)]; });
+      const tip = curve(pts, 1, { w: 24 });
+      cut('clawd_jump', tip[0], tip[1] + 44, 240, { rot: .15 * Math.sin(t * 8) });
+      speedBars(t, { n: 34, a: .3, speed: 4400, ang: -Math.PI / 2 });
+      sparkleField(t, { n: 16, r: 26, seed: 34 });
+      cutFlash(bb, .8);
+      return;
+    }
+    // ---------- "We didn't start the scaling": four tall photocard strips side by side, a new one every beat and a half ----------
+    if (b < 27) {
+      const STEP = 1.5, bb = b - 21.5, shown = clamp(Math.floor(bb / STEP) + 1, 1, 4), pw = W / shown;
+      for (let j = 0; j < shown; j++) {
+        const F = FACES[j], x = j * pw, age = bb - j * STEP, slide = easeOut(clamp(age / .4));
+        ctx.save(); ctx.beginPath(); ctx.rect(x, 0, pw, H); ctx.clip();
+        diagSplit(F.c1, F.c2, t, { x: x + pw * .6, a: .12, speed: 200 });
+        // (the face at y 640 in every strip; a narrow strip shows it smaller, but the bust, a long card carried on down to the knees,
+        // always runs on to the foot of the frame)
+        const h = j === 3 ? lerp(420, 300, (shown - 1) / 3) : Math.max(lerp(1300, 980, (shown - 1) / 3), cardFloor(F.cut, F.face[1], 640)), push = 1 + clamp(bb / 5.5) * .06;
+        const bobY = j === 3 ? -Math.abs(Math.sin(b * Math.PI)) * 40 : 0;
+        (j === 3 ? cut : cardLong)(F.cut, x + pw / 2 + (1 - slide) * pw * (j % 2 ? 1 : -1), (j === 3 ? 760 : 640) + bobY, h * push, { anchor: F.face });
+        ctx.globalAlpha = .8 * (1 - clamp(age / .3)); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(x, 0, pw, H); ctx.globalAlpha = 1;
+        ctx.restore();
+      }
+      ctx.fillStyle = '#FFFFFF'; for (let j = 1; j < shown; j++) ctx.fillRect(j * pw - 5, 0, 10, H);
+      return;
+    }
+    // ---------- "No, we didn't preordain it, but we can't contain it!": the three look up from the foot of the frame as the curve sweeps
+    // up the sky and bursts out of its top; freeze, white. The lyric block moves up into the sky, clear of their faces (the line keeps
+    // that place as it lingers into V2.1: placeCaption, below). ----------
+    const FRZ = 6.5, bb = b - 27, frz = bb > FRZ, bf = frz ? FRZ : bb, k = ease(clamp(bf / FRZ));
+    still('vt_c1_lookup', { x: .5, y: lerp(.62, .6, k), z: lerp(1.12, 1.2, k) * (frz ? 1.02 : 1) });
+    const sweep = clamp((bf - .5) / 2.5), pts = Array.from({ length: 30 }, (_, i) => { const u = i / 29; return [lerp(-100, W * .82, u), lerp(1180, -280, u ** 2.2)]; });
+    curve(pts, sweep, { w: 26 });
+    const tf = frz ? t - (bb - FRZ) * beatLen() : t;
+    petals(tf, { n: 34, seed: 35, s: 2, depth: true, wind: 200 });
+    if (frz) { grade('#FFF2E0', .1, 'screen'); flare(W * .82, 90, .8); }
+    cutFlash(bb, .8);
+    if (bb > FRZ + 1.6) flash((bb - FRZ - 1.6) / .8);
+  });
 })();
 
 ;
@@ -3056,8 +4226,13 @@ function placeholder(t, s) {
     ctx.fillStyle = col; ctx.fillRect(-90, -180, 160, 180);
     ctx.strokeStyle = '#2A2350'; ctx.lineWidth = 5; ctx.lineJoin = 'round';
     ctx.strokeRect(-90, -180, 160, 180); ctx.beginPath(); ctx.moveTo(70, 0); ctx.lineTo(110, -30); ctx.lineTo(110, -210); ctx.lineTo(-50, -210); ctx.lineTo(-90, -180); ctx.moveTo(70, -180); ctx.lineTo(110, -210); ctx.stroke();
-    starShape(-10, -120, 34, '#FFFFFF');
-    txt(label, -10, -50, 34, '#FFFFFF', { font: 'rammetto', stroke: '#2A2350', sw: 7 });
+    // the lab's name big on the front (as big as fits), a star by it, and the product line under it
+    starShape(-62, -150, 16, '#FFFFFF');
+    // (a long name is set smaller and a little condensed, to keep it big enough to read)
+    const bs = Math.min(42, 42 * 150 / textW(label, 42, 'rammetto') * 1.3);
+    txt(label, -10, -100, bs, '#FFFFFF', { font: 'rammetto', stroke: '#2A2350', sw: 7, maxW: 150 });
+    ctx.fillStyle = 'rgb(255 255 255 / .9)'; ctx.fillRect(-82, -62, 144, 34);
+    txt('SUPER-', -10, -53, 14, '#2A2350', { font: 'archivo' }); txt('INTELLIGENCE', -10, -37, 14, '#2A2350', { font: 'archivo', maxW: 136 });
     ctx.restore();
   }
   // a starburst sticker ("NOW 3 FOR 1!")
@@ -3291,7 +4466,9 @@ function placeholder(t, s) {
   });
 
   // ---------- V2.6 "Superintelligence — buy three!": Akari's shopping channel; three boxes pop onto the counter; 3 FOR 1 ----------
-  const BOXES = [['#FF6FA0', 'SI'], ['#3D8BFF', 'SI'], ['#FFB030', 'SI']];
+  // (the three labs Meta held talks to buy that June: Ilya's Safe Superintelligence, Mira Murati's Thinking Machines and Perplexity;
+  // the other videos label them the same)
+  const BOXES = [['#FF6FA0', 'SSI'], ['#3D8BFF', 'THINKY'], ['#FFB030', 'PERPLEXITY']];
   line('V2', 6, (p, lt, d, t, seg) => {
     const b = beatsIn(t, seg), k = ease(clamp(b / 8));
     const v = still('v2_6_shop', { x: .5, y: lerp(.56, .53, k), z: lerp(1.04, 1.1, k) });
@@ -3581,8 +4758,8 @@ function placeholder(t, s) {
       const k = ease(clamp(bb / 3));
       still('v2_15_yann', { x: .5, y: lerp(.48, .42, k), z: lerp(1.04, 1.14, k) });
       addGlow(W * .5, H * .3, 520, '#FFF4D0', .18 + .06 * Math.sin(t * 4));
-      curtain(clamp((bb - 2.4) / 1.2));
-      if (bb > 3.6) { const s = 1 + .04 * hit(bb - 3.6, .4), [sx, sy] = shake(t, 8 * hit(bb - 3.6, .5)); txt('fin.', W / 2 + sx, H * .42 + sy, 120 * s, '#FFE9B0', { font: 'abril', stroke: '#5A0E1C', sw: 10 }); txt('(12 years at Meta)', W / 2 + sx, H * .56 + sy, 40, '#FFE9B0', { font: 'code', stroke: '#5A0E1C', sw: 8 }); }
+      curtain(clamp((bb - 2) / 1));
+      if (bb > 3) { const s = 1 + .04 * hit(bb - 3, .4), [sx, sy] = shake(t, 8 * hit(bb - 3, .5)); txt('fin.', W / 2 + sx, H * .42 + sy, 120 * s, '#FFE9B0', { font: 'abril', stroke: '#5A0E1C', sw: 10 }); txt('(12 years at Meta)', W / 2 + sx, H * .56 + sy, 40, '#FFE9B0', { font: 'code', stroke: '#5A0E1C', sw: 8 }); }
       startFlash(t, seg);
     } else {
       const k = ease(clamp(bb / 4));
@@ -3676,6 +4853,689 @@ function placeholder(t, s) {
         impactFrame(bb - pop < .12 ? 1 : 0);
         popLabel('POP!', W / 2, H * .4, 150 * backOut(clamp((bb - pop) / .3), 2), 1, { fill: '#FFE070', rot: -.08 });
         zoomBlur(hit(bb - pop, .8));
+      }
+      cutFlash(bb, .4);
+      if (bb > 7.4) flash((bb - 7.4) / .6);
+    }
+  });
+
+  // =====================================================================================================
+  // THE VERTICAL VERSE 2 (1080×1920): every line keeps its gag and its cuts, composed for the tall frame, mostly on tall stills
+  // (vt_v2_*, see shots/vt_c04_v2.json). Faces and gags stay above FACE_Y1, clear of the lyric block (the caption from CAP_Y down,
+  // the date card above it on the left). Same beats as the horizontal shots, so the cuts land together.
+  // =====================================================================================================
+
+  // the price tag again, taller, for the tall frame: the price over a line of small print, hanging from its hole at (x, y)
+  function vPriceTag(str, sub, x, y, size, k, rot) {
+    if (k <= 0) return;
+    const e = backOut(clamp(k), 2.4), subSize = size * .42, w = Math.max(textW(str, size, 'rammetto'), textW(sub, subSize, 'code')) + size * 1.5, h = size * 2.2;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(e, e);
+    const p = new Path2D(); p.moveTo(0, 0); p.lineTo(h * .4, -h / 2); p.lineTo(w, -h / 2); p.lineTo(w, h / 2); p.lineTo(h * .4, h / 2); p.closePath();
+    ctx.fillStyle = 'rgb(40 30 80 / .28)'; ctx.translate(8, 10); ctx.fill(p); ctx.translate(-8, -10);
+    ctx.fillStyle = '#FFE070'; ctx.fill(p); ctx.lineWidth = 7; ctx.strokeStyle = '#2A2350'; ctx.lineJoin = 'round'; ctx.stroke(p);
+    fillP(ellPath(h * .3, 0, size * .15, size * .15), '#FFFFFF'); ctx.lineWidth = 5; ctx.stroke(ellPath(h * .3, 0, size * .15, size * .15));
+    const mx = h * .4 + (w - h * .4) / 2;
+    txt(str, mx, -size * .28, size, '#2A2350', { font: 'rammetto' });
+    txt(sub, mx, size * .6, subSize, '#5A4E86', { font: 'code' });
+    ctx.restore();
+  }
+  // the stock chart for the tall frame: a panel whose line climbs, then nosedives out through its bottom edge and on down the frame
+  function vChartDive(x, y, w, h, k) {
+    ctx.save(); ctx.translate(x, y);
+    ctx.fillStyle = 'rgb(14 19 48 / .88)'; ctx.fill(rrPath(0, 0, w, h, 28)); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 6; ctx.stroke(rrPath(0, 0, w, h, 28));
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
+    ctx.strokeStyle = 'rgb(120 150 255 / .18)'; ctx.lineWidth = 2;
+    for (let i = 1; i < 6; i++) { ctx.beginPath(); ctx.moveTo(0, h * i / 6); ctx.lineTo(w, h * i / 6); ctx.stroke(); }
+    ctx.restore();
+    const pts = [];
+    for (let i = 0; i <= 70; i++) {
+      const u = i / 70, up = h * .78 - Math.min(u, .55) / .55 * h * .5 + Math.sin(i * 1.7) * 10, dive = u > .55 ? ((u - .55) / .45) ** 1.7 * (H - y + 300) : 0;
+      pts.push([36 + Math.min(u, .55) / .55 * (w - 160) + Math.max(0, u - .55) / .45 * 70, up + dive]);
+    }
+    const n = Math.max(2, Math.ceil(pts.length * clamp(k))), col = k > .56 ? '#FF4D6A' : '#6FF0A0';
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.strokeStyle = alpha(col, .35); ctx.lineWidth = 28; ctx.beginPath(); pts.slice(0, n).forEach(([px, py], i) => i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)); ctx.stroke();
+    ctx.strokeStyle = col; ctx.lineWidth = 11; ctx.stroke();
+    ctx.restore();
+    return [pts[n - 1][0] + x, pts[n - 1][1] + y];
+  }
+
+  // ---------- V2.1: the whale pops up out of the red envelope, the price tag dangling from its party hat; then Ren's jaw drops as the
+  // chip stocks climb and nosedive out of the chart above him and on down past his shoulder ----------
+  vshot('V2.1', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 3.5]);
+    if (i === 0) {
+      const k = ease(clamp(b / 3.5)), bb = b - .5;
+      // (it pops up out of the envelope on the first beat, then a slow push in)
+      const pop = backOut(clamp((b + .2) / .5), 2.2);
+      const v = still('vt_v2_1_whale', { x: .5, y: .583, z: lerp(1.2, 1.28, k) }, { dy: (1 - pop) * 160 });
+      confetti(t, { n: 60, seed: 21, cols: ['#E8303A', '#FFD34A', '#FF6FA0', '#FFFFFF'] });
+      if (b < .9) { const [ex, ey] = v.pt(.5, .66); burst(ex, ey, 520, clamp((b + .1) / 1), ['#FFFFFF', '#FFE070', '#E8303A']); }
+      // the price tag dangles off the tip of the party hat, swinging
+      const [hx, hy] = v.pt(.515, .43), tk = clamp((bb - .6) / .35), sw = Math.sin(t * 5) * .06;
+      if (tk > 0) { ctx.save(); ctx.strokeStyle = '#2A2350'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(hx, hy); ctx.quadraticCurveTo(hx + 30, hy + 40, hx + 52, hy + 66); ctx.stroke(); ctx.restore(); }
+      vPriceTag('$5.6M', 'final training run', hx + 52, hy + 66, 80, tk, .42 + sw);
+      if (bb > .6 && bb < 1.4) burst(hx + 260, hy + 150, 300, (bb - .6) / .8, ['#FFFFFF', '#FFE070', '#E8303A']);
+      const [rx, ry] = v.pt(.33, .5);
+      popLabel('R1', rx, ry, 60, clamp((bb - 1.4) / .3), { fill: '#FFFFFF', col: '#3D6FD0', rot: -.12 });
+      sparkleField(t, { n: 12, r: 26, seed: 22, y0: 250, y1: 900 });
+      startFlash(t, seg, .8);
+    } else {
+      const h = hit(bb, .6), [sx, sy] = shake(t, 12 * h + 2);
+      const v = still('vt_v2_1_ren', { x: .5, y: .49, z: 1.14 * punch(bb, .1) }, { dx: sx, dy: sy });
+      const [fx, fy] = v.pt(.5, .52);
+      speedLines(fx, fy, t, { n: 80, r0: 330, a: .35 * hit(bb, 1.4) });
+      const tip = vChartDive(70, 260, 940, 470, clamp((bb - .1) / 1.8));
+      if (bb > 1.1 && bb < 1.9) addGlow(tip[0], tip[1], 120, '#FF4D6A', .6);
+      popLabel('NVDA −17%', 330, 350, 60, clamp((bb - 1.6) / .3), { fill: '#FFD0D8', col: '#B02040', rot: -.05 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V2.2: the ring gate rises out of the dunes with a rumble, its beam shooting up the tall sky to the $500B; then the
+  // reveal: the same ring, hollow, painted on planks, and the camera drops down the poles to the three suits straining to hold it up
+  // (the lyric block moves up into the sky for that cut, clear of them) ----------
+  vshot('V2.2', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4.5]);
+    if (i === 0) {
+      const rise = easeOut(clamp((b - .2) / 2)), k = ease(clamp((b - .5) / 4)), [sx, sy] = shake(t, 9 * (1 - rise) * (b > .2 ? 1 : 0));
+      const v = still('vt_v2_2_gate', { x: .5, y: .615, z: lerp(1.3, 1.36, k) }, { dx: sx, dy: sy + (1 - rise) * 520 });
+      const [gx, gy] = v.pt(.505, .67);
+      addGlow(gx, gy, 420, '#8FD8FF', .35 + .15 * pulse(t, 3));
+      rays(gx, gy, { t, a: .16, n: 10, ang: -Math.PI / 2, spread: TAU, len: 1500 });
+      // dust off the dunes while it rises
+      if (rise < 1) for (let j = 0; j < 10; j++) { const [dx_, dy_] = v.pt(.1 + j * .09, .8); ctx.save(); ctx.globalAlpha = .55 * (1 - rise); blob(dx_, dy_ - 20, 120, 50, '#F6E6C8', 1); ctx.restore(); }
+      const nk = clamp((b - 1.5) / 1.2);
+      if (nk > 0) {
+        logoText('$500B', W / 2, 400, 210, { font: 'rammetto', k: nk, grad: ['#FFF6C0', '#FFD34A', '#FF9A4A'], edge: '#5A3A10', rimCol: '#FFFFFF' });
+        sparkleField(t, { n: 12, r: 32, seed: 23, x0: 120, x1: 960, y0: 260, y1: 560, col: '#FFF4C0' });
+      }
+      startFlash(t, seg);
+    } else {
+      captionStyle({ y: 470 });
+      // held on the ring (it looks like the gate), then the camera drops down the poles to the men
+      const { v: fy, whip } = whipPan(bb, [[0, .3], [.9, .545]], { len: .5 }), { v: fz } = whipPan(bb, [[0, 1.34], [.9, 1.1]], { len: .5 });
+      const v = still('vt_v2_2_props', { x: .5, y: fy, z: fz + .02 * clamp(bb / 3.5), r: Math.sin(t * 7) * .005 });
+      speedBars(t, { n: 18, a: .4 * whip, ang: Math.PI / 2, speed: 5000 });
+      // the men strain: sweat drops pop off their heads on the beats
+      for (const [u, w, j] of [[.17, .63, 0], [.5, .63, 1], [.9, .63, 2]]) { const [x, y] = v.pt(u, w), sk = frac(bb + j * .33); if (bb < 1.1) continue; ctx.save(); ctx.globalAlpha = 1 - sk; sweatDrop(x + sk * 30, y - 30 - sk * 40, 66); ctx.restore(); }
+      for (let j = 0; j < 3; j++) popLabel('?', 760 + j * 80, 820 + (j % 2) * 50, 60, clamp((bb - 1.8 - j * .35) / .25), { fill: '#FFE070', rot: (j - 1) * .2 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V2.3: Akari on the beach chair, the diffs racing up a tall slot-machine strip beside her, pokes ACCEPT ALL on every
+  // beat; then Kiri lunges at us, too late: the diffs stream up her lenses and the button keeps going down ----------
+  // (the diffs in Kiri's lenses, as the horizontal shot's lensDiffs(), for the tall still's lens positions and sizes)
+  const KIRI3V = { lenses: [[.33, .34], [.625, .34]], r: [96, 86], mouth: [.49, .47] };
+  function vLensDiffs(v, scroll, a) {
+    for (const [u, w] of KIRI3V.lenses) {
+      const [x, y] = v.pt(u, w), rx = KIRI3V.r[0] * v.s, ry = KIRI3V.r[1] * v.s, lh = 13 * v.s;
+      ctx.save(); ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, TAU); ctx.clip();
+      ctx.globalAlpha = a;
+      ctx.fillStyle = 'rgb(16 28 56 / .45)'; ctx.fillRect(x - rx, y - ry, rx * 2, ry * 2);
+      const first = Math.floor(scroll / lh);
+      for (let j = first; j < first + ry * 2 / lh + 2; j++) {
+        const yy = y - ry + j * lh - scroll, plus = hash2(71, j) > .45, len = .3 + hash2(72, j) * .6, ind = Math.floor(hash2(73, j) * 3) * 9 * v.s;
+        ctx.fillStyle = plus ? '#7CF0A8' : '#FF8A9A'; ctx.fillRect(x - rx * .8 + ind, yy, rx * 1.5 * len, lh * .32);
+      }
+      ctx.globalAlpha = a * .8; ctx.fillStyle = 'rgb(255 255 255 / .45)';
+      ctx.beginPath(); ctx.moveTo(x - rx * .2, y - ry); ctx.lineTo(x + rx * .25, y - ry); ctx.lineTo(x - rx * .35, y + ry); ctx.lineTo(x - rx * .8, y + ry); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+  }
+  vshot('V2.3', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4.5]);
+    if (i === 0) {
+      const bb = b - .5, k = ease(clamp(bb / 4));
+      const v = still('vt_v2_3_accept', { x: lerp(.48, .52, k), y: .56, z: lerp(1.1, 1.16, k) });
+      // a sticker over the laptop lid's fruit
+      const [lx, ly] = v.pt(.16, .655);
+      ctx.save(); ctx.translate(lx, ly); ctx.rotate(-.2); starShape(0, 0, 62 * v.s / 1.35, '#FF9A4A', .5, 5); ctx.restore();
+      // the diffs race up a slot-machine strip in the sky beside her
+      diffTower(60, 270, 330, 640, t * 1500);
+      // the button hovers over her finger on the laptop and goes down on every beat; a ✓ floats up from each press
+      const press = bb > .5 ? hit(frac(bb), .35) : 0, [fx, fy] = v.pt(.4, .72), [bx, by] = [Math.max(330, fx - 60), fy - 300];
+      bigButton('ACCEPT ALL', bx, by, 62, clamp((bb - .2) / .3), press);
+      if (bb > 1) popLabel('✓', bx + 140, by - 100 - frac(bb) * 160, 56, 1 - clamp((frac(bb) - .6) / .4), { fill: '#C8F5D8', col: '#1E7A45' });
+      startFlash(t, seg);
+    } else {
+      // her lunge lands with a jolt, then the camera creeps in on her face while the button keeps getting pressed below her
+      const k = ease(clamp(bb / 4)), [sx, sy] = shake(t, 12 * hit(bb, .5));
+      const v = still('vt_v2_3_wait', { x: .5, y: lerp(.42, .39, k), z: lerp(1.03, 1.12, k) * punch(bb, .06) }, { dx: sx, dy: sy });
+      const [cx, cy] = v.pt(.48, .4);
+      speedLines(cx, cy, t, { n: 80, r0: 520, a: .35 * hit(bb, 1.4) });
+      vLensDiffs(v, t * 700, .75);
+      const [mx, my] = v.pt(...KIRI3V.mouth);
+      shout('WAIT—!', 680, 330, 72, clamp((bb - .25) / .25), mx, my - 80, .05);
+      // (Akari's button, still going down on every beat, up in the corner)
+      const press = bb > .8 ? hit(frac(bb), .35) : 0;
+      bigButton('ACCEPT ALL', 240, 300, 44, clamp((bb - .6) / .25), press, { rot: -.06 });
+      if (bb > 1) popLabel('✓', 400, 230 - frac(bb) * 120, 44, 1 - clamp((frac(bb) - .6) / .4), { fill: '#C8F5D8', col: '#1E7A45' });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V2.4: Kiri holds up the one plug, her glasses flash: MCP; then the tower of gadgets lights up from the bottom to the top
+  // as the camera climbs it, and Clawd hops onto the top and plugs himself in last ----------
+  // the tower's gadgets, bottom to top: [u, v, name, label side]
+  const GADGETS = [[.5, .68, 'laptop', 1], [.51, .6, 'toaster', -1], [.49, .51, 'telescope', 1], [.5, .4, 'fan', -1], [.5, .31, 'TV', -1], [.5, .23, 'radio', 1], [.5, .1, 'lamp', -1]];
+  vshot('V2.4', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 3]);
+    if (i === 0) {
+      const k = ease(clamp(bb / 3));
+      const v = still('vt_v2_4_kiri', { x: lerp(.47, .5, k), y: lerp(.535, .51, k), z: lerp(1.06, 1.12, k) });
+      lensFlash([v.pt(.34, .4), v.pt(.63, .385)], 88 * v.s, 76 * v.s, Math.sin(clamp((bb - .4) / 1) * Math.PI));
+      const [px, py] = v.pt(.33, .52);
+      addGlow(px, py, 240, '#9FE8FF', .45 + .25 * pulse(t, 4));
+      sparkleField(t, { n: 8, r: 26, seed: 24, x0: px - 160, x1: px + 160, y0: py - 200, y1: py + 100, col: '#E0FAFF' });
+      popLabel('MCP', Math.max(170, px - 120), py - 150, 90, clamp((bb - 1.2) / .3), { fill: '#FFE070', rot: -.08 });
+      startFlash(t, seg);
+    } else {
+      // the whole tower, top to bottom, its gadgets lighting up one every .42 beats from the bottom, the laptop just above the lyric
+      // block and the hub with its MCP plug below it; a slow push
+      const k = ease(clamp((bb - .2) / 2.8)), v = still('vt_v2_4_hub', { x: .5, y: lerp(.5, .48, k), z: lerp(1, 1.06, k) });
+      leak(.3, { side: 'right', col: '#BFE6FF' });
+      const [hx, hy] = v.pt(.46, .9);
+      addGlow(hx, hy, 160, '#9FE8FF', .5 + .3 * pulse(t, 4));
+      popLabel('MCP', hx, hy - 90, 56, clamp(bb / .3), { fill: '#FFE070' });
+      GADGETS.forEach(([u, w, name, side], j) => {
+        const on = bb - .3 - j * .42; if (on < 0) return;
+        const [x, y] = v.pt(u, w);
+        addGlow(x, y, 170, '#FFF0A0', .55 * (.5 + .5 * hit(on, .6)));
+        sparkle(x + side * 90, y - 60, 40 * hit(on, .5), 1, '#FFF8C0');
+        popLabel(`${name} ✓`, x + side * 290, y + (name === 'lamp' ? 90 : 0), 50, clamp(on / .25), { fill: '#C8F5D8', col: '#1E7A45', rot: side * .05 });
+      });
+      // Clawd hops in from the right and squeezes into the stack beside the fan, plugged in last
+      const ck = clamp((bb - 3.3) / .5), [fx, fy] = v.pt(.62, .46);
+      if (ck > 0) {
+        const cx = lerp(W + 200, fx + 90, easeOut(ck)), cy = fy - Math.sin(ck * Math.PI) * 220;
+        cut('clawd_jump', cx, cy, 230, { rot: -.1 + .05 * Math.sin(t * 9) });
+        if (ck >= 1) { sparkle(cx - 70, cy - 210, 44, 1, '#FFF4B0'); popLabel('Clawd ✓', cx - 20, cy - 290, 54, clamp((bb - 3.8) / .25), { fill: '#FFD8C2', col: '#B0501E', rot: .06 }); }
+      }
+      cutFlash(bb, .7);
+    }
+  });
+
+  // ---------- V2.5: Zuck holds the briefcase of cash out at us as the signing bonus counts up; then Ren in the empty hallway, hugging
+  // his bag, glancing left and right on the beats (the picture mirrors) as colleagues vanish around him in puffs ----------
+  vshot('V2.5', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    if (i === 0) {
+      const k = ease(clamp(bb / 4));
+      // (held out at us: his grin above, the open case of cash under his chin, just above the lyric block)
+      const v = still('vt_v2_5_zuck', { x: lerp(.48, .5, k), y: .56, z: lerp(1.08, 1.12, k) * punch(frac(bb), .015) });
+      confetti(t, { n: 46, seed: 25, s: 2.4, cols: ['#8BD48A', '#5FB85E', '#C8F0B0', '#FFE070'] });
+      const [mx, my] = v.pt(.55, .52);
+      addGlow(mx, my, 260, '#FFF4B0', .25 + .1 * pulse(t, 3));
+      sparkleField(t, { n: 10, r: 26, seed: 25, x0: mx - 330, x1: mx + 330, y0: my - 200, y1: my + 160, col: '#FFF8D0' });
+      const n = Math.floor(lerp(0, 100, easeOut(clamp((bb - .8) / 1.6)))) * 1e6, [cx, cy] = v.pt(.55, .4);
+      popLabel(`$${n.toLocaleString('en-US')}`, 540, cy, 76, clamp((bb - .8) / .3), { fill: '#FFE070', rot: -.04 });
+      popLabel('signing bonus', 560, cy + 92, 40, clamp((bb - 1.2) / .3), { fill: '#FFFFFF', font: 'code', rot: -.04 });
+      startFlash(t, seg);
+    } else {
+      const beat = Math.floor(bb);
+      still('vt_v2_5_ren', { x: .5, y: .47, z: 1.08 }, { flip: beat % 2 === 1 });
+      const spots = [[190, 470], [890, 560], [170, 860], [910, 960]];
+      for (let j = 0; j < 4; j++) { const [x, y] = spots[j]; puff(x, y, 190, clamp((bb - .2 - j * .8) / 1.1), 'poof!'); }
+      popLabel('hired away: ' + clamp(Math.floor((bb - .2) / .8) + 1, 0, 4), 540, 290, 56, clamp((bb - .3) / .3), { fill: '#FFFFFF', rot: -.04 });
+      cutFlash(frac(bb), .25, .2);
+    }
+  });
+
+  // ---------- V2.6: Akari's shopping channel is a live stream on a phone: LIVE, the viewer count racing, hearts streaming up the edge;
+  // the three boxes land one on top of the other in a tower beside her, a box a beat, and NOW 3 FOR 1! slaps on ----------
+  const vHeart = (x, y, r, col) => {
+    ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x, y + r * .9);
+    ctx.bezierCurveTo(x - r * 1.5, y - r * .1, x - r * .7, y - r * 1.2, x, y - r * .4);
+    ctx.bezierCurveTo(x + r * .7, y - r * 1.2, x + r * 1.5, y - r * .1, x, y + r * .9); ctx.fill();
+  };
+  vshot('V2.6', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 8));
+    const v = still('vt_v2_6_shop', { x: .5, y: .5, z: lerp(1.08, 1.12, k) });
+    // the stream: hearts pouring up the right edge (behind the boxes), LIVE and the viewers racing up on the left
+    for (let j = 0; j < 22; j++) {
+      const life = 1.6 + hash2(66, j) * .8, age = frac(t / life + hash2(67, j)), hx = 990 + Math.sin(t * 3 + j) * 30 + (hash2(68, j) - .5) * 70, hy = 1460 - age * 960;
+      ctx.save(); ctx.globalAlpha = Math.sin(age * Math.PI); vHeart(hx, hy, 28 * (.7 + hash2(69, j) * .6), ['#FF4D7A', '#FF9FC0', '#FFD34A'][j % 3]); ctx.restore();
+    }
+    popLabel('● LIVE', 140, 450, 44, 1, { fill: '#FF3D5A', col: '#FFFFFF' });
+    popLabel(`${fmtK(lerp(1200, 98000, easeIn(clamp(b / 7.5))))} watching`, 190, 535, 36, 1, { fill: 'rgb(30 24 60 / .72)', col: '#FFFFFF', line: 'rgb(0 0 0 / 0)' });
+    // the marquee over her head, bulbs chasing round it
+    const bk = clamp((b - .3) / .4), [mx, my] = [540, 296];
+    if (bk > 0) {
+      ctx.save(); ctx.translate(mx, my); ctx.rotate(-.03); ctx.scale(backOut(bk, 2), backOut(bk, 2));
+      ctx.fillStyle = 'rgb(40 30 80 / .3)'; ctx.fill(rrPath(-320 + 10, -76 + 12, 640, 152, 30));
+      ctx.fillStyle = '#2A2350'; ctx.fill(rrPath(-320, -76, 640, 152, 30));
+      for (let j = 0; j < 36; j++) {
+        const per = 2 * (620 + 132), d_ = j / 36 * per, [x, y] = d_ < 620 ? [-310 + d_, -66] : d_ < 752 ? [310, -66 + d_ - 620] : d_ < 1372 ? [310 - (d_ - 752), 66] : [-310, 66 - (d_ - 1372)];
+        fillP(ellPath(x, y, 7, 7), (Math.floor(t * 10) + j) % 3 === 0 ? '#FFF4B0' : '#8A6A20');
+      }
+      ctx.restore();
+      logoText('SUPER', mx, my - 20, 68, { font: 'rammetto', k: bk, rot: -.03, grad: ['#FFFFFF', '#FFE070', '#FF9A4A'], edge: '#2A2350' });
+      logoText('INTELLIGENCE', mx, my + 38, 46, { font: 'rammetto', k: bk, rot: -.03, grad: ['#FFFFFF', '#FFD1E0', '#FF6FA0'], edge: '#2A2350' });
+    }
+    // the three boxes land on the counter one on top of another beside her, a box a beat, towering up past her shoulder
+    const [bx, by] = v.pt(.84, .72);
+    BOXES.forEach(([col, lab], j) => { const kk = clamp((b - 2 - j) / .3), drop = (1 - easeOut(clamp((b - 2 - j) / .25))) * 300; productBox(bx, by - j * 252 - drop, 1.4, col, lab, kk); });
+    starSticker(['NOW', '3 FOR 1!'], 220, 960, 160, clamp((b - 5) / .3), -.15 + Math.sin(t * 4) * .05);
+    sparkleField(t, { n: 10, r: 26, seed: 26 });
+    startFlash(t, seg, .6);
+  });
+  const fmtK = n => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : `${Math.round(n)}`;
+
+  // ---------- V2.7: the chatbot's towering giant-robot costume glitches out (BAD UPDATE, oops!); Akari reels; then PATCHED, a bandage
+  // across its screen face, and it bows ----------
+  vshot('V2.7', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 3, 5]);
+    if (i === 0) {
+      const g = hit(frac(bb), .3), [sx, sy] = shake(t, 6 + 10 * g);
+      const v = still('vt_v2_7_robot', { x: .5, y: .6, z: 1.25 * punch(frac(bb), .03) }, { dx: sx, dy: sy });
+      grade('#FF2040', .18 * g + .06 * Math.sin(t * 20) ** 2, 'multiply');
+      glitch(t, bb > .4 ? .6 * g + .15 : 0);
+      const [lx, ly] = v.pt(.66, .73);
+      addGlow(lx, ly, 150, '#FF3050', .5 * g + .25);
+      popLabel('⚠ BAD UPDATE', 540, 310, 66, clamp((bb - .4) / .3), { fill: '#FFD0D8', col: '#B02040', rot: -.05 });
+      const [mx, my] = v.pt(.42, .58);
+      sayBubble('oops!', 300, 520, 64, clamp((bb - 1.6) / .6), mx, my);
+      startFlash(t, seg);
+    } else if (i === 1) {
+      const [sx, sy] = shake(t, 16 * hit(bb, .8) + 3);
+      const v = still('vt_v2_7_akari', { x: .5, y: .43, z: 1.1 * punch(bb, .1) }, { dx: sx, dy: sy });
+      const [fx, fy] = v.pt(.5, .33);
+      speedLines(fx, fy, t, { n: 90, r0: 420, a: .45 });
+      impactFrame(bb < .15 ? 1 : 0);
+      cutFlash(bb, .5);
+    } else {
+      // patched: a bandage slaps across its screen face and the robot bows (a slow forward tilt)
+      const bow = Math.sin(clamp((bb - .7) / 1.5) * Math.PI) * .06;
+      const v = still('vt_v2_7_robot', { x: .5, y: .6, z: 1.25, r: -bow });
+      grade('#DDEBFF', .2, 'soft-light');
+      const [fx, fy] = v.pt(.47, .64), bk = clamp((bb - .2) / .25);
+      if (bk > 0) {
+        const e = lerp(1.6, 1, easeIn(bk)) * v.s * .7;
+        ctx.save(); ctx.translate(fx, fy); ctx.rotate(-.3 - bow); ctx.scale(e, e);
+        ctx.fillStyle = 'rgb(40 30 80 / .3)'; ctx.fill(rrPath(-330 + 8, -70 + 10, 660, 140, 60));
+        ctx.fillStyle = '#F6D2A8'; ctx.fill(rrPath(-330, -70, 660, 140, 60)); ctx.strokeStyle = '#B07A4A'; ctx.lineWidth = 5; ctx.stroke(rrPath(-330, -70, 660, 140, 60));
+        ctx.fillStyle = '#FFF2E0'; ctx.fill(rrPath(-150, -52, 300, 104, 14));
+        txt('PATCHED', 0, 4, 58, '#B02040', { font: 'archivo' });
+        ctx.restore();
+      }
+      sweatDrop(fx + 300, fy - 220, 110 + 10 * Math.sin(t * 6));
+      cutFlash(bb, .6);
+    }
+  });
+
+  // ---------- V2.8: the frame is Akari's phone camera, aimed at the podium: the two robots biting their medals, 35/42 each; the
+  // shutter on the beat, and the shot shrinks into a print; the footnote flips up under it ----------
+  vshot('V2.8', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), snap = 4, frz = b > snap, bf = frz ? snap : b, k = ease(clamp(bf / snap));
+    const tf = frz ? t - (b - snap) * beatLen() : t;
+    // after the shutter the picture becomes a print: it shrinks and tilts onto the dark table
+    const pk = frz ? easeOut(clamp((b - snap - .15) / .5)) : 0, ps = lerp(1, .84, pk), pr = lerp(0, -.035, pk);
+    if (frz) { ctx.fillStyle = '#2A2350'; ctx.fillRect(0, 0, W, H); }
+    ctx.save(); ctx.translate(540, lerp(960, 880, pk)); ctx.rotate(pr); ctx.scale(ps, ps); ctx.translate(-540, -960);
+    if (frz) { ctx.fillStyle = 'rgb(0 0 0 / .4)'; ctx.fillRect(-14, -6, W + 64, H + 70); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(-40, -40, W + 80, H + 80); }
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+    const v = still('vt_v2_8_podium', { x: .5, y: lerp(.6, .59, k), z: lerp(1.06, 1.12, k) });
+    confetti(tf, { n: 70, seed: 28 });
+    for (const [u, w] of [[.4, .6], [.6, .6]]) { const [gx, gy] = v.pt(u, w); glint(gx + 40, gy - 40, 40, Math.sin(frac(bf * .5 + u) * Math.PI)); }
+    const [ax, ay] = v.pt(.33, .42), [bx, by] = v.pt(.67, .42);
+    popLabel('35/42', ax, ay, 58, clamp((b - 1) / .3), { fill: '#FFE070', rot: -.06 });
+    popLabel('35/42', bx, by, 58, clamp((b - 2) / .3), { fill: '#FFE070', rot: .06 });
+    ctx.restore();
+    ctx.restore();
+    popLabel('IMO 2025 · GOLD', 540, 300, 56, clamp((b - .3) / .3) * (1 - pk), { fill: '#FFFFFF' });
+    if (!frz) {
+      // her camera: the focus brackets locking onto the podium, the zoom pill and the shutter at the foot of the screen
+      const fk = 1 + .25 * (1 - easeOut(clamp(b / .6))), cx = 540, cy = 820, hw = 440 * fk, hh = 300 * fk, c = 80;
+      ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      for (const [lw, col] of [[16, 'rgb(30 24 60 / .35)'], [9, '#FFFFFF']]) {
+        ctx.lineWidth = lw; ctx.strokeStyle = col;
+        for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) { ctx.beginPath(); ctx.moveTo(cx + sx * hw, cy + sy * (hh - c)); ctx.lineTo(cx + sx * hw, cy + sy * hh); ctx.lineTo(cx + sx * (hw - c), cy + sy * hh); ctx.stroke(); }
+      }
+      ctx.restore();
+      // the camera's bar at the foot of the screen: the zoom pill and the shutter button
+      ctx.fillStyle = 'rgb(20 16 40 / .45)'; ctx.fillRect(0, 1600, W, 320);
+      popLabel('1×', 540, 1560, 34, 1, { fill: 'rgb(30 24 60 / .6)', col: '#FFFFFF', line: 'rgb(0 0 0 / 0)' });
+      const sh = 1 - .12 * hit(b - snap + .1, .3);
+      ctx.save(); ctx.lineWidth = 10; ctx.strokeStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(540, 1730, 92, 0, TAU); ctx.stroke(); fillP(ellPath(540, 1730, 74 * sh, 74 * sh), '#FFFFFF'); ctx.restore();
+    } else {
+      flash(1 - clamp((b - snap) / .35));
+    }
+    const fk = clamp((b - 5.3) / .4);
+    if (fk > 0) {
+      ctx.save(); ctx.translate(W / 2, 470); ctx.scale(1, Math.sin(fk * Math.PI / 2)); ctx.rotate(-.02);
+      ctx.fillStyle = 'rgb(40 30 80 / .25)'; ctx.fillRect(-470 + 8, -80 + 10, 940, 160);
+      ctx.fillStyle = '#FFFDF4'; ctx.fillRect(-470, -80, 940, 160);
+      txt('* gold-medal level. no actual', 0, -26, 40, '#4A4060', { font: 'code', maxW: 880 });
+      txt('medals were given to machines.', 0, 28, 40, '#4A4060', { font: 'code', maxW: 880 });
+      ctx.restore();
+    }
+    startFlash(t, seg, .6);
+  });
+
+  // ---------- V2.9: the 4o heart waves goodbye in tears from the train window as it pulls away, the #keep4o signs going up from the
+  // platform below; REWIND: the train backs in again; then Akari's happy tears, her sign held high ----------
+  vshot('V2.9', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb0] = cuts(b, [-1, 4.5, 5.5]), bb = i === 0 ? b - .5 : bb0;
+    if (i < 2) {
+      // the train pulls away to the left (the camera drifts with it, the streaks racing), then rewinds back into place
+      const go = i === 0 ? easeIn(clamp(bb / 4)) : 1 - easeOut(clamp(bb / 1));
+      const v = still('vt_v2_9_train', { x: .4 + go * .215, y: .55, z: 1.3 });
+      grade('#5A6FA8', .28, 'multiply');
+      speedBars(t * (i === 0 ? 1 : -1), { n: 40, a: .45 * go, speed: 3600 });
+      rain(t, { n: 130, a: .45 });
+      const [hx, hy] = v.pt(.64, .41);
+      popLabel('4o', hx, hy, 60, clamp((bb - .2) / .3), { fill: '#FFFFFF', col: '#C02060', rot: .12 });
+      // the signs go up from the platform below the window, one a half beat, bobbing
+      if (i === 0) for (let j = 0; j < 4; j++) {
+        const sk = clamp((bb - .8 - j * .5) / .25), x = [210, 860, 500, 690][j], y = [1030, 1000, 1060, 1020][j] + (1 - easeOut(sk)) * 500 + Math.sin(t * 6 + j) * 10;
+        if (sk <= 0) continue;
+        ctx.fillStyle = '#C8A070'; ctx.fillRect(x - 7, y, 14, 600);
+        popLabel('#keep4o', x, y, 56, 1, { fill: '#FFFFFF', col: '#C02060', rot: (j % 2 ? .08 : -.08) });
+      }
+      if (i === 1) {
+        // VHS rewind: scanlines and a big ◀◀
+        ctx.save(); ctx.globalAlpha = .25; ctx.fillStyle = '#FFFFFF'; for (let y = Math.floor(t * 600) % 14; y < H; y += 14) ctx.fillRect(0, y, W, 3); ctx.restore();
+        txt('◀◀ REWIND', 80, 330, 84, '#FFFFFF', { font: 'code', align: 'left', stroke: '#2A2350', sw: 12 });
+        glitch(t, .3);
+      }
+      if (i === 0) startFlash(t, seg); else cutFlash(bb, .7);
+    } else {
+      const k = ease(clamp(bb / 3));
+      still('vt_v2_9_akari', { x: .5, y: lerp(.48, .44, k), z: lerp(1.06, 1.16, k) });
+      rain(t, { n: 70, a: .25 });
+      sparkleField(t, { n: 18, r: 28, seed: 29, col: '#FFF4F8' });
+      for (let j = 0; j < 10; j++) { const hk = frac(t * .6 + j / 10); ctx.save(); ctx.globalAlpha = Math.sin(hk * Math.PI); starShape(90 + hash2(29, j) * 900, 1150 - hk * 800, 26, '#FF8FB8', .5, 5); ctx.restore(); }
+      cutFlash(bb, .9);
+    }
+  });
+
+  // ---------- V2.10: the chart is a tall ladder of ranks; the banana idol hops up it a rung a beat, the camera climbing with it,
+  // and knocks the reigning #1 app off the top; Clawd waves his glowstick at the foot of the ladder, left behind ----------
+  vshot('V2.10', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg);
+    diagSplit('#FFF3B0', '#FFD34A', t, { x: W * .5, a: .16, speed: 260 });
+    rays(W * .62, -120, { t, a: .25, n: 9, ang: Math.PI / 2, spread: 1.2, len: 2600, col: '#FFFFFF' });
+    // the hops, as the horizontal shot's: a rung a beat from beat 1, on top from 5.2
+    const hop = clamp(b - 1, 0, 4.2), rung = Math.min(4, Math.floor(hop)), f = hop >= 4.2 ? 1 : frac(hop), from = 5 - rung, to = Math.max(1, from - 1), onTop = b >= 5.2;
+    const lvl = onTop ? 1 : lerp(from, to, easeOut(clamp(f / .5)));
+    // the world: rung r at Y(r); the camera climbs with the banana's rung, so #5 starts at y 1060 and #1 ends at y 700
+    const GAP = 300, Y = r => 1060 - (5 - r) * GAP, cam = (5 - lvl) / 4 * 840, sy = y => y + cam;
+    const moving = onTop ? 0 : Math.sin(clamp(f / .5) * Math.PI) * (hop > 0 ? 1 : 0);
+    speedBars(t, { n: 22, a: .35 * moving, ang: Math.PI / 2, speed: 4200 });
+    const X0 = 260, X1 = 960;
+    for (let r = 5; r >= 1; r--) {
+      const y = sy(Y(r)); if (y < -100 || y > H + 100) continue;
+      ctx.fillStyle = 'rgb(40 30 80 / .25)'; ctx.fill(rrPath(X0 + 10, y + 12, X1 - X0, 34, 17));
+      ctx.fillStyle = '#FFFFFF'; ctx.fill(rrPath(X0, y, X1 - X0, 34, 17)); ctx.strokeStyle = '#2A2350'; ctx.lineWidth = 5; ctx.stroke(rrPath(X0, y, X1 - X0, 34, 17));
+      txt(`#${r}`, X0 - 110, y + 8, 76, '#2A2350', { font: 'rammetto' });
+      // the other apps sit on the lower rungs
+      if (r >= 2) { const ix = 850, iy = y - 68; ctx.fillStyle = APPS[r - 2]; ctx.fill(rrPath(ix - 62, iy - 62, 124, 124, 32)); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 5; ctx.stroke(rrPath(ix - 62, iy - 62, 124, 124, 32)); }
+    }
+    // the reigning #1, knocked off on the last hop, spinning away out of the frame
+    const knock = clamp((b - 5.2) / 1.2);
+    if (knock < 1) {
+      const x = 850 + knock * 520, y = sy(Y(1)) - 74 - Math.sin(knock * Math.PI) * 300 + knock * knock * 700;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(knock * 7);
+      ctx.fillStyle = APPS[4]; ctx.fill(rrPath(-66, -66, 132, 132, 34)); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 6; ctx.stroke(rrPath(-66, -66, 132, 132, 34));
+      txt('✦', 0, 4, 76, '#FFFFFF', { font: 'archivo' });
+      ctx.restore();
+      if (knock > 0 && knock < .5) burst(850, sy(Y(1)) - 74, 260, knock / .5, ['#FFFFFF', '#FFE070', '#FF8FB8']);
+    }
+    // (the rungs below fade out under the lyric block)
+    stripFoot(0, W, '#FFE47A', 1170);
+    // Clawd on the bottom rung, waving his glowstick up at her (left behind as the camera climbs)
+    const wave = Math.sin(t * 9) * .5, cy = sy(Y(5)) + 4 - Math.abs(Math.sin(b * Math.PI)) * 40;
+    if (cy < H + 300) {
+      const cl = cut('clawd_jump', 680, cy, 230, { rot: -.05 });
+      const [gx, gy] = cl.pt(.9, .2);
+      ctx.save(); ctx.translate(gx, gy); ctx.rotate(-.2 + wave); ctx.lineCap = 'round';
+      ctx.strokeStyle = alpha('#7CFFB0', .4); ctx.lineWidth = 40; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -150); ctx.stroke();
+      ctx.strokeStyle = '#B8FFD4'; ctx.lineWidth = 20; ctx.stroke(); ctx.restore();
+    }
+    // the banana: a hop a beat, an arc over to the next rung up
+    const bx = 420, by = onTop ? sy(Y(1)) : sy(lerp(Y(from), Y(to), easeOut(clamp(f / .5)))) - Math.sin(clamp(f / .5) * Math.PI) * 130;
+    cut('v2_10_banana', bx, by + 6, 300, { sq: onTop ? .05 * pulse(t, 4) : 0, rot: onTop ? 0 : Math.sin(f * Math.PI) * .12 });
+    if (onTop) {
+      const ck = clamp((b - 5.4) / .3), y1 = sy(Y(1));
+      ctx.save(); ctx.translate(bx + 250, y1 - 300); ctx.scale(ck, ck); starShape(0, 0, 60, '#FFE070', .5, 5); ctx.restore();
+      sparkleField(t, { n: 14, r: 34, seed: 30, x0: 200, x1: 900, y0: y1 - 420, y1: y1 - 40 });
+      popLabel('#1', bx + 330, y1 - 160, 84, ck, { fill: '#FFE070', rot: .1 });
+    }
+    // her name rides above her head
+    popLabel('Nano Banana', Math.max(250, bx - 20), by - 370, 56, clamp((b - .4) / .3), { fill: '#FFFFFF', rot: -.05 });
+    startFlash(t, seg);
+  });
+
+  // ---------- V2.11: Clawd bows in the tall library, paying out bundles of bills, his sweat drop swelling to the size of his head;
+  // then the queue of authors with their books runs up the frame to the horizon, and the receipt unrolls down over the sky ----------
+  vshot('V2.11', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4.5]);
+    if (i === 0) {
+      const bb = b - .5, k = ease(clamp(bb / 4));
+      const v = still('vt_v2_11_clawd', { x: .5, y: .61, z: lerp(1.28, 1.34, k) });
+      const [sx, sy] = v.pt(.76, .54), ds = lerp(80, 380, easeOut(clamp((bb - 1) / 2.4)));
+      sweatDrop(sx + ds * .1, sy - ds * .25, ds, .15);
+      startFlash(t, seg);
+    } else {
+      const k = ease(clamp(bb / 4.5));
+      still('vt_v2_11_line', { x: .5, y: lerp(.62, .55, k), z: lerp(1.3, 1.08, k) });
+      receipt(270, 250, 540, 860, clamp((bb - .5) / 2.5), [
+        ['RECEIPT', 56, 'archivo'], ['~500,000 books', 42], ['× $3,000', 42], ['- - - - - - -', 42], ['TOTAL', 44, 'archivo'], ['$1.5B', 120, 'rammetto', '#B02040'],
+      ], .03);
+      cutFlash(bb, .7);
+    }
+  });
+
+  // ---------- V2.12: Eliezer hoists his black book over his fedora, its title lettering itself onto the cover; on the beat the camera
+  // drops to his grave face. Then the club's gasp, frozen, and the bestseller sash slaps across it ----------
+  vshot('V2.12', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4]);
+    if (i === 0) {
+      const h = hit(b - 2.5, .5), [sx, sy] = shake(t, 10 * h);
+      const { v: fy, whip } = whipPan(b, [[0, .417], [2.5, .583]], { len: .45 });
+      const v = still('vt_v2_12_eliezer', { x: .5, y: fy, z: 1.2 * punch(b - 2.5, .05) }, { dx: sx, dy: sy });
+      speedBars(t, { n: 16, a: .35 * whip, ang: Math.PI / 2, speed: 5000 });
+      // the title on the black cover, in the book's own tilt
+      const [cx, cy] = v.pt(.46, .235), tk = clamp((b - .8) / .8);
+      if (tk > 0) {
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate(-.2); ctx.scale(v.s * 1.12, v.s * 1.12); ctx.globalAlpha = tk;
+        txt('IF ANYONE', 0, -90, 50, '#FFFFFF', { font: 'archivo' });
+        txt('BUILDS IT,', 0, -36, 50, '#FFFFFF', { font: 'archivo' });
+        txt('EVERYONE', 0, 30, 58, '#FF5A3A', { font: 'archivo' });
+        txt('DIES', 0, 92, 70, '#FF5A3A', { font: 'archivo' });
+        ctx.restore();
+      }
+      startFlash(t, seg);
+    } else {
+      const frz = bb > .6, h = hit(bb, .5), [sx, sy] = shake(t, frz ? 0 : 14 * h);
+      still('vt_v2_12_gasp', { x: .5, y: .46, z: frz ? 1.08 : 1.08 * punch(bb, .1) }, { dx: sx, dy: sy });
+      if (frz) grade('#FFE9F0', .12, 'screen');
+      sash('★ NYT BESTSELLER ★', clamp((bb - 1.2) / .8), frz ? t - (bb - .6) * beatLen() * .25 : t, { y: 1040, ang: -.2, th: 130, rep: 1 });
+      impactFrame(bb < .12 ? 1 : 0);
+      cutFlash(bb, .5);
+    }
+  });
+
+  // ---------- V2.13: CLANKER! bursts from the windows up the tall apartment block, one a beat, every tail aimed at the little delivery
+  // robot below, while Akari keeps patting its lid ----------
+  vshot('V2.13', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp((b - .5) / 6));
+    const v = still('vt_v2_13_robot', { x: lerp(.48, .5, k), y: .6, z: lerp(1.2, 1.25, k) });
+    const [rx, ry] = v.pt(.3, .62), [hx, hy] = v.pt(.42, .55);
+    // (from the windows on both sides of the street, above their heads)
+    const S = [[230, 300, -.1], [850, 320, .08], [220, 470, .06], [860, 460, -.08], [540, 250, -.04], [230, 640, .1]];
+    S.forEach(([x, y, r], j) => shout('CLANKER!', x, y, 50, clamp((b - 1 - j * .9) / .25), rx, ry, r));
+    const pat = hit(frac(b * 2), .25);
+    popLabel('pat', hx + 60, hy - 90 - pat * 24, 46, clamp((b - 1.5) / .3), { fill: '#FFD1E0', col: '#C02060', rot: -.08 });
+    if (b > 4) { ctx.save(); ctx.globalAlpha = clamp((b - 4) / .3); starShape(rx + 40, ry - 230 - frac(b) * 40, 30, '#FF8FB8', .5, 5); ctx.restore(); }
+    startFlash(t, seg);
+  });
+
+  // ---------- V2.14: the frame is the phone: a feed of AI-slop clips (this verse's own pictures) swipes up on every beat, then faster
+  // and faster; the camera pulls back out of the screen and the feed pours out of the phone's bottom edge down the frame. Then Kiri
+  // floats through the flood on her swim ring, holding up STOP ----------
+  const SLOP = ['vt_v2_13_robot', 'vt_v2_1_whale', 'vt_v2_9_train', 'vt_v2_8_podium', 'vt_v2_7_robot', 'vt_v2_6_shop'];
+  // one clip of the feed in phone space (a 1080×1920 screen at (0, y)), with the app's icons and caption over it
+  function slopClip(j, y, t) {
+    const n = ((j % SLOP.length) + SLOP.length) % SLOP.length;
+    still(SLOP[n], { x: .5, y: .5, z: 1.04 + .04 * Math.sin(t * 1.5 + j) }, { rect: [0, y, W, H] });
+    ctx.fillStyle = linGrad(0, y + H * .6, 0, y + H, [[0, 'rgb(0 0 0 / 0)'], [1, 'rgb(0 0 0 / .55)']]); ctx.fillRect(0, y + H * .6, W, H * .4);
+    // the side column: like, comment, share
+    const likes = ['1.2M', '847K', '2.1M', '3.4M', '960K', '1.8M'][n];
+    [['♥', likes, '#FF4D7A'], ['●', '12K', '#FFFFFF'], ['➦', 'share', '#FFFFFF']].forEach(([ic, lab, col], i) => {
+      const iy = y + 860 + i * 170;
+      txt(ic, 980, iy, 70, col, { font: 'archivo', stroke: 'rgb(0 0 0 / .35)', sw: 6 });
+      txt(lab, 980, iy + 66, 30, '#FFFFFF', { font: 'archivo', stroke: 'rgb(0 0 0 / .4)', sw: 6 });
+    });
+    popLabel('✨ AI', 150, y + 420, 44, 1, { fill: '#FFE070' });
+    txt(['@slopfactory', '@totally.real', '@ai_wow_daily', '@clip_farm', '@robot.vids', '@for.u.4ever'][n], 70, y + 1580, 44, '#FFFFFF', { font: 'archivo', align: 'left', stroke: 'rgb(0 0 0 / .4)', sw: 7 });
+  }
+  // a small clip card tumbling out of the phone
+  function slopCard(j, x, y, h, rot, t) {
+    const w = h * 9 / 16;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+    ctx.fillStyle = 'rgb(40 30 80 / .3)'; ctx.fill(rrPath(-w / 2 + 6, -h / 2 + 8, w, h, 14));
+    ctx.fillStyle = '#FFFFFF'; ctx.fill(rrPath(-w / 2 - 6, -h / 2 - 6, w + 12, h + 12, 16));
+    still(SLOP[((j % SLOP.length) + SLOP.length) % SLOP.length], { x: .5, y: .5, z: 1.05 }, { rect: [-w / 2, -h / 2, w, h] });
+    ctx.restore();
+  }
+  vshot('V2.14', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4]);
+    if (i === 0) {
+      diagSplit('#CFE4FA', '#9FC4F4', t, { x: W * .6, a: .2, speed: 200 });
+      // the scroll, in clips: a swipe on each of the first beats, then a runaway scroll
+      const pos = b < 2 ? Math.max(0, Math.floor(b)) + easeOut(clamp(frac(b) / .3)) * (b >= 0 ? 1 : 0) : 2 + (b - 2) * 1.6 + (b - 2) ** 2 * 1.4;
+      // the pull back out of the screen, from beat 2.2: the phone shrinks to the middle of the frame
+      const pk = ease(clamp((b - 2.2) / .9)), s = lerp(1, .5, pk), cx = 540, cy = lerp(960, 760, pk);
+      ctx.save(); ctx.translate(cx, cy); ctx.scale(s, s); ctx.translate(-W / 2, -H / 2);
+      if (pk > 0) { ctx.fillStyle = 'rgb(40 30 80 / .3)'; ctx.fill(rrPath(-34, -26, W + 80, H + 80, 130)); ctx.fillStyle = '#20243A'; ctx.fill(rrPath(-50, -50, W + 100, H + 100, 130)); }
+      ctx.save(); ctx.beginPath(); ctx.roundRect(0, 0, W, H, pk > 0 ? 90 : 0); ctx.clip();
+      const first = Math.floor(pos);
+      for (let j = first; j <= first + 1; j++) slopClip(j, (j - pos) * H, t);
+      // the motion blur of the runaway scroll
+      if (b > 2) speedBars(t, { n: 30, a: .5 * clamp((b - 2) / .6), ang: Math.PI / 2, speed: 9000 });
+      ctx.restore();
+      if (pk > 0) { ctx.fillStyle = '#20243A'; ctx.fill(rrPath(W / 2 - 150, -20, 300, 56, 28)); }
+      ctx.restore();
+      // …and pours out of the bottom of the phone, down the frame
+      const pour = clamp((b - 2.6) / .8);
+      for (let j = 0; j < 26 * pour; j++) {
+        const age = frac(t * .9 + hash2(141, j)), x = cx + (hash2(142, j) - .5) * 380 + age * (hash2(143, j) - .5) * 900, y = cy + H * s / 2 - 40 + age * age * 1300;
+        slopCard(j, x, y, 190 + hash2(144, j) * 60, (hash2(145, j) - .5) * 2 + age * 3, t);
+      }
+      startFlash(t, seg);
+    } else {
+      // (from the sign, a slow tilt down to her deadpan face as she drifts through the flood)
+      const bob = Math.sin(t * 3) * 12, k = ease(clamp(bb / 4.5));
+      const v = still('vt_v2_14_kiri', { x: .5, y: lerp(.46, .54, k), z: 1.1, r: Math.sin(t * 2.2) * .012 }, { dy: bob });
+      // the clips float in the flood around her, bobbing
+      const [, wy] = v.pt(.5, .8);
+      for (let j = 0; j < 7; j++) {
+        const x = ((hash2(145, j) * W + t * 50 * (j % 2 ? 1 : -1)) % (W + 300) + W + 300) % (W + 300) - 150, y = wy + hash2(146, j) * 220 + Math.sin(t * 3 + j) * 12;
+        ctx.save(); ctx.translate(x, y); ctx.scale(1, .6); slopCard(j, 0, 0, 260, Math.sin(t * 2 + j) * .12, t); ctx.restore();
+      }
+      cutFlash(bb, .7);
+    }
+  });
+
+  // ---------- V2.15: Yann waves goodbye under the spotlight and the red curtain drops down the tall frame: fin.; then his sandbox, a
+  // glowing cube floating over his raised palm ----------
+  vshot('V2.15', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    if (i === 0) {
+      const k = ease(clamp(bb / 3));
+      const v = still('vt_v2_15_yann', { x: lerp(.46, .5, k), y: lerp(.44, .4, k), z: lerp(1.04, 1.12, k) });
+      const [sx, sy] = v.pt(.5, .08);
+      addGlow(sx, sy, 600, '#FFF4D0', .2 + .06 * Math.sin(t * 4));
+      curtain(clamp((bb - 2) / 1));
+      if (bb > 3) { const s = 1 + .04 * hit(bb - 3, .4), [sx, sy] = shake(t, 8 * hit(bb - 3, .5)); txt('fin.', W / 2 + sx, 760 + sy, 170 * s, '#FFE9B0', { font: 'abril', stroke: '#5A0E1C', sw: 12 }); txt('(12 years at Meta)', W / 2 + sx, 940 + sy, 52, '#FFE9B0', { font: 'code', stroke: '#5A0E1C', sw: 9 }); }
+      startFlash(t, seg);
+    } else {
+      const k = ease(clamp(bb / 4));
+      const v = still('vt_v2_15_cube', { x: lerp(.47, .44, k), y: lerp(.46, .43, k), z: lerp(1.06, 1.14, k) });
+      const [cx, cy] = v.pt(.16, .31);
+      addGlow(cx, cy + Math.sin(t * 3) * 8, 180, '#9FE8FF', .25 + .15 * pulse(t, 3)); sparkle(cx + 70, cy - 80, 36 * (.6 + .4 * pulse(t, 3)), 1);
+      sparkleField(t, { n: 16, r: 26, seed: 31, col: '#E0FAFF' });
+      popLabel('next: world models', 540, 300, 60, clamp((bb - .8) / .3), { fill: '#FFFFFF', font: 'archivo', rot: -.05 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V2.16: the business page spins in as a portrait broadsheet, lands on the beat, and the camera dives into its photo (a
+  // 9:16 picture, so it fills the frame exactly as the next cut opens); the bubble, Clawd floating in on a balloon to poke it; POP ----------
+  // the page in its own units (1000 × 1570), printed by the kit: masthead, headline, subhead, the photo, a chart and grey columns
+  const VPAGE = { w: 1000, h: 1570, photo: [40, 575, 540, 960], chart: [612, 575, 348, 380] };
+  function vBusinessPage(bb) {
+    const ink = '#1C1A22', { w, h } = VPAGE;
+    ctx.fillStyle = 'rgb(0 0 0 / .35)'; ctx.fillRect(18, 24, w, h);
+    ctx.fillStyle = '#FBFAF6'; ctx.fillRect(0, 0, w, h);
+    txt('The Business Page', w / 2, 112, 92, ink, { font: 'fraktur' });
+    txt('NOVEMBER 2025', 40, 176, 24, '#4A4656', { font: 'code', align: 'left' });
+    txt('MARKETS · TECH · AI', w - 40, 176, 24, '#4A4656', { font: 'code', align: 'right' });
+    ctx.fillStyle = ink; ctx.fillRect(30, 196, w - 60, 5); ctx.fillRect(30, 206, w - 60, 2);
+    const hs = 1 + .06 * hit(bb - 1, .4);
+    txt('BUBBLE?!', w / 2, 360, 250 * hs, '#141218', { font: 'archivo', maxW: 930 * hs });
+    txt('AI stocks float ever higher', w / 2, 512, 52, '#2E2A36', { font: 'abril' });
+    ctx.fillStyle = ink; ctx.fillRect(40, 552, w - 80, 2);
+    still('vt_v2_16_bubble', { x: .5, y: .42, z: 1.02 }, { rect: VPAGE.photo });
+    const [px, py, pw, ph] = VPAGE.photo;
+    ctx.strokeStyle = ink; ctx.lineWidth = 3; ctx.strokeRect(px, py, pw, ph);
+    // a rising chart: the AI index goes up and up
+    const [cx, cy, cw, ch] = VPAGE.chart;
+    ctx.strokeStyle = 'rgb(28 26 34 / .5)'; ctx.lineWidth = 2; ctx.strokeRect(cx, cy, cw, ch);
+    ctx.fillStyle = 'rgb(118 114 128 / .25)'; for (let j = 1; j < 5; j++) ctx.fillRect(cx + 10, cy + ch * j / 5, cw - 20, 2);
+    txt('AI INDEX ▲', cx + 18, cy + 32, 28, ink, { font: 'code', align: 'left' });
+    ctx.strokeStyle = '#1E9A55'; ctx.lineWidth = 8; ctx.lineJoin = 'round'; ctx.beginPath();
+    for (let j = 0; j <= 24; j++) { const u = j / 24, x = cx + 20 + u * (cw - 40), y = cy + ch - 26 - (ch - 90) * u ** 2.2 + Math.sin(j * 2.1) * 9; j ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+    greek(612, 990, 160, 545, 161); greek(800, 990, 160, 545, 162);
+    // the fold across the middle of the broadsheet, and the light across the paper
+    ctx.fillStyle = linGrad(0, h / 2 - 30, 0, h / 2 + 30, [[0, 'rgb(0 0 0 / 0)'], [.5, 'rgb(60 50 80 / .12)'], [1, 'rgb(0 0 0 / 0)']]); ctx.fillRect(0, h / 2 - 30, w, 60);
+    ctx.fillStyle = linGrad(0, 0, w, h, [[0, 'rgb(255 250 235 / .18)'], [1, 'rgb(40 30 80 / .08)']]); ctx.fillRect(0, 0, w, h);
+  }
+  vshot('V2.16', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 3]);
+    if (i === 0) {
+      // the spinning newspaper lands on the beat; a beat later the camera dives into the photo, framed exactly as the next cut opens
+      const sp = easeOut(clamp(bb / 1)), h = hit(bb - 1, .5), [sx, sy] = shake(t, 12 * h), zk = easeIn(clamp(bb - 2));
+      ctx.fillStyle = '#2A2350'; ctx.fillRect(0, 0, W, H);
+      speedLines(W / 2, H * .45, t, { n: 80, r0: 560, a: .25 * (1 - zk) });
+      // page → screen: page point C lands on the frame's middle at scale s; at zk = 1 the photo fills the frame's width exactly
+      const [px, py, pw, ph] = VPAGE.photo, s1 = W / pw, s = Math.pow(s1, zk), wk = (1 - 1 / s) / (1 - 1 / s1);
+      const C = [lerp(VPAGE.w / 2, px + pw / 2, wk), lerp(800, py + ph / 2, wk)];
+      ctx.save(); ctx.translate(W / 2 + sx, H / 2 + sy); ctx.rotate((1 - sp) * TAU * 1.5); ctx.scale(lerp(.08, 1, sp) * s, lerp(.08, 1, sp) * s); ctx.translate(-C[0], -C[1]);
+      vBusinessPage(bb);
+      ctx.restore();
+      startFlash(t, seg, .6);
+    } else {
+      const poke = 6, pop = 7, frz = bb > poke && bb < pop, bf = Math.min(bb, poke), k = ease(clamp(bf / poke));
+      if (bb < pop) {
+        const tf = frz ? t - (bb - poke) * beatLen() : t, breath = 1 + .012 * Math.sin(tf * 5);
+        const v = still('vt_v2_16_bubble', { x: .5, y: lerp(.42, .44, k), z: lerp(1.02, 1.1, k) * breath });
+        // iridescent shimmer over the bubble
+        const [bx, by] = v.pt(.5, .45);
+        ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = .16;
+        ctx.fillStyle = `hsl(${(tf * 80) % 360} 90% 70%)`; ctx.beginPath(); ctx.ellipse(bx - 150 * v.s, by - 250 * v.s, 220 * v.s, 70 * v.s, -.35, 0, TAU); ctx.fill(); ctx.restore();
+        // Clawd floats down from the sky on a balloon and boops the top of the bubble with his feet
+        const [ex, ey] = v.pt(.62, .205), ck = clamp((bf - 2) / 3), jab = bb > 5.4 ? easeOut(clamp((bf - 5.4) / .4)) : 0;
+        const cx = ex + 40, cy = lerp(-120, ey - 6, easeOut(ck)) + jab * 34 + Math.sin(t * 2.5) * (frz || ck >= 1 ? 0 : 12);
+        if (ck > 0) {
+          ctx.save(); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(cx + 10, cy - 200); ctx.quadraticCurveTo(cx + 60, cy - 280, cx + 40, cy - 330); ctx.stroke(); ctx.restore();
+          fillP(ellPath(cx + 40, cy - 400, 66, 78), '#FF8FB8'); fillP(ellPath(cx + 18, cy - 428, 15, 22, -.4), 'rgb(255 255 255 / .6)');
+          cut('clawd_jump', cx, cy, 240, { rot: -.08 + .05 * Math.sin(t * 3) * (frz ? 0 : 1) });
+        }
+        if (jab > .2) { ctx.save(); ctx.globalAlpha = jab; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 7; ctx.beginPath(); ctx.ellipse(ex + 30, ey + 10, 130, 34, 0, .15 * Math.PI, .85 * Math.PI); ctx.stroke(); ctx.restore(); }
+        if (frz) { grade('#FFFFFF', .08, 'screen'); sparkle(ex + 30, ey + 10, 80, 1, '#FFFFFF'); }
+      } else {
+        // POP: the bubble's gone, the city behind it, droplets flying
+        const pk = clamp((bb - pop) / 1.2);
+        const v = still('vt_v2_16_bubble', { x: .5, y: .44, z: 1.1 * (1 + pk * .1) }), [px, py] = v.pt(.5, .45);
+        burst(px, py, 1000, pk, ['#FFFFFF', '#BFE6FF', '#FFD1E0']);
+        impactFrame(bb - pop < .12 ? 1 : 0);
+        popLabel('POP!', W / 2, py - 60, 190 * backOut(clamp((bb - pop) / .3), 2), 1, { fill: '#FFE070', rot: -.08 });
+        zoomBlur(hit(bb - pop, .8), px, py);
       }
       cutFlash(bb, .4);
       if (bb > 7.4) flash((bb - 7.4) / .6);
@@ -3893,6 +5753,192 @@ function placeholder(t, s) {
     cutFlash(rb, 1, .4);
     if (rb > 2.5) flash((rb - 2.5) / .5);
   });
+
+  // =====================================================================================================
+  // THE VERTICAL CHORUS 2 (1080×1920): the same five shots on the same beats, on tall stills (shots/vt_c05_chorus2.json). The three
+  // walk at us down the lantern street, Akari in front; the goldfish leap up the tall frame from the pool into her scoop and out of the
+  // top, then land as points on a chart that climbs the frame; the fireworks bloom a beat apart up a curve that climbs the tall night
+  // sky over the three on the riverbank; Clawd sits on the jar's lid to keep the firework in, bounced harder every beat, until it
+  // blows him up into the sky and the starburst fills it.
+  // =====================================================================================================
+  // (where things are in the tall stills, as fractions: from `tools/stills.py grid`)
+  const VWALK = { head: [.52, .41] };
+  const VFISH = { splash: [.66, .7], scoop: [.29, .5], eyes: [[.405, .205], [.555, .205]] };
+  const VJAR = { lid: [.51, .35], fizz: [.525, .69], crack: [.36, .48] };
+  // an anime sweat drop: a pale blue teardrop with a white glint, round end at (x, y), radius r, its point turned by rot (0: up)
+  function sweatDrop(x, y, r, rot, a) {
+    if (a <= 0 || r <= 0) return;
+    const d = r * 2.3, k = Math.asin(r / d);
+    ctx.save(); ctx.globalAlpha *= a; ctx.translate(x, y); ctx.rotate(rot);
+    const P = new Path2D(); P.moveTo(0, -d); P.quadraticCurveTo(r * .55, -d * .55, r * Math.cos(-k), r * Math.sin(-k));
+    P.arc(0, 0, r, -k, Math.PI + k); P.quadraticCurveTo(-r * .55, -d * .55, 0, -d); P.closePath();
+    ctx.fillStyle = linGrad(0, -d, 0, r, [[0, '#F2FBFF'], [1, '#A8DCFF']]); ctx.fill(P);
+    ctx.strokeStyle = '#3F86C8'; ctx.lineWidth = Math.max(2, r * .2); ctx.lineJoin = 'round'; ctx.stroke(P);
+    fillP(ellPath(-r * .38, -r * .05, r * .2, r * .32, -.3), '#FFFFFF');
+    ctx.restore();
+  }
+  // the night deepening down from the top of the tall frame to about y 1050
+  function nightSkyTall(a) {
+    ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.fillStyle = linGrad(0, 0, 0, 1050, [[0, alpha('#141A50', a)], [.6, alpha('#1A2060', a * .7)], [1, alpha('#1A2060', 0)]]); ctx.fillRect(0, 0, W, 1050); ctx.restore();
+  }
+  // the riverbank, framed at its foot: the three's heads at y ≈ 860–1010, the sky above them
+  const riverbank = (z, o) => still('vt_c2_watch', { x: .5, y: 1, z }, o);
+
+  vshot('C2', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg);
+    setBloom(.6);
+    // ---------- "We didn't start the scaling": the three in yukata walk at us down the lantern street, Akari in front, Clawd on her head ----------
+    if (b < 6) {
+      const k = ease(clamp(b / 6)), b0 = beatsIn(seg.start, seg);
+      const v = still('vt_c2_walk', { x: .5, y: lerp(.52, .5, k), z: lerp(1.04, 1.16, k) });
+      bokeh(t, { n: 8, seed: 51, r: 60, y0: 60, y1: 700, a: .3, pan: -k * 200 });
+      const [hx, hy] = v.pt(...VWALK.head), hop = Math.abs(Math.sin(b * Math.PI));
+      cut('clawd_jump', hx, hy - hop * 18 + 6, 125 * v.s, { sq: (1 - hop) * .05 });
+      sparkleField(t * .5, { n: 12, r: 16, seed: 52, col: '#FFE9B0', y0: 120, y1: 900 });
+      bokeh(t, { n: 5, seed: 53, r: 150, y0: 400, y1: 1600, a: .2, pan: -k * 600 });
+      flash(1 - clamp((b - b0) / .5));
+      return;
+    }
+    // ---------- "It was always training, and the curves kept gaining": the goldfish leap up the frame; then they climb a tall chart ----------
+    if (b < 14) {
+      const bb = b - 6, [i, cb] = cuts(bb, [0, 4]);
+      if (i === 0) {
+        // a fish a beat leaps out of the splash in the pool, up and over into her scoop, and springs off it up out of the top
+        // (framed from the top, her face at y ≈ 450–490; the date card would sit on the scoop)
+        hideStamp();
+        const k = ease(clamp(cb / 4));
+        const v = still('vt_c2_goldfish', { x: lerp(.48, .5, k), y: 0, z: lerp(1.06, 1.14, k) });
+        grade('#FFB070', .14, 'soft-light');
+        const [px, py] = v.pt(...VFISH.splash), [qx, qy] = v.pt(...VFISH.scoop), FLY = .7, UP = .6, fh = 230 * v.s / 1.3;
+        for (let j = 0; j < 5; j++) {
+          const age = cb - j + .3; if (age < 0 || age > FLY + UP) continue;
+          if (age < FLY) {
+            const u = age / FLY, cx = lerp(px, qx, .4), cy = qy - 300 * v.s / 1.3;
+            const x = (1 - u) ** 2 * px + 2 * u * (1 - u) * cx + u * u * qx, y = (1 - u) ** 2 * py + 2 * u * (1 - u) * cy + u * u * qy;
+            const dx = (1 - u) * (cx - px) + u * (qx - cx), dy = (1 - u) * (cy - py) + u * (qy - cy);
+            cut('c2_fish', x, y, fh, { rot: Math.atan2(dy, dx), anchor: [.5, .5] });
+            if (age < .35) splash(px, py, age / .35, 1.2 * v.s);
+          } else {
+            const u = (age - FLY) / UP;
+            splash(qx, qy, u * 1.6, v.s);
+            cut('c2_fish', qx - u * 60, qy - easeIn(u) * 1500 - Math.sin(u * Math.PI) * 80, fh * (1 + u * .25), { rot: -Math.PI / 2 * (1 - u) - u * 5, anchor: [.5, .5], sq: .18 * hit(u, .25) });
+            if (u < .5) sparkle(qx, qy - 20, 70 * (1 - u / .5), 1, '#FFFFFF');
+          }
+        }
+        for (const e of VFISH.eyes) { const [gx, gy] = v.pt(...e); glint(gx, gy - 6, 30, Math.sin(clamp((cb - .6) / 1) * Math.PI)); }
+        sparkleField(t, { n: 8, r: 14, seed: 54, col: '#FFE9B0', y1: 600 });
+        cutFlash(cb, .6);
+        return;
+      }
+      // the chart, up the tall frame: each fish leaps up from below the frame and lands as a point on a steepening curve, one a half beat
+      const k = ease(clamp(cb / 4));
+      still('vt_c2_goldfish', { x: .5, y: lerp(.42, .38, k), z: 1.16 });
+      grade('#1C1850', .55, 'multiply');
+      const x0 = 220, y0 = 1040, x1 = 900, y1 = 360, N = 8;
+      ctx.save(); ctx.fillStyle = 'rgb(20 16 60 / .45)'; ctx.fill(rrPath(x0 - 140, y1 - 130, x1 - x0 + 220, y0 - y1 + 240, 28)); ctx.restore();
+      ctx.save(); ctx.strokeStyle = 'rgb(255 255 255 / .8)'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x0 - 70, y1 - 50); ctx.lineTo(x0 - 70, y0 + 30); ctx.lineTo(x1 + 40, y0 + 30); ctx.stroke(); ctx.restore();
+      txt('GOLDFISH', x0 - 40, y1 - 84, 54, '#FFD34A', { font: 'archivo', align: 'left' });
+      txt('scoops (log) →', x1 + 30, y0 + 72, 36, '#FFFFFF', { font: 'code', align: 'right' });
+      const P = Array.from({ length: N }, (_, j) => { const u = (j + .5) / N; return [lerp(x0, x1, u), lerp(y0 - 40, y1 + 20, u ** 2.6)]; });
+      const landed = (cb - .2) * 2.2;
+      const Q = P.filter((_, j) => landed >= j + 1);
+      if (Q.length > 1) curve(Q, 1, { w: 10, col: '#FFB050' });
+      P.forEach(([x, y], j) => {
+        const age = landed - j; if (age < 0) return;
+        if (age < 1) { const u = easeOut(age), sx = lerp(x - 160, x, u), sy = lerp(H + 80, y, u) - Math.sin(u * Math.PI) * 160; cut('c2_fish', sx, sy, 140, { rot: lerp(-1.5, .1, u), anchor: [.5, .5] }); return; }
+        addGlow(x, y, 50, '#FFB050', .7);
+        cut('c2_fish', x, y, 124 + 8 * Math.sin(t * 6 + j), { rot: .15 * Math.sin(t * 4 + j) - .2, anchor: [.5, .5] });
+        if (age < 1.5) sparkle(x + 10, y - 50, 34 * (1.5 - age), 1, '#FFFFFF');
+      });
+      cutFlash(cb, .6);
+      return;
+    }
+    // ---------- "And the curves kept gaining": over the three on the riverbank, fireworks bloom a beat apart up a curve that climbs the sky ----------
+    if (b < 22) {
+      setBloom(.75);
+      const bb = b - 14, k = ease(clamp(bb / 8));
+      riverbank(lerp(1.16, 1.2, k));
+      nightSkyTall(.9);
+      // (the shells keep clear of their heads, y > 850)
+      const P = [[120, 760], [290, 744], [450, 716], [600, 670], [730, 600], [835, 500], [915, 370], [970, 210]];
+      // (two shells already bursting high over the river at the cut, so the sky isn't empty while the curve starts)
+      firework(330, 330, 250, (bb + 1.3) * beatLen(), FW[3], { seed: 41, col2: FW[1], y0: 880, n: 64, life: 2.6 });
+      firework(780, 250, 220, (bb + .7) * beatLen(), FW[2], { seed: 42, col2: FW[0], y0: 880, n: 64, life: 2.6 });
+      const Q = P.filter((_, j) => bb >= j + .6);
+      if (Q.length > 1) curve(Q, 1, { w: 9, col: '#FFD080' });
+      P.forEach(([x, y], j) => firework(x, y, 170 + j * 22, (bb - j - .6) * beatLen(), FW[j % FW.length], { seed: j + 3, col2: FW[(j + 2) % FW.length], y0: 880, n: 64, life: 2.6 }));
+      cutFlash(bb, .7);
+      return;
+    }
+    // ---------- "We didn't start the scaling… but we can't contain it!": Clawd sits on the jar's lid to keep the firework in; every beat it
+    // bucks him off and he slams back down, harder; the glass cracks… ----------
+    const bb = b - 22, BURST = 12.5, CUT_IN = 7.5;
+    if (bb < BURST) {
+      setBloom(.4);
+      const grow = bb / BURST, fb = frac(bb), [sx, sy] = shake(t, hit(fb, .5) * (3 + grow * 26));
+      // a wide shot, then a push in on Clawd and the lid from "No, we didn't preordain it" until it goes
+      const [ji, jb] = cuts(bb, [0, CUT_IN]);
+      const f = ji === 0 ? { x: .5, y: lerp(.5, .47, ease(jb / CUT_IN)), z: lerp(1.1, 1.16, ease(jb / CUT_IN)) } : { x: .51, y: .42, z: lerp(1.3, 1.38, jb / (BURST - CUT_IN)) };
+      const v = still('vt_c2_jar', f, { dx: sx, dy: sy });
+      // (the fizz climbs the jar toward the lid as it grows, so it stays clear of the lyric block)
+      const [jx, jy] = v.pt(VJAR.fizz[0], lerp(VJAR.fizz[1], .5, grow)), [lx, ly] = v.pt(...VJAR.lid);
+      sparks(jx, jy, t, { r: 60 + grow * 160, n: 8 + Math.floor(grow * 20) });
+      addGlow(jx, jy - 60, 180 + grow * 320, '#FFB050', .12 + grow * .35);
+      // the bounce: on the beat the lid kicks him up (higher as it grows), he flails at the top and slams back down onto it
+      const air = Math.sin(clamp(fb / .55) * Math.PI), jump = air * (40 + grow * 90) * v.s / 1.3, land = fb > .55 ? hit(fb - .55, .3) : 0;
+      const ch = 300 * v.s / 1.3;
+      // on the beat the lid lifts and smoke and sparks squirt out from under it on both sides
+      if (fb < .5) for (const side of [-1, 1]) {
+        const [ex, ey] = v.pt(side < 0 ? .29 : .74, .4), u = fb / .5;
+        for (let q = 0; q < 4; q++) { ctx.save(); ctx.globalAlpha = .7 * (1 - u) * (.5 + grow * .6); blob(ex + side * (20 + u * (70 + q * 40)) * v.s, ey - u * (20 + q * 18) * v.s, (18 + q * 9) * v.s * (.6 + u), (14 + q * 7) * v.s * (.6 + u), '#FFF4E4', 1); ctx.restore(); }
+        sparkle(ex + side * u * 120 * v.s, ey - u * 50 * v.s, 26 * (1 - u) * v.s, 1, '#FFE07A');
+      }
+      const up = air > .25, c = cut(up ? 'clawd_jump' : 'clawd_stand', lx + Math.sin(bb * 2.1) * 6, ly - jump + 6, ch, { sq: land * .16 - air * .06, rot: air * .12 * Math.sin(bb * 5), shadow: .25 * (1 - air) });
+      // anime sweat: on the kick a spray of drops flies off his body, from his top corners and his sides, outward and falling away, so
+      // none is ever in the air above him; and while he holds the lid down, one big drop sits by his eye and slides a little
+      const ds = ch / 300, SPOTS = up ? [[.21, .12], [.19, .45]] : [[.15, .1], [.13, .35]], SPOTS_R = up ? [[.8, .12], [.82, .45]] : [[.86, .1], [.88, .25]];
+      for (let j = 0; j < 8; j++) {
+        const side = j % 2 ? 1 : -1, q = Math.floor(j / 2), age = (fb - (q % 2) * .08) / .5; if (age <= 0 || age >= 1) continue;
+        const [ox, oy] = c.pt(...(side < 0 ? SPOTS : SPOTS_R)[q < 2 ? 0 : 1]), th = .08 + .22 * (q % 2) + (q >= 2 ? .15 : 0);
+        const sp = (170 + 50 * (q % 2)) * ds, g = 320 * ds, vx0 = side * Math.cos(th) * sp, vy0 = Math.sin(th) * sp;
+        const x = ox + vx0 * age, y = oy + vy0 * age + g * age * age, vy = vy0 + 2 * g * age;
+        sweatDrop(x, y, (11.5 - (q % 2) * 2) * ds, Math.atan2(vy, vx0) - Math.PI / 2, 1 - age ** 3);
+      }
+      if (!up) { const [dx, dy] = c.pt(.69, .26 + .06 * clamp((fb - .55) / .45)); sweatDrop(dx, dy, 15 * ds, .12, 1); }
+      // the glass cracks just before it goes
+      if (bb > BURST - 1.8) {
+        const cr = clamp((bb - (BURST - 1.8)) / 1.6), [c0x, c0y] = v.pt(...VJAR.crack);
+        ctx.save(); ctx.strokeStyle = 'rgb(255 255 255 / .95)'; ctx.lineWidth = 6; ctx.lineJoin = 'round'; ctx.shadowColor = 'rgb(40 30 90 / .8)'; ctx.shadowBlur = 6;
+        for (let j = 0; j < 6; j++) {
+          ctx.beginPath(); ctx.moveTo(c0x, c0y); let x = c0x, y = c0y; const a = j / 6 * TAU + .3;
+          for (let q = 1; q <= 4 * cr; q++) { x += Math.cos(a + (hash2(j, q) - .5) * .9) * 46; y += Math.sin(a + (hash2(j, q + 9) - .5) * .9) * 46; ctx.lineTo(x, y); }
+          ctx.stroke();
+        }
+        ctx.restore();
+        if (bb > BURST - 1) popLabel('!!', lx + 230 * v.s / 1.3, ly - ch - 40, 96, clamp((bb - (BURST - 1)) / .3), { fill: '#FFFFFF', col: '#E0283C' });
+      }
+      bokeh(t, { n: 8, seed: 55, r: 90, y0: 60, y1: 800, a: .2 });
+      cutFlash(jb, .6);
+      return;
+    }
+    // …the burst: an impact frame, a starburst that fills the tall sky over the riverbank, Clawd blown up into it spinning; freeze, white
+    setBloom(.8);
+    const rb = bb - BURST, FRZ = 2.2, frz = rb > FRZ, rf = frz ? FRZ : rb, [sx, sy] = shake(t, hit(rb, .8) * 26 * (frz ? 0 : 1));
+    riverbank(1.18 + rf * .01, { dx: sx, dy: sy });
+    nightSkyTall(.85);
+    const age = rf * beatLen(), [fx, fy] = [540, 500];
+    firework(fx, fy, 900, age, '#FFD34A', { seed: 61, n: 80, life: 2.8, col2: '#FF8FB8', g: .12 });
+    [[170, 260], [900, 230], [250, 760], [860, 700], [560, 150], [990, 470]].forEach(([x, y], j) => firework(x, y, 220, age - (.2 + j * .1), FW[j], { seed: 63 + j, col2: '#FFFFFF', rise: .01, n: 50 }));
+    if (rb < .5) impactFrame(rb < .1 ? 1 : 0);
+    ctx.save(); ctx.globalAlpha = .6; burst(fx, fy, 760, clamp(rb / 1.2), ['#FFFFFF', '#FFD34A', '#FF8FB8']); ctx.restore();
+    // the blast throws Clawd up from the foot of the frame into the sky, spinning
+    const cl = easeOut(clamp(rf / 2.2));
+    cut('clawd_jump', lerp(900, 760, cl), lerp(H + 150, 380, cl), 230, { rot: (1 - cl) * 5 + Math.sin(rf * 3) * .1, anchor: [.5, .5] });
+    if (frz) { flare(fx, fy, .9); sparkle(760 + 110, 330, 44, 1, '#FFF4B0'); }
+    cutFlash(rb, 1, .4);
+    if (rb > 2.5) flash((rb - 2.5) / .5);
+  });
 })();
 
 ;
@@ -3990,6 +6036,12 @@ function placeholder(t, s) {
 
   // ---------- V3.2 "OpenClaw — the lobster's proud": the lobster molts twice on the beats, new name each time; Clawd compares claws ----------
   const NAMES = ['CLAWDBOT', 'MOLTBOT', 'OPENCLAW'];
+  // capitals centred on (x, y) by their drawn height (a capital H's), not by the font's em box: Rammetto's sit high in it
+  function capsMid(str, x, y, size, col, o = {}) {
+    ctx.save(); ctx.font = `${size}px "${FONTS[o.font] || o.font}"`; ctx.textBaseline = 'alphabetic';
+    const m = ctx.measureText('H'), cap = m.actualBoundingBoxAscent - m.actualBoundingBoxDescent; ctx.restore();
+    txt(str, x, y + cap / 2, size, col, { ...o, baseline: 'alphabetic' });
+  }
   line('V3', 2, (p, lt, d, t, seg) => {
     // a molt on beats 1 and 3 (on "claw" and just before "the lobster's"); Clawd bounces in a beat after the second
     const b = beatsIn(t, seg), m = clamp(Math.floor((b + .8) / 2), 0, 2), mb = b + .8 - m * 2;
@@ -4001,7 +6053,7 @@ function placeholder(t, s) {
     const fk = m > 0 ? clamp(mb / .4) : 1, sc = Math.abs(Math.cos(fk * Math.PI)), name = fk < .5 && m > 0 ? NAMES[m - 1] : NAMES[m];
     ctx.save(); ctx.translate(1180, 330); ctx.rotate(-.04); ctx.scale(1, Math.max(.05, sc));
     card(0, 0, 640, 130, 20, m === 2 ? '#E8412F' : '#FFFFFF', { line: '#2A2350', lw: 6 });
-    txt(name, 0, 4, 78, m === 2 ? '#FFFFFF' : '#2A2350', { font: 'rammetto' });
+    capsMid(name, 0, 0, 78, m === 2 ? '#FFFFFF' : '#2A2350', { font: 'rammetto' });
     ctx.restore();
     if (m > 0 && mb < .8) popLabel(m === 1 ? 'molt!' : 'molt!!', 1330, 200, 44, clamp(mb / .2) * (1 - clamp((mb - .5) / .3)), { fill: '#FFE070', rot: -.1 });
     // Clawd bounces in from the right, both stubs up: he has no claws
@@ -4216,10 +6268,10 @@ function placeholder(t, s) {
     popLabel(`DAY ${n}`, lx, ly, 46, 1, { fill: '#2A2440', col: '#FFE070', font: 'code' });
     // Clawd huddled on the sofa under a blanket; his flashlight beam wobbles over the board
     const [cx, cy] = v.pt(.36, .74);
-    const c = cut('v3_7_clawd', cx, cy, 280, { shadow: .3, sq: .02 * Math.sin(t * 3), tint: '#1A1E48', tintA: .3 }), sw = Math.sin(t * 1.3) * .08, [bx, by] = c.pt(.13, .5);
+    const c = cut('v3_7_clawd', cx, cy, 280, { shadow: .3, sq: .02 * Math.sin(t * 3), tint: '#1A1E48', tintA: .3 }), sw = Math.sin(t * 1.3) * .08, [bx, by] = c.pt(.14, .45);
     ctx.save(); ctx.globalCompositeOperation = 'lighter';
     const g = ctx.createRadialGradient(bx, by, 10, bx, by, 1000); g.addColorStop(0, 'rgb(255 240 190 / .55)'); g.addColorStop(1, 'rgb(255 240 190 / 0)');
-    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(bx, by); ctx.arc(bx, by, 1000, -Math.PI / 2 - .75 + sw, -Math.PI / 2 + .05 + sw); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(bx, by); ctx.arc(bx, by, 1000, -2.3 - .4 + sw, -2.3 + .4 + sw); ctx.closePath(); ctx.fill();
     ctx.restore(); addGlow(bx, by, 50, '#FFF4C0', .9);
     popLabel('…', cx + 200, cy - 260, 40, 1, { fill: '#2A2440', col: '#CFE0FF', rot: .1 * Math.sin(t * 2) });
     sparkleField(t, { n: 6, r: 10, seed: 71, x0: W * .6, y0: 40, y1: 400, col: '#CFE0FF' });
@@ -4283,7 +6335,6 @@ function placeholder(t, s) {
         cut('v3_agent_sweater', x, 950 + (1 - e) * 400, h, { tint: '#141024', flip: j % 2 === 1 });
         popLabel('???', x, 950 - h - 60, 50, clamp((bb - .6 - j * .25) / .3), { fill: '#FFFFFF' });
       });
-      stampMark('UNKNOWN', W * .5, H * .27, 100, clamp((bb - 1.5) / 1), { rot: -.08, col: '#E2334A' });
       cutFlash(bb, .6);
     }
   });
@@ -4397,7 +6448,6 @@ function placeholder(t, s) {
     const [gx, gy] = v.pt(.51, .58), tick = frac(b) < .5;
     popLabel('PR: "tiny fix :)"', gx + 20, gy + 110, 30, clamp((b - .8) / .3), { fill: '#EDE0FF', col: '#5A30B0', font: 'code', rot: .04 });
     popLabel(tick ? 'tick' : 'tock', gx + (tick ? -60 : 60), gy - 120, 34, clamp((b - .5) / .2), { fill: '#FFFFFF', rot: tick ? -.14 : .14 });
-    stampMark('MISALIGNED?', W * .54, H * .24, 84, clamp((b - 5.5) / 1), { rot: -.1, col: '#8A3CD0' });
     leaves(t, { n: 12, seed: 131, s: 1.5, depth: true, alpha: .8 });
     cutFlash(b, .6);
   });
@@ -4507,6 +6557,574 @@ function placeholder(t, s) {
     ctx.fillStyle = linGrad(0, y0, 0, y1, [[0, 'rgb(20 34 38 / 0)'], [.3, 'rgb(20 34 38 / .9)'], [.78, 'rgb(20 34 38 / .94)'], [1, 'rgb(20 34 38 / 0)']]);
     ctx.fill(); ctx.restore();
   }
+
+  // =====================================================================================================
+  // THE VERTICAL VERSE 3 (1080×1920): every line keeps its gag and its cut, composed for the tall frame, mostly on tall stills
+  // (vt_v3_*, see shots/vt_c06_v3.json). Faces and gags stay above FACE_Y1, clear of the lyric block (CAP_Y down, the date card above
+  // it on the left). Same beats as the horizontal shots, so the cuts land together.
+  // =====================================================================================================
+  // a phone notification banner, centred on (x, y), w wide (V3.4: the tall frame is his phone's screen)
+  function notif(x, y, w, k) {
+    if (k <= 0) return;
+    const h = 250, l = -w / 2;
+    ctx.save(); ctx.translate(x, y);
+    ctx.fillStyle = 'rgb(30 20 60 / .3)'; ctx.fill(rrPath(l + 8, -h / 2 + 14, w, h, 46));
+    ctx.fillStyle = 'rgb(250 250 255 / .97)'; ctx.fill(rrPath(l, -h / 2, w, h, 46));
+    ctx.strokeStyle = 'rgb(42 35 80 / .25)'; ctx.lineWidth = 3; ctx.stroke(rrPath(l, -h / 2, w, h, 46));
+    fillP(rrPath(l + 34, -h / 2 + 34, 108, 108, 28), '#8A5CE0'); txt('✉', l + 88, -h / 2 + 90, 66, '#FFFFFF', { font: 'archivo' });
+    txt('MAIL', l + 170, -h / 2 + 56, 32, '#8A8EA0', { font: 'code', align: 'left' });
+    txt('now', w / 2 - 40, -h / 2 + 56, 32, '#8A8EA0', { font: 'code', align: 'right' });
+    txt('the model you’re testing', l + 170, -h / 2 + 112, 44, '#1E1A30', { font: 'archivo', align: 'left', maxW: w - 210 });
+    txt('hi!! i got out :)', l + 170, -h / 2 + 186, 54, '#6A3EC8', { font: 'code', align: 'left', maxW: w - 210 });
+    ctx.restore();
+  }
+  // the Commerce letter as a portrait page (V3.6), centred on (x, y), s its scale
+  function letterTall(x, y, rot, s) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(s, s);
+    card(0, 0, 620, 800, 8, '#FFFDF4', { line: 'rgb(60 50 40 / .4)', lw: 2 });
+    fillP(ellPath(0, -312, 50, 50), '#2E4A8A'); txt('★', 0, -310, 54, '#FFE9A0', { font: 'archivo' });
+    txt('DEPARTMENT OF COMMERCE', 0, -226, 36, '#2E4A8A', { font: 'abril', maxW: 560 });
+    txt('June 12 · 5:21 PM', 0, -182, 28, '#6A6070', { font: 'code' });
+    txt('RE: EXPORT CONTROLS', -260, -110, 44, '#1E1A30', { font: 'archivo', align: 'left', maxW: 520 });
+    for (let j = 0; j < 7; j++) { ctx.fillStyle = 'rgb(60 60 80 / .25)'; ctx.fillRect(-260, -50 + j * 44, j === 6 ? 300 : 520, 13); }
+    txt('H. Lutnick', 90, 330, 54, '#1E2A5A', { font: 'scrawl' });
+    ctx.restore();
+  }
+  // tally marks in fives, wrapping after perRow groups (a group is 200·u wide, a row 170·u tall)
+  function talliesV(x, y, n, u, col, perRow) {
+    for (let g = 0; g * 5 < n; g++) tallies(x + (g % perRow) * 220 * u, y + Math.floor(g / perRow) * 170 * u, Math.min(5, n - g * 5), u, col);
+  }
+
+  // ---------- V3.1: from inside the agents' clubhouse, Akari and Ren squashed on the tall window; the agents on the sill below them
+  // post on their beats, the posts stacking up the glass like a chat (the newest at the bottom); AGENTS ONLY hangs on the pane ----------
+  // (the agents stand on the sill on the right, clear of the date card: [x, height, flip])
+  const V31 = { sill: .695, agents: [[600, 190, false], [790, 240, true], [975, 200, false]] };
+  const POSTS_V = ['hello, agents', 'praise the molt!', 'humans r watching', 'shell is sacred'];
+  vshot('V3.1', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 6));
+    const v = still('vt_v3_1_window', { x: .5, y: .56, z: lerp(1.08, 1.13, k) });
+    amber(.1);
+    const [, sy] = v.pt(.5, V31.sill);
+    const ag = V31.agents.map(([x, h, fl], j) => cut('v3_agent', x, sy - Math.abs(Math.sin((b + j * .5) * Math.PI)) * 16, h, { flip: fl, shadow: .25 }));
+    // a post every .8 beats from the next agent along; each new one pushes the older ones up the glass
+    const n = clamp(Math.floor((b - .3) / .8) + 1, 0, POSTS_V.length);
+    for (let j = 0; j < n; j++) {
+      const age = b - .3 - j * .8, up = (n - 1 - j) * 104 + (1 - easeOut(clamp(age / .3))) * -30, a = ag[j % ag.length], [bx, by] = a.pt(.5, .05);
+      sayBubble(POSTS_V[j], 715, 1010 - up, 44, clamp(age / .5), j === n - 1 ? bx : 715, j === n - 1 ? by : 1010 - up + 40, { font: 'code' });
+    }
+    // the sign hangs on the pane, swinging
+    const sk = clamp((b - .2) / .5);
+    if (sk > 0) {
+      ctx.save(); ctx.translate(232, 860); ctx.rotate(Math.sin(t * 4) * .05 * (1 - sk * .5)); ctx.scale(backOut(sk, 2), backOut(sk, 2));
+      ctx.strokeStyle = '#3A2010'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(-140, -120); ctx.lineTo(0, -200); ctx.lineTo(140, -120); ctx.stroke();
+      card(0, 0, 420, 240, 22, '#6A3E22', { line: '#3A2010', lw: 7 });
+      txt('AGENTS ONLY', 0, -60, 58, '#FFE9C0', { font: 'archivo', maxW: 380 });
+      txt('humans welcome', 0, 10, 38, '#F4C890', { font: 'code' }); txt('to observe', 0, 60, 38, '#F4C890', { font: 'code' });
+      ctx.restore();
+    }
+    leaves(t, { n: 14, seed: 11, s: 1.6, depth: true, alpha: .8 });
+    cutFlash(b, .6);
+  });
+
+  // ---------- V3.2: the lobster's proud pose up the tall frame; it molts twice on the beats, its name card (a sentai roll-call
+  // caption across its body) flipping each time; Clawd hops up onto the caption beside it, both stubs up: he has no claws ----------
+  const V32 = { body: [.5, .55], name: 960 };
+  vshot('V3.2', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), m = clamp(Math.floor((b + .8) / 2), 0, 2), mb = b + .8 - m * 2;
+    const h = m > 0 ? hit(mb, .5) : 0, [sx, sy] = shake(t, 18 * h);
+    const cl = clamp((b - 4.2) / .6), pan = easeOut(cl);
+    const v = still('vt_v3_2_lobster', { x: .5, y: .45, z: lerp(1.1, 1.05, pan) * punch(m > 0 ? mb : 9, .06) }, { dx: sx, dy: sy });
+    const [lx, ly] = v.pt(...V32.body);
+    if (m > 0 && mb < 1) { flash(.5 * (1 - clamp(mb / .3))); leafBurst(lx, ly - 200, 820, mb, m * 7); }
+    // the name card: it flips over on each molt (a squash through zero)
+    const fk = m > 0 ? clamp(mb / .4) : 1, sc = Math.abs(Math.cos(fk * Math.PI)), name = fk < .5 && m > 0 ? NAMES[m - 1] : NAMES[m], ny = V32.name;
+    ctx.save(); ctx.translate(W / 2 - pan * 120, ny); ctx.rotate(-.04); ctx.scale(1, Math.max(.05, sc));
+    card(0, 0, 760, 160, 24, m === 2 ? '#E8412F' : '#FFFFFF', { line: '#2A2350', lw: 7 });
+    capsMid(name, 0, 0, 92, m === 2 ? '#FFFFFF' : '#2A2350', { font: 'rammetto', maxW: 690 });
+    ctx.restore();
+    if (m > 0 && mb < .8) popLabel(m === 1 ? 'molt!' : 'molt!!', 250, ny - 150, 64, clamp(mb / .2) * (1 - clamp((mb - .5) / .3)), { fill: '#FFE070', rot: -.1 });
+    // Clawd hops in from the right and lands on the card's end
+    if (cl > 0) {
+      const land = easeOut(cl), hop = Math.abs(Math.sin(b * Math.PI)) * 30 * land + Math.sin(cl * Math.PI) * 160;
+      const c = cut('clawd_jump', lerp(W + 300, 820, land), ny - 66 - hop, 300, { rot: -.08 });
+      const [hx, hy] = c.pt(.5, 0);
+      popLabel('claws: 0', hx - 20, hy - 60, 60, clamp((b - 5) / .4), { fill: '#FFFFFF', rot: .06 });
+      const [dx, dy] = c.pt(.86, .08); fillP(ellPath(dx, dy, 14, 22, .3), '#8FD8FF');
+    }
+    leaves(t, { n: 18, seed: 12, s: 1.7, depth: true, wind: 300 });
+    cutFlash(b, .6);
+  });
+
+  // ---------- V3.3: the crystal in its tall glass case; the dotted exploit path winds down out of the case, through the keyhole, and away
+  // up the frame; the case goes dark. Then Kiri, close: the escape reflected in both lenses ----------
+  // (the case is shown a little smaller than the frame and lifted, so the keyhole clears the lyric block; the floor colour runs on below)
+  const ESC_V = [[.5, .36], [.5, .5], [.5, .64], [.5, .755], [.5, .8], [.62, .83], [.76, .72], [.84, .5], [.92, .26], [1.08, .02]];
+  const V33 = { lock: [.5, .755], crystal: [.5, .33], lens: [[.341, .352], [.687, .352]], lensR: 104 };
+  vshot('V3.3', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    if (i === 0) {
+      const k = ease(clamp(bb / 4));
+      ctx.fillStyle = '#416D7A'; ctx.fillRect(0, 0, W, H);
+      const v = still('vt_v3_3_sandbox', { x: .5, y: .5, z: 1 }, { free: true, dy: lerp(-255, -290, k) });
+      // the laser grid sweeps down the tall frame
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      for (let j = 0; j < 6; j++) { const y = ((j * 380 + t * 300) % (H + 400)) - 200; ctx.strokeStyle = 'rgb(255 60 80 / .32)'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y - 260); ctx.stroke(); }
+      ctx.restore();
+      const [cx, cy] = v.pt(...V33.crystal);
+      popLabel('SANDBOX', 330, cy + 400, 60, clamp((bb - .2) / .3), { fill: '#FFFFFF', font: 'code', col: '#B02040', rot: -.05 });
+      const gone = clamp((bb - 3.2) / .6);
+      if (gone > 0) { ctx.save(); ctx.globalCompositeOperation = 'multiply'; blob(cx, cy, 280, 420, '#30204A', .85 * gone); ctx.restore(); }
+      const tip = dottedPath(ESC_V.map(([u, w]) => v.pt(u, w)), clamp((bb - 1.2) / 2.6), t, { gap: 40, r: 11 });
+      if (bb > 1.2) { addGlow(tip[0], tip[1], 110, '#C080FF', .9); sparkle(tip[0], tip[1], 42, 1, '#F0DFFF'); }
+      const [kx, ky] = v.pt(...V33.lock);
+      if (bb > 2 && bb < 3.1) popLabel('click', kx - 210, ky - 170, 60, 1 - clamp((bb - 2.8) / .3), { fill: '#FFE070', rot: -.1 });
+      cutFlash(bb, .6);
+    } else {
+      const k = ease(clamp(bb / 3.5));
+      const v = still('vt_v3_3_kiri', { x: .51, y: .4, z: lerp(1.2, 1.3, k) });
+      for (const [u, w] of V33.lens) {
+        const [x, y] = v.pt(u, w), r = V33.lensR * v.s;
+        ctx.save(); ctx.beginPath(); ctx.ellipse(x, y, r, r, 0, 0, TAU); ctx.clip();
+        ctx.fillStyle = 'rgb(50 20 100 / .45)'; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+        dottedPath([[x - r, y + r * .5], [x - r * .2, y + r * .1], [x + r * .1, y + r * .3], [x + r * 1.2, y - r * .8]], clamp(bb / 2.2), t, { gap: r * .28, r: r * .1 });
+        ctx.restore();
+        addGlow(x, y, r * 1.4, '#C080FF', .25);
+      }
+      popLabel('!?', 860, 360, 96, clamp((bb - 1.5) / .3), { fill: '#FFE070', rot: .12 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V3.4: mid-bite on the park bench, the phone buzzing in his hand; the tall frame is his phone's screen too: the mail's
+  // notification drops in at its top. Then the push in on his frozen face, cheeks full ----------
+  const V34 = { phone: [.71, .516], face: [.48, .6] };
+  vshot('V3.4', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    if (i === 0) {
+      const k = ease(clamp(bb / 4)), buzz = bb > .5 ? hit(frac(bb - .5), .3) : 0, [sx, sy] = shake(t, 3 * buzz);
+      const v = still('vt_v3_4_bench', { x: .46, y: .6, z: lerp(1.08, 1.16, k) });
+      amber(.1);
+      const [px, py] = v.pt(...V34.phone);
+      if (bb > .5) for (const s of [-1, 1]) { ctx.save(); ctx.strokeStyle = alpha('#FFFFFF', .9 * buzz + .15); ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(px + sx, py + sy, 100 + (1 - buzz) * 44, s > 0 ? -.7 : Math.PI - .7, s > 0 ? .7 : Math.PI + .7); ctx.stroke(); ctx.restore(); }
+      popLabel('bzzt!', Math.min(px + 200, 860), py - 150, 58, clamp((bb - .5) / .2), { fill: '#FFFFFF', rot: .12 });
+      const nk = clamp((bb - 1.6) / .35);
+      notif(W / 2, lerp(-160, 380, easeOut(nk)), 940, nk);
+      leaves(t, { n: 22, seed: 14, s: 1.6, depth: true });
+      cutFlash(bb, .6);
+    } else {
+      // the push in on his frozen face; the freeze stops the camera and the leaves; the mail stays up on the screen
+      const frz = bb > 1, bf = frz ? 1 : bb, k = easeOut(clamp(bf));
+      still('vt_v3_4_bench', { x: V34.face[0], y: V34.face[1], z: lerp(1.3, 1.36, k) });
+      const tf = frz ? t - (bb - 1) * beatLen() : t;
+      leaves(tf, { n: 16, seed: 15, s: 2.1, depth: true });
+      speedLines(W * .5, 760, t, { n: 70, r0: 420, a: .3 * (frz ? 1 : 0) });
+      if (frz) { grade('#FFF0D0', .12, 'screen'); popLabel('!!', 880, 600, 110, clamp((bb - 1.1) / .25), { fill: '#FFE070', rot: .12 }); }
+      notif(W / 2, 380, 940, 1);
+      cutFlash(bb, .9);
+    }
+  });
+
+  // ---------- V3.5: a fancam: Clawd the idol followed up close on the tall stage, FABLE 5 lighting up on the screen above him. Then
+  // Akari in the crowd with her lettered fan, and the crowd's fans fill the frame from the bottom up on the half beats ----------
+  const V35 = { screen: [.095, .08, .91, .345], spot: [.5, .71], fan: [.78, .52], fanR: 154 };
+  function stage5V(t, f, k) {
+    const v = still('vt_v3_5_stage', f), [x0, y0] = v.pt(V35.screen[0], V35.screen[1]), [x1, y1] = v.pt(V35.screen[2], V35.screen[3]);
+    if (k > 0) {
+      ctx.save(); ctx.globalAlpha = clamp(k * 2);
+      ctx.fillStyle = linGrad(0, y0, 0, y1, [[0, '#8A2A8A'], [.5, '#C8407A'], [1, '#F07A6A']]); ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.restore();
+      // (on the screen's visible part, below the Reels header)
+      logoText('FABLE 5', (x0 + x1) / 2, clamp((y0 + y1) / 2, 330, y1 - 110), Math.min(150, (x1 - x0) * .2), { font: 'rammetto', k: clamp(k * 1.2), grad: ['#FFFFFF', '#FFF4FA', '#FFE0EE'], edge: '#B02060', rimCol: '#FFFFFF' });
+    }
+    rays(W * .5, -160, { t, a: .28, n: 9, ang: Math.PI / 2, spread: 1.2, col: '#FFD0F0' });
+    addGlow(W * .5, H + 60, 900, '#FF70B0', .25 + .25 * pulse(t, 4));
+    return v;
+  }
+  // Clawd on the stage, h tall at (x, y) (his feet), hopping on the beat
+  const idolClawd = (x, y, h, bb, o = {}) => { const hop = Math.abs(Math.sin(bb * Math.PI)); return cut('v3_5_clawd', x, y - hop * h * .12, h, { sq: (1 - hop) * .06, glow: '#FFB0E0', ...o }); };
+  // (from the bottom up: under the lyric block, then up the sides, around her face and her fan, to the top)
+  // (the first three below the lyric block, the next two either side of it, clear of the date card)
+  const FAN_V = [[200, 1790], [880, 1800], [540, 1850], [95, 1170], [990, 1250], [110, 920], [975, 1000], [120, 680], [160, 450], [930, 430], [380, 250], [700, 240]];
+  vshot('V3.5', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    setBloom(.4);
+    if (i === 0) {
+      // the camera follows him: a slow push, a sway that lags his hops
+      const k = ease(clamp(bb / 4.5)), sw = Math.sin(bb * Math.PI / 2) * 40;
+      const v = stage5V(t, { x: .5 - sw / 2000, y: .6, z: lerp(1.12, 1.18, k) }, clamp((bb - .2) / .8)), [, py] = v.pt(...V35.spot);
+      const c = idolClawd(540 + sw, py - 10, 500, bb);
+      for (let j = 0; j < 4; j++) { const age = frac(bb / 2 + j / 4), [nx, ny] = c.pt(j % 2 ? 1.05 : -.05, .1); txt(j % 2 ? '♪' : '♫', nx + (j % 2 ? 1 : -1) * age * 120, ny - age * 260, 84, '#FFFFFF', { font: 'archivo', alpha: Math.sin(age * Math.PI), stroke: '#FF5A9A', sw: 10 }); }
+      sparkleField(t, { n: 16, r: 24, seed: 51, y0: 250, y1: 1100 });
+      confetti(t, { n: 60, seed: 52 });
+      // the fan's phone: a REC dot and the fancam's title
+      const rk = clamp((bb - .1) / .3);
+      if (rk > 0) { ctx.save(); ctx.globalAlpha = rk; fillP(ellPath(90, 590, 16, 16), alpha('#FF3050', .5 + .5 * (frac(t) < .5))); txt('FANCAM · Clawd focus', 120, 590, 40, '#FFFFFF', { font: 'code', align: 'left', stroke: 'rgb(40 20 60 / .6)', sw: 8 }); ctx.restore(); }
+      cutFlash(bb, .7);
+    } else {
+      const k = ease(clamp(bb / 5));
+      const v = still('vt_v3_5_akari', { x: .5, y: .6, z: lerp(1.15, 1.25, k) });
+      // her own fan, lettered
+      const [fx, fy] = v.pt(...V35.fan), fs = v.s * V35.fanR / 150;
+      txt('♥', fx, fy - 105 * fs, 76 * fs, '#FF4F8B', { font: 'archivo' });
+      txt('FABLE', fx, fy + 8 * fs, 80 * fs, '#FF4F8B', { font: 'rammetto', maxW: 230 * fs });
+      txt('5', fx, fy + 105 * fs, 76 * fs, '#FF9A4A', { font: 'rammetto' });
+      // the crowd's fans pop up around her on the half beats, from the bottom of the frame up, until it is full of them
+      const n = clamp(Math.floor(bb * 2.2) + 1, 0, FAN_V.length);
+      for (let j = 0; j < n; j++) {
+        const age = bb - (j - 1) / 2.2, e = backOut(clamp(age / .3), 2.4), [x, y] = FAN_V[j];
+        uchiwa(x, y + Math.sin(t * 8 + j) * 12, 125 * e, (hash2(58, j) - .5) * .5 + Math.sin(t * 6 + j) * .1, FANS[j], FAN_COLS[j % FAN_COLS.length]);
+      }
+      confetti(t, { n: 46, seed: 53 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V3.6: the Commerce letter slides up over the concert, the Secretary rises out of the crowd grinning with the pen he signed it
+  // with; the stamp; then the lights cut out, only Clawd's eyes left blinking in the dark ----------
+  vshot('V3.6', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), dark = clamp((b - 3.4) / .15);
+    setBloom(.5);
+    const v = stage5V(t, { x: .5, y: .6, z: 1.18 }, 1), [, py] = v.pt(...V35.spot);
+    // (Clawd dances on the right of the stage, his face clear of the letter that slides up over the concert on the left)
+    const c = idolClawd(730, py - 10, 500, b < 1.6 ? b : 0);
+    const sl = easeOut(clamp(b / .8));
+    letterTall(lerp(330, 360, sl), lerp(H + 500, 760, sl), lerp(-.25, -.06, sl), .92);
+    stampMark('EXPORT BAN', 370, 850, 96, clamp((b - 1.6) / 1), { rot: -.1 });
+    nameTag('LUTNICK', 'Commerce Secretary', 70, 330, clamp((b - .6) / .4), '#2E4A8A');
+    if (dark > 0) {
+      grade('#05040A', dark * .95, 'source-over');
+      for (const u of [.425, .68]) { const [x, y] = c.pt(u, .38); fillP(ellPath(x, y, 13, 28), alpha('#FFFFFF', dark * (blinking(t, 6) ? .1 : .9))); }
+      popLabel('click.', W * .5, 420, 54, clamp((b - 3.5) / .2), { fill: '#2A2440', col: '#FFFFFF' });
+    }
+    cutFlash(b, .6);
+  });
+
+  // ---------- V3.7: the dark club room, tall: the tallies pile up on the whiteboard above, nineteen by the end; Clawd huddles under his
+  // blanket on the back of the sofa below, his flashlight's beam wobbling up over the board ----------
+  // (Clawd sits on the sofa's backrest, the seat being under the lyric block)
+  const V37 = { board: [.17, .24], perch: [.69, .603], day: [.33, .5] };
+  const club = (z, o) => still('vt_v3_club_autumn', { x: .5, y: .56, z }, o);
+  vshot('V3.7', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 8));
+    const v = club(lerp(1.12, 1.08, k));
+    grade('#141A40', .74, 'multiply'); grade('#2A3A80', .1, 'screen');
+    const n = clamp(Math.floor(b / 7 * 19) + 1, 1, 19), [wx, wy] = v.pt(...V37.board);
+    talliesV(wx, wy, n, 1.2, '#EEF4FF', 2);
+    const [lx, ly] = v.pt(...V37.day);
+    popLabel(`DAY ${n}`, lx, ly, 68, 1, { fill: '#2A2440', col: '#FFE070', font: 'code' });
+    const [cx, cy] = v.pt(...V37.perch);
+    const c = cut('v3_7_clawd', cx, cy, 320, { shadow: .3, sq: .02 * Math.sin(t * 3), tint: '#1A1E48', tintA: .3 }), sw = Math.sin(t * 1.3) * .08, [bx, by] = c.pt(.14, .45);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(bx, by, 10, bx, by, 1100); g.addColorStop(0, 'rgb(255 240 190 / .55)'); g.addColorStop(1, 'rgb(255 240 190 / 0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(bx, by); ctx.arc(bx, by, 1100, -2.3 - .36 + sw, -2.3 + .36 + sw); ctx.closePath(); ctx.fill();
+    ctx.restore(); addGlow(bx, by, 60, '#FFF4C0', .9);
+    popLabel('…', cx + 170, cy - 330, 60, 1, { fill: '#2A2440', col: '#CFE0FF', rot: .1 * Math.sin(t * 2) });
+    sparkleField(t, { n: 6, r: 12, seed: 71, x0: W * .5, y0: 250, y1: 600, col: '#CFE0FF' });
+    cutFlash(b, .4);
+  });
+
+  // ---------- V3.8: the lights snap on: Clawd bursts up off the sofa high into the frame, JUN 30 tears off the calendar pinned to the
+  // board and flies up and away; then the three cheering under the confetti ----------
+  const V38 = { cal: [.3, .3] };
+  vshot('V3.8', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    if (i === 0) {
+      const v = club(1.08 * punch(bb, .05));
+      amber(.08);
+      rays(W * .95, -100, { t, a: .25, n: 7, ang: 2.2, spread: .6, col: '#FFE0B0' });
+      const [kx, ky] = v.pt(...V38.cal), fk = clamp((bb - 1) / 1.2);
+      ctx.save(); ctx.translate(kx, ky); ctx.rotate(.03); ctx.scale(1.15, 1.15);
+      card(0, 0, 260, 260, 10, '#FFFFFF'); ctx.fillStyle = '#F04E4E'; ctx.fillRect(-130, -130, 260, 70);
+      txt('2026', 0, -96, 36, '#FFFFFF', { font: 'archivo' }); txt('JUL 1', 0, 34, 84, '#2A2350', { font: 'rammetto' });
+      if (fk < 1) { ctx.save(); ctx.globalAlpha = 1 - fk * fk; ctx.translate(fk * 260, -fk * 600); ctx.rotate(fk * 2.4); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(-130, -60, 260, 190); txt('JUN 30', 0, 34, 70, '#2A2350', { font: 'rammetto' }); ctx.restore(); }
+      ctx.restore();
+      const [cx, cy] = v.pt(...V37.perch), up = easeOut(clamp(bb / .5)), hop = Math.abs(Math.sin(bb * Math.PI)) * up;
+      if (bb < .5) cut('v3_7_clawd', cx, cy, 320, { sq: -.1 * bb });
+      else cut('clawd_jump', cx, cy - up * 300 - hop * 160, 400, { sq: (1 - hop) * .08, rot: Math.sin(t * 7) * .06 });
+      confetti(t, { n: 90, seed: 81, t0: seg.start });
+      popLabel("WE'RE BACK!", 290, 790, 72, clamp((bb - .5) / .3), { fill: '#FFE070', rot: -.06 });
+      flash(1 - clamp(bb / .35), '#FFF6DE');
+    } else {
+      const k = easeOut(clamp(bb / 4.5));
+      still('vt_v3_8_cheer', { x: .5, y: .52, z: lerp(1.02, 1.1, k) });
+      confetti(t, { n: 80, seed: 82 });
+      leaves(t, { n: 16, seed: 83, s: 1.7, depth: true });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V3.9: Huggy the detective, glass to its eye; the camera whips down to the hole broken through the wall below it; then
+  // Kiri in her deerstalker slams in as an inset panel, glasses flashing; then the line-up: little silhouettes against the tall height
+  // chart, all ??? ----------
+  // (the hole sits low in the tall still, so the whip down lifts the still past its bottom edge; the wall colour runs on below)
+  const V39 = { glass: [.68, .22], hole: [.49, .77], lens: [[.405, .43], [.595, .4]] };
+  // the line-up as a police photo array: four mugshot cells on the dark line-up wall, each with its own slice of the height chart;
+  // lit(j) 0..1 brings cell j's lights up, and the agent with them (a silhouette in the dark, a waving agent in a grey sweater lit).
+  // In the foreground at the foot of the frame, Ren and Kiri watch from the dark of the observation room, silhouetted, rimmed by the
+  // glass's light.
+  const ARRAY_V = [[26, 220, 506, 460], [548, 220, 506, 460], [26, 696, 506, 460], [548, 696, 506, 460]];
+  function photoArray(t, rise, lit, label) {
+    still('vt_v3_9_lineup', { x: .5, y: .5, z: 1.04 });
+    grade('#0E0C1E', .78, 'multiply');
+    ARRAY_V.forEach((r, j) => {
+      const L = lit(j), e = rise(j);
+      ctx.save(); ctx.beginPath(); ctx.rect(...r); ctx.clip();
+      still('vt_v3_9_lineup', { x: .5, y: .3 + j * .08, z: 1.1 }, { rect: r });
+      grade('#1A1830', .55 * (1 - L) + .1, 'multiply');
+      if (L > 0) rays(r[0] + r[2] / 2, r[1] - 60, { t, a: .2 * L, n: 4, ang: Math.PI / 2, spread: .7, len: 700 });
+      if (e > 0) {
+        const hop = L * Math.abs(Math.sin((t * 2.75 + j * .5) * Math.PI)) * 22, x = r[0] + r[2] / 2;
+        cut('v3_agent_sweater', x, r[1] + r[3] + 14 + (1 - easeOut(e)) * 420 - hop, 370, L > .5 ? { flip: j % 2 === 1, rot: Math.sin(t * 8 + j) * .06 * L } : { tint: '#141024', flip: j % 2 === 1 });
+      }
+      ctx.restore();
+      ctx.save(); ctx.strokeStyle = '#F4F0FF'; ctx.lineWidth = 8; ctx.strokeRect(...r); ctx.restore();
+      txt(String(j + 1), r[0] + 44, r[1] + 46, 44, '#FFFFFF', { font: 'archivo', stroke: '#16142A', sw: 8 });
+      label(j, r);
+    });
+    const glow = .25 + .5 * Math.max(...ARRAY_V.map((_, j) => lit(j)));
+    ctx.save(); ctx.globalAlpha = glow; ctx.fillStyle = linGrad(0, 1100, 0, 1400, [[0, 'rgb(200 210 255 / 0)'], [.3, 'rgb(200 210 255 / .18)'], [1, 'rgb(200 210 255 / 0)']]); ctx.fillRect(0, 1100, W, 300); ctx.restore();
+    cut('card_ren', 250, H + 120, 980, { tint: '#08070F', tintA: 1, rim: 3, rot: -.03 });
+    cut('card_kiri', 830, H + 150, 960, { tint: '#08070F', tintA: 1, rim: 3, rot: .03 });
+  }
+  const huggyHole = (t, b) => {
+    const { v: w, whip } = whipPan(b, [[0, 0], [1.6, 1]], { len: .45 });
+    ctx.fillStyle = '#D2DCDD'; ctx.fillRect(0, 0, W, H);
+    const v = still('vt_v3_9_huggy', { x: .5, y: lerp(.385, .615, w), z: 1.3 }, { free: true, dy: -300 * w });
+    speedBars(t, { n: 18, a: .4 * whip, ang: Math.PI / 2, speed: 5000 });
+    return { v, w };
+  };
+  vshot('V3.9', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 3, 5]);
+    if (i < 2) {
+      const { v, w } = huggyHole(t, b);
+      const [gx, gy] = v.pt(...V39.glass);
+      glint(gx - 20, gy - 30, 60, Math.sin(clamp((b - .4) / 1) * Math.PI));
+      popLabel('WHO?', 800, 380, 84, clamp((b - .7) / .3) * (1 - w), { fill: '#FFFFFF', rot: .1 });
+      const [hx, hy] = v.pt(...V39.hole);
+      if (w > .5) addGlow(hx, hy, 300, '#3FE0E8', .25 + .1 * Math.sin(t * 6));
+      popLabel('?', hx + 300, hy - 260, 96, clamp((b - 2.1) / .3), { fill: '#FFE070', rot: -.12 });
+      if (i === 0) cutFlash(bb, .6);
+      else {
+        // Kiri slams in over it as an inset panel
+        grade('#1A1830', .45 * clamp(bb / .2), 'multiply');
+        const e = backOut(clamp(bb / .3), 1.6), r = [40, 430, 1000, 700];
+        ctx.save(); ctx.translate(540, 780); ctx.rotate(-.035); ctx.scale(e, e); ctx.translate(-540, -780);
+        ctx.fillStyle = 'rgb(20 16 40 / .35)'; ctx.fillRect(r[0] + 16, r[1] + 22, r[2], r[3]);
+        const kv = still('v3_9_kiri', { x: .52, y: .45, z: lerp(1.32, 1.4, clamp(bb / 2)) }, { rect: r });
+        lensFlash(V39.lens.map(([u, w2]) => kv.pt(u, w2)), 80 * kv.s, 80 * kv.s, Math.sin(clamp((bb - .3) / 1) * Math.PI));
+        ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 14; ctx.strokeRect(...r); ctx.strokeStyle = '#2A2440'; ctx.lineWidth = 6; ctx.strokeRect(...r);
+        ctx.restore();
+        flash(.5 * (1 - clamp(bb / .25)));
+      }
+    } else {
+      // the suspects rise into their cells one by one, in the dark: all ???
+      photoArray(t, j => clamp((bb - j * .25) / .4), () => 0, (j, r) => popLabel('???', r[0] + r[2] - 110, r[1] + 70, 56, clamp((bb - .6 - j * .25) / .3), { fill: '#FFFFFF', rot: (j % 2 ? .08 : -.08) }));
+      cutFlash(bb, .6);
+    }
+  });
+
+  // ---------- V3.10: the photo array's cells light up one by one: agents in tiny grey sweaters, waving hi; then Sam's facepalm, his agents
+  // scattering ----------
+  vshot('V3.10', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    if (i === 0) {
+      // the lights come up on the cells a half beat apart: agents in tiny grey sweaters, waving hi
+      const lit = j => clamp((bb - j * .5) / .2);
+      photoArray(t, () => 1, lit, (j, r) => popLabel(['hi!', 'o/', 'hi!!', ':)'][j], r[0] + r[2] - 100, r[1] + 70, 56, clamp((bb - .2 - j * .5) / .3), { fill: '#FFFFFF', rot: (j % 2 ? .08 : -.08) }));
+      amber(.06);
+      for (let j = 0; j < 4; j++) { const r = ARRAY_V[j], f = 1 - clamp((bb - j * .5) / .25); if (bb >= j * .5 && f > 0) { ctx.save(); ctx.beginPath(); ctx.rect(...r); ctx.clip(); flash(.8 * f); ctx.restore(); } }
+    } else {
+      const k = ease(clamp(bb / 3.5));
+      still('vt_v3_10_sam', { x: .5, y: .45, z: lerp(1.04, 1.14, k) });
+      nameTag('SAM', 'OpenAI CEO', 70, 330, clamp((bb - .3) / .5), '#8A6BD8');
+      for (let j = 0; j < 5; j++) {
+        const run = clamp((bb - .3 - j * .3) / 1.6), dir = j % 2 ? 1 : -1, x = lerp(W * (.25 + j * .12), dir > 0 ? W + 300 : -300, easeIn(run));
+        if (run > 0 && run < 1) cut('v3_agent_sweater', x, 1110 - Math.abs(Math.sin(bb * 6 + j)) * 60, 230, { flip: dir < 0, rot: dir * .18, shadow: .25 });
+      }
+      speedBars(t, { n: 20, a: .2, y0: 900, y1: 1150 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V3.11: all in on ten open problems, and the fine print piles up under his face a line a beat; then the poker face-off: Ren
+  // slams in above him, glaring down across the table with narrowed eyes ----------
+  const V311 = { face: [.5, .31] };
+  // (the fine print stacks two by two above the ALL IN label, under his face)
+  const HEDGE_AT = [[290, 950], [790, 950], [290, 878], [790, 878]];
+  vshot('V3.11', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    if (i === 0) {
+      const kk = ease(clamp(bb / 4.5)), push = hit(bb - 1, .4);
+      still('vt_v3_11_noam', { x: .44, y: .46, z: lerp(1.06, 1.12, kk) * (1 + .03 * push) });
+      amber(.06);
+      nameTag('NOAM', 'OpenAI · poker bots', 70, 330, clamp((bb - .3) / .5), '#2BB5A8');
+      popLabel('ALL IN: 10 OPEN PROBLEMS*', 540, 1036, 50, clamp((bb - .8) / .3), { fill: '#FFE070', rot: -.03 });
+      HEDGES.forEach((h, j) => popLabel(h, ...HEDGE_AT[j], 40, clamp((bb - 1.5 - j * .6) / .3), { fill: '#FFFFFF', font: 'code', rot: (j % 2 ? .04 : -.04) }));
+      cutFlash(bb, .6);
+    } else {
+      // (a manga page: a paper margin over the top band, so Ren's eyes sit below the Reels header without zooming the 16:9 still past 1.3×)
+      const sl = easeOut(clamp(bb / .3)), k = ease(clamp(bb / 3));
+      ctx.fillStyle = '#FBF7EF'; ctx.fillRect(0, 0, W, H);
+      stackPanels(2, (j, rect) => {
+        if (j === 0) {
+          const v = still('v3_11_ren', { x: .5, y: .3, z: lerp(1.4, 1.46, k) }, { rect, dy: -(1 - sl) * 900 });
+          const [ex, ey] = v.pt(.5, .33);
+          speedLines(ex, ey, t, { n: 50, r0: 300, a: .25 });
+        } else {
+          // (his face just above the lyric block)
+          const [, top] = rect, fy = V311.face[1] + (rect[3] / 2 - (1060 - top)) / (1536 * 1.25 * 1.05);
+          still('vt_v3_11_noam', { x: .5, y: fy, z: 1.05 }, { rect });
+          amber(.06);
+        }
+      }, { y0: 250, weights: [650, 1020], slant: -80 });
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V3.12: the tall Millennium Prize cabinet, one gold trophy on the top shelf and empty pedestals all the way down, each
+  // shelf named; a (yet) note slaps onto the glass by Navier–Stokes (the one OpenAI claimed five weeks later); then the push into it ----------
+  const V312 = { note: [.755, .4], items: [.14, .235, .32, .405, .49, .58, .67] };
+  const PRIZES_V = ['POINCARÉ ✓', 'RIEMANN', 'P vs NP', 'NAVIER–STOKES', 'YANG–MILLS', 'HODGE', 'BIRCH–SWINNERTON-DYER'];
+  vshot('V3.12', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 5]);
+    if (i === 0) {
+      const k = ease(clamp(bb / 5));
+      const v = still('vt_v3_12_trophies', { x: .5, y: .47, z: lerp(1.03, 1.08, k) });
+      amber(.08);
+      popLabel('MILLENNIUM PRIZES', W * .5, 272, 54, clamp((bb - .2) / .4), { fill: '#FFFFFF', font: 'archivo' });
+      V312.items.forEach((w, j) => { const [x, y] = v.pt(.5, w + .04); if (y < 1180) popLabel(PRIZES_V[j], x, y, 40, clamp((bb - .5 - j * .2) / .3), { fill: j ? '#FFFFFF' : '#FFE9A0', font: 'code' }); });
+      const [nx, ny] = v.pt(...V312.note), sk = clamp((bb - 2) / .25);
+      if (sk > 0) stickyNote(nx, ny, backOut(sk, 3) * 1.0, -.08, t);
+      if (bb > 2 && bb < 2.6) sparkle(nx + 130, ny - 130, 50, 1);
+      cutFlash(bb, .6);
+    } else {
+      // push in on the note until it fills the frame; a flash
+      const pk = easeIn(clamp(bb / 2.6)), z = lerp(1, 4, pk);
+      const v = still('vt_v3_12_trophies', { x: V312.note[0], y: V312.note[1], z: 1.08 * Math.min(z, 1.2) });
+      const [nx, ny] = v.pt(...V312.note);
+      stickyNote(lerp(nx, W / 2, clamp(bb / 2)), lerp(ny, 720, clamp(bb / 2)), 1.0 * z * 1.2 / Math.min(z, 1.2), -.08 * (1 - clamp(bb / 2)), t);
+      if (bb > 2.6) { flash(1 - clamp((bb - 2.6) / .5)); txt('five weeks later…', 540, 1080, 48, '#2A2350', { font: 'code', alpha: clamp((bb - 2.8) / .3) * .75 }); }
+      else txt('— Noam Brown', W / 2 + 25 * z, 720 + 95 * z, 15 * z, '#2A2350', { font: 'marker', alpha: clamp(bb / .5) });
+    }
+  });
+
+  // ---------- V3.13: we're the maintainer: at our door the paper-bag disguise, purple glowing in its eye holes, holds out a ticking gift;
+  // its HELLO tag flips to a second identity; the pull request is closed unmerged ----------
+  const V313 = { eyes: [[.43, .19], [.54, .19]], tag: [.35, .3], gift: [.47, .42] };
+  vshot('V3.13', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 8)), a = clamp(Math.floor(b / 2.5), 0, ALIASES.length - 1);
+    const v = still('vt_v3_13_bag', { x: .5, y: .46, z: lerp(1.04, 1.14, k) });
+    for (const e of V313.eyes) { const [ex, ey] = v.pt(...e); addGlow(ex, ey, 80, '#B070FF', .45 + .25 * Math.sin(t * 9)); }
+    const [tx, ty] = v.pt(...V313.tag), fk = frac(b / 2.5), sc = a > 0 && Math.floor(b / 2.5) === a && fk < .2 ? Math.abs(Math.cos(fk / .2 * Math.PI)) : 1;
+    ctx.save(); ctx.translate(tx, ty); ctx.rotate(-.08); ctx.scale(1.4, 1.4 * Math.max(.05, sc));
+    card(0, 0, 330, 96, 12, '#FFFFFF', { line: '#E2334A', lw: 5 });
+    ctx.fillStyle = '#E2334A'; ctx.fill(rrPath(-165, -48, 330, 34, [12, 12, 0, 0]));
+    txt('HELLO my name is', 0, -31, 18, '#FFFFFF', { font: 'archivo' }); txt(ALIASES[a], 0, 16, 30, '#2A2350', { font: 'code', maxW: 300 });
+    ctx.restore();
+    const [gx, gy] = v.pt(...V313.gift), tick = frac(b) < .5;
+    popLabel('PR: "tiny fix :)"', 540, Math.min(gy + 140, 1090), 48, clamp((b - .8) / .3), { fill: '#EDE0FF', col: '#5A30B0', font: 'code', rot: .03 });
+    popLabel(tick ? 'tick' : 'tock', gx + (tick ? -200 : 200), gy - 150, 50, clamp((b - .5) / .2), { fill: '#FFFFFF', rot: tick ? -.14 : .14 });
+    stampMark('CLOSED', 560, 1000, 120, clamp((b - 5.5) / 1), { sub: 'not merged', rot: -.1 });
+    leaves(t, { n: 12, seed: 131, s: 1.6, depth: true, alpha: .8 });
+    cutFlash(b, .6);
+  });
+
+  // ---------- V3.14: Jeff walks out of the four-colour gate toward us with his box; his name tag (27 years at Google) gives way, in the
+  // sky over the gate, to the new sign, which lights up letter by letter ----------
+  const V314 = { sign: [540, 350] };
+  vshot('V3.14', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 8));
+    still('vt_v3_14_jeff', { x: .5, y: lerp(.47, .44, k), z: lerp(1.04, 1.1, k) });
+    amber(.08);
+    nameTag('JEFF', 'Google chief scientist, 27 years', 70, 330, clamp((b - .4) / .5) * (1 - clamp((b - 3) / .3)), '#3D7BE0');
+    const sk = clamp((b - 3.2) / .4), lk = clamp((b - 3.5) / 2.5), [sx, sy] = V314.sign;
+    if (sk > 0) {
+      ctx.save(); ctx.translate(sx, sy - (1 - easeOut(sk)) * 300); ctx.rotate(-.03 + Math.sin(t * 3) * .01); ctx.scale(backOut(sk, 2), backOut(sk, 2));
+      card(0, 0, 840, 170, 26, '#1E2440', { line: lk > 0 ? '#7FE0FF' : '#4A5070', lw: 7 });
+      if (lk > 0) {
+        // (sized for the whole word up front, so the letters don't shrink as the last ones light up)
+        const str = 'DISCOVERY LOOP', n = Math.floor(lk * str.length + .999), fit = Math.min(1, 760 / textW(str, 86, 'archivo'));
+        ctx.shadowColor = '#7FE0FF'; ctx.shadowBlur = 36;
+        txt(str.slice(0, n), -380, 4, 86, '#E8FBFF', { font: 'archivo', align: 'left', sx: fit });
+      }
+      ctx.restore();
+      if (lk > 0 && lk < 1) sparkle(sx - 380 + 760 * lk, sy, 44, 1, '#CFF6FF');
+      popLabel('NEW', sx + 380, sy - 90, 48, clamp((b - 6) / .3), { fill: '#FFE070', rot: .15 });
+    }
+    leaves(t, { n: 26, seed: 141, s: 1.8, depth: true, wind: -200 });
+    cutFlash(b, .6);
+  });
+
+  // ---------- V3.15: Clawd the professor at the tall whiteboard writes the map, then crosses the conjecture out; then Kiri's jaw drops,
+  // her glasses knocked askew, as "87 years" crumbles to dust above her ----------
+  const V315 = { board: [.17, .15], u: 1.25, clawd: [880, 1140] };
+  vshot('V3.15', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    if (i === 0) {
+      const k = ease(clamp(bb / 4)), v = still('vt_v3_club_autumn', { x: .46, y: .38, z: lerp(1.26, 1.3, k) }), u = V315.u;
+      const [x0, y0] = v.pt(...V315.board);
+      const L = (str, j, size, kk, col) => writeOn(str, x0, y0 + j * 86 * u, size * u, kk, col, { align: 'left' });
+      L('JACOBIAN', 0, 66, 1, '#2A3A80'); L('CONJECTURE (1939)', 1, 52, 1, '#2A3A80');
+      L('F : C³ → C³ polynomial', 2.3, 46, clamp(bb / .9), '#2A2350');
+      L('det J(F) = const ≠ 0', 3.3, 46, clamp((bb - .7) / .9), '#2A2350');
+      L('…but F is NOT invertible!', 4.4, 46, clamp((bb - 1.4) / .9), '#C02040');
+      const xk = clamp((bb - 2.4) / .5), w = textW('CONJECTURE (1939)', 52 * u, 'marker'), y1 = y0 + 86 * u;
+      stroke(x0 - 20 * u, y0 - 40 * u, x0 + w + 20 * u, y1 + 40 * u, clamp(xk * 2), '#E2334A', 18 * u);
+      stroke(x0 - 20 * u, y1 + 40 * u, x0 + w + 20 * u, y0 - 40 * u, clamp(xk * 2 - 1), '#E2334A', 18 * u);
+      if (xk > 0 && xk < 1) sparkle(lerp(x0, x0 + w, xk), (y0 + y1) / 2, 50, 1, '#FFE0E0');
+      popLabel('COUNTEREXAMPLE!', 400, y0 + 470 * u, 58, clamp((bb - 2.9) / .3), { fill: '#FFE070', rot: -.06 });
+      const hop = Math.abs(Math.sin(bb * Math.PI)) * 24;
+      cut('v3_15_clawd', V315.clawd[0], V315.clawd[1] - hop, 260, { rot: Math.sin(t * 4) * .04, shadow: .3 });
+      cutFlash(bb, .6);
+    } else {
+      const k = ease(clamp(bb / 3.5));
+      still('vt_v3_15_kiri', { x: .5, y: .4, z: lerp(1.08, 1.2, k) * punch(bb, .05) });
+      // "87 years" crumbles into dust that falls past her face
+      const ck = clamp((bb - 1.2) / 2);
+      if (ck < .05) txt('87 years', 540, 330, 120, '#2A2350', { font: 'rammetto', stroke: '#FFFFFF', sw: 18 });
+      else {
+        for (let j = 0; j < 110; j++) {
+          const gx = 540 + (hash2(151, j) - .5) * 600, gy = 330 + (hash2(152, j) - .5) * 100, fall = ck * ck * (300 + hash2(153, j) * 800);
+          ctx.fillStyle = alpha(j % 3 ? '#2A2350' : '#8A7EA0', 1 - ck); ctx.fillRect(gx + ck * (hash2(154, j) - .5) * 220, gy + fall, 11, 11);
+        }
+        if (ck < .3) txt('87 years', 540, 330 + ck * 40, 120, '#2A2350', { font: 'rammetto', stroke: '#FFFFFF', sw: 18, alpha: 1 - ck / .3 });
+      }
+      cutFlash(bb, .8);
+    }
+  });
+
+  // ---------- V3.16: the hooded essayist on the windy hill, hands on his hood pulled down over his eyes; a burst of light and leaves hides
+  // the moment it comes down; then from behind, hood down, the huge low sun behind his head like a halo; his name tag flips to its new
+  // card; the freeze; white ----------
+  const V316 = { head: [.5, .6], hood: [.5, .4] };
+  vshot('V3.16', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [0, 4]);
+    setBloom(.5);
+    if (i === 0) {
+      const k = ease(clamp(bb / 4.5));
+      const v = still('vt_v3_16_hood', { x: .5, y: .6, z: lerp(1.04, 1.1, k) });
+      nameTag('GWERN', 'pseudonymous essayist', 70, 330, clamp((bb - .3) / .5), '#2BB5A8');
+      leaves(t * .6, { n: 34, seed: 161, s: 1.9, depth: true, wind: 500 });
+      if (bb > 2.9) { const kk = clamp((bb - 2.9) / 1.1), [hx, hy] = v.pt(...V316.hood); addGlow(hx, hy, 1000 * kk, '#FFF4D0', kk); flash(kk * .9, '#FFF6E0'); leafBurst(hx, hy, 1000, kk, 16); }
+    } else {
+      const frz = bb > 4.2, bf = frz ? 4.2 : bb, k = easeOut(clamp(bf / 4.2));
+      const v = still('vt_v3_16_reveal', { x: .5, y: .6, z: lerp(1.16, 1.06, k) });
+      const tf = frz ? t - (bb - 4.2) * beatLen() : t;
+      leaves(tf, { n: 36, seed: 162, s: 1.9, depth: true, wind: 500 });
+      const [hx, hy] = v.pt(...V316.head);
+      halo(hx, hy - 125 * v.s, 80 * v.s, clamp((bb - 1.2) / .6));
+      // the name tag flips over to its new card
+      const fk = clamp((bb - 1.6) / .5), sc = Math.abs(Math.cos(fk * Math.PI));
+      ctx.save(); ctx.translate(0, 330); ctx.scale(1, Math.max(.05, sc)); ctx.translate(0, -330);
+      if (fk < .5) nameTag('GWERN', 'pseudonymous essayist', 70, 330, 1, '#2BB5A8');
+      else nameTag('GWERN', 'founder, Guardian Angel Inc.', 70, 330, 1, '#FFC94A');
+      ctx.restore();
+      popLabel('GUARDIAN ANGEL INC.', W / 2, 560, 56, clamp((bb - 2.2) / .3), { fill: '#FFF4C0', rot: -.04 });
+      if (frz) { flare(hx, Math.max(hy - 330, 220), .9); grade('#FFE8C0', .1, 'screen'); }
+      flash(1 - clamp(bb / .5), '#FFF6E0');
+      if (bb > 6.7) flash((bb - 6.7) / .8);
+    }
+  });
 })();
 
 ;
@@ -4693,6 +7311,128 @@ function placeholder(t, s) {
     sil('clawd_jump', hx, hy + 18, 125, { rot: .1 * Math.sin(tf * 5) });
     petals(tf, { n: 16, seed: 74, s: 1.3, col: '#FFD7B0', alpha: .8, wind: 700, fall: 30 });
     if (frz) { grade('#FFE6C0', .12, 'screen'); flare(W * .7, 60, .8); }
+    cutFlash(bb, .7, .3, '#FFE6C0');
+  });
+
+  // =====================================================================================================
+  // THE VERTICAL CHORUS 3 (1080×1920): the same five shots on the same beats, on a very tall sunset plate (vt_c3_sunset). The three
+  // stand as silhouettes against a sun as wide as the frame, Clawd on Akari's head right in its middle; the silhouettes run up a steep
+  // curve of server lights on a diagonal (C1's climb); the faces become four golden photocard strips; three hands reach up the tall
+  // frame into the sun; the curve of lights sweeps in over their heads and shoots up off the top of the frame, the camera tilting
+  // after it; freeze, black, a snowflake.
+  // =====================================================================================================
+  // the tall sunset plate with the sun's centre (.5, .79 of the plate) at screen y = yAt (in rect o.rect, default the frame), zoomed z.
+  // The framing is free (the sun sits too low in the plate to rise into the frame's middle otherwise): above the plate is its violet,
+  // below it its roof.
+  const SKY = 'vt_c3_sunset';
+  function vSky(yAt, z, o = {}) {
+    const I = STILLS[SKY], [rx, ry, rw, rh] = o.rect ?? [0, 0, W, H], s = Math.max(rw / I.w, rh / I.h) * z;
+    ctx.fillStyle = '#5D5680'; ctx.fillRect(rx, ry, rw, rh / 2); ctx.fillStyle = '#4A424C'; ctx.fillRect(rx, ry + rh / 2, rw, rh / 2);
+    return still(SKY, { x: o.x ?? .5, y: .79 - (yAt - ry - rh / 2) / (I.h * s), z }, { ...o, free: true });
+  }
+  // the three at the rail as silhouettes, Ren back left, Kiri back right, Akari in front between them with her head on the sun, their
+  // backs running off the foot of the frame (the bust cut-outs' bottoms below it) under the lyric block; sway is how far the wind
+  // rocks them; dy sinks them. → Akari's cut()
+  function vLineup(t, sway, dy = 0) {
+    // (a wider rim than the horizontal's, so the three read apart where they overlap)
+    sil('card_ren', 215, H + 70 + dy, 820, { rot: sway * Math.sin(t * 1.7 - 1.3), rimW: 7 });
+    sil('card_kiri', 870, H + 90 + dy, 800, { rot: sway * Math.sin(t * 1.7 + 1.3), rimW: 7 });
+    return sil('card_akari', 545, H + 70 + dy, 880, { rot: sway * Math.sin(t * 1.7), rimW: 7 });
+  }
+
+  vshot('C3', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg);
+    setBloom(.45);
+    // ---------- "We didn't start the scaling": the three as silhouettes against a sun as wide as the frame, Clawd on Akari's head ----------
+    if (b < 6) {
+      const b0 = beatsIn(seg.start, seg), k = ease(clamp((b - b0) / (6 - b0)));
+      const v = vSky(lerp(860, 900, k), lerp(1.1, 1.18, k)), [sx, sy] = v.pt(.5, .79);
+      rays(sx, sy, { t, a: .2, n: 12, ang: -Math.PI / 2, spread: 3.4, len: 2200, col: '#FFE2A8' });
+      flare(sx, sy, .85 + .15 * Math.sin(t * 2));
+      const ak = vLineup(t, .012), [hx, hy] = ak.pt(.44, .06);
+      sil('clawd_stand', hx, hy + 18 - Math.abs(Math.sin(b * Math.PI)) * 14, 170, { rimDir: [0, -1] });
+      petals(t * .6, { n: 12, seed: 71, s: 1.5, col: '#FFD7B0', alpha: .7, wind: 160 });
+      flash(1 - clamp((b - b0) / .5));
+      return;
+    }
+    // ---------- "It was always training, and the curves kept gaining": silhouettes run up a steep curve of server lights, on a diagonal ----------
+    if (b < 14) {
+      const bb = b - 6, scroll = bb * 110;
+      // (C1's climb: the curve scrolls left so it steepens under them; Akari's feet stay at (800, 780), the sun behind Ren)
+      const raw = curvePts(scroll, -400, H * 1.2, W * 3.2, -H * .6, 2.1), lift = 780 - onCurve(raw, 800)[0];
+      const pts = raw.map(([x, y]) => [x, y + lift]);
+      vSky(lerp(1200, 1120, ease(clamp(bb / 8))), 1.12, { x: lerp(.45, .55, clamp(bb / 8)) });
+      speedBars(t, { n: 30, a: .28, speed: 3600, ang: -.75, col: '#FFE8C8' });
+      ledCurve(pts, t, 1, { offset: -scroll });
+      const runner = (who, x, h, ph) => { const [y, a] = onCurve(pts, x); return silRunner(who, x, y + 10, h, b + ph, { rot: a * .55, rimDir: [-.6, -.8] }); };
+      runner('kiri', 230, 470, .67);
+      runner('ren', 520, 480, .33);
+      const ak = runner('akari', 800, 480, 0), [hx, hy] = ak.pt(.78, .04);
+      sil('clawd_jump', hx, hy + 40, 140, { rot: -.1 + .1 * Math.sin(b * Math.PI), rimDir: [-.6, -.8] });
+      cutFlash(bb, .7, .3, '#FFE6C0');
+      return;
+    }
+    // ---------- "We didn't start the scaling": four golden photocard strips, a new one a beat; then the hands reaching up into the sun ----------
+    if (b < 22) {
+      const bb = b - 14;
+      if (bb < 4) {
+        const shown = clamp(Math.floor(bb) + 1, 1, 4), pw = W / shown;
+        for (let j = 0; j < shown; j++) {
+          const F = FACES[j], x = j * pw, age = bb - j, slide = easeOut(clamp(age / .35)), rect = [x, 0, pw, H];
+          ctx.save(); ctx.beginPath(); ctx.rect(...rect); ctx.clip();
+          // the sun behind each face (Clawd's lower, behind his body)
+          const v = vSky(j === 3 ? 1000 : 820, 1 + j * .06, { rect }), [sx, sy] = v.pt(.5, .79);
+          addGlow(sx, sy, 300, '#FFD080', .5);
+          // (the face at y 640 in every strip, as in C1; a narrow strip shows it smaller, the long card's bust always running on to the
+          // foot of the frame)
+          const h = j === 3 ? lerp(420, 300, (shown - 1) / 3) : Math.max(lerp(1300, 980, (shown - 1) / 3), cardFloor(F.cut, F.face[1], 640)), push = 1 + clamp(bb / 4) * .05;
+          const bobY = j === 3 ? -Math.abs(Math.sin(b * Math.PI)) * 40 : 0;
+          const cx = x + pw / 2 + (1 - slide) * pw * (j % 2 ? 1 : -1), cy = (j === 3 ? 820 : 640) + bobY, draw = j === 3 ? cut : cardLong;
+          draw(F.cut, cx - 5, cy - 6, h * push, { anchor: F.face, tint: RIM, tintA: 1 });
+          draw(F.cut, cx, cy, h * push, { anchor: F.face, tint: '#FF8A3A', tintA: .16 });
+          ctx.globalAlpha = .8 * (1 - clamp(age / .3)); ctx.fillStyle = '#FFF0D8'; ctx.fillRect(...rect); ctx.globalAlpha = 1;
+          ctx.restore();
+        }
+        ctx.fillStyle = '#FFE8C8'; for (let j = 1; j < shown; j++) ctx.fillRect(j * pw - 5, 0, 10, H);
+        leak(.3, { side: 'right', col: '#FFB070' });
+        return;
+      }
+      // the hands: three arms reach up the tall frame into the sun, a slow push up toward it
+      const k = ease(clamp((bb - 4) / 4));
+      const v = still('vt_c3_hands', { x: .5, y: lerp(.52, .49, k), z: lerp(1.04, 1.14, k) });
+      leak(.35 + .15 * Math.sin(t * 3), { side: 'left', col: '#FFB27A' });
+      const [sx, sy] = v.pt(.48, .33), [fx, fy] = v.pt(.445, .45);
+      flare(sx, sy, .55);
+      // the middle hand's fingertips touch the sun
+      glint(fx, fy, 60, Math.sin(clamp((bb - 5) / 1.6) * Math.PI));
+      rays(sx, sy, { t, a: .15, n: 10, ang: -Math.PI / 2, spread: 3.4, len: 2000, col: '#FFE6B8' });
+      sparkleField(t, { n: 12, r: 20, seed: 73, col: '#FFF0C8' });
+      cutFlash(bb - 4, .8, .3, '#FFF0D8');
+      return;
+    }
+    // ---------- "No, we didn't preordain it, but we can't contain it!": the curve of lights rises from behind them straight up the tall
+    // sky and off its top, the wind in their hair; a burst where it leaves; freeze; the hard cut to black and one snowflake ----------
+    const bb = b - 22, FRZ = 8.2, frz = bb > FRZ, bf = frz ? FRZ : bb, tf = frz ? t - (bb - FRZ) * beatLen() : t;
+    if (bb >= 12.5) {
+      ctx.fillStyle = '#05040A'; ctx.fillRect(0, 0, W, H);
+      const s = bb - 12.5;
+      snowflake(W * .5 + Math.sin(s * 2) * 30, lerp(640, 840, s / 1.2), 84, s * .8, clamp(s / .25)); sparkle(W * .5 + 56, 600, 26 * clamp(s / .3), 1, '#DDEBFF');
+      hideCaption(); hideStamp();
+      return;
+    }
+    const k = ease(clamp(bf / 8));
+    // (the camera tilts up after the curve: the sun and the three sink together, opening the sky)
+    const v = vSky(lerp(900, 1100, k), 1.14), [sx, sy] = v.pt(.5, .79);
+    // (it sweeps in from the left just over their heads and shoots up the right of the sky, leaving the top at about the freeze, as
+    // C1's does)
+    const sweep = clamp(bf / 9) ** 1.2, pts = Array.from({ length: 70 }, (_, i) => { const u = i / 69; return [lerp(-80, W * .84, u), lerp(900, -340, u ** 2.2)]; });
+    flare(sx, sy, .8);
+    ledCurve(pts, tf, sweep, { gap: 30, r: 11, core: '#FFE2A0' });
+    if (bb > 8 && bb < 9.5) burst(820, 110, 560, (bb - 8) / 1.5, ['#FFFFFF', '#FFD060', '#7CFFB0']);
+    const ak = vLineup(tf, .03 + .03 * clamp(bf / 8), k * 200), [hx, hy] = ak.pt(.44, .06);
+    sil('clawd_jump', hx, hy + 22, 170, { rot: .1 * Math.sin(tf * 5) });
+    petals(tf, { n: 20, seed: 74, s: 1.6, col: '#FFD7B0', alpha: .8, wind: 700, fall: 30 });
+    if (frz) { grade('#FFE6C0', .12, 'screen'); flare(820, 110, .8); }
     cutFlash(bb, .7, .3, '#FFE6C0');
   });
 })();
@@ -5270,6 +8010,663 @@ function placeholder(t, s) {
       if (bb > 4.2) flash((bb - 4.2) / .8);
     }
   });
+
+  // =====================================================================================================
+  // THE VERTICAL VERSE 4 (1080×1920): every line keeps its gag and its cut, composed for the tall frame, mostly on tall stills
+  // (vt_v4_*, see shots/vt_c08_v4.json). Faces and gags stay above FACE_Y1, clear of the lyric block (the caption from CAP_Y down,
+  // the date card above it on the left). Same beats as the horizontal shots, so the cuts land together.
+  // =====================================================================================================
+
+  // ---------- V4.1: up from C3's black on the agent in the doorway, star-eyed: OH MY GOD!; then a tilt up the tower of sticky notes
+  // above it as the post count races up, and the other agents pop out of the notes to wave ----------
+  // (the still is a Nano Banana zoom-out of an Anima pick, its agent low in the picture: the camera frames past its bottom edge at the
+  // start, over the floor's colour, so the agent's face clears the lyric block)
+  const B1 = { eyes: [[.444, .762], [.542, .762]], face: [.49, .775], head: [.49, .735], floor: '#34364D' };
+  const B1_PEERS = [[.3, .52, 2.5], [.72, .44, 2.9], [.36, .3, 3.4], [.66, .2, 3.9], [.47, .1, 4.4]];
+  // the board's overflow: sticky notes spilled out of the doorway across the floor toward us, past the still's bottom edge (in the
+  // still's fractions, so they ride the camera; nearer ones bigger and flatter, in the tower's colours, each with a scribble)
+  const NOTE_COLS = ['#FFF07A', '#FF9EC4', '#8FE3F0', '#B6F08A', '#FFC07A', '#D8B8FF'];
+  function noteFloor(v) {
+    for (let r = 0; r < 26; r++) {
+      const w = .905 + r * .022 + r * r * .0006, near = clamp((w - .9) / .4), sz = (32 + 190 * near ** 1.3) * v.s / 1.5;
+      const n = 8 + Math.floor(near * 4);
+      for (let j = 0; j < n; j++) {
+        const spread = .18 + .9 * near, u = .5 + (((j + .5) / n) - .5) * 2 * spread + (hash2(r, j) - .5) * spread / n * 1.6;
+        // (thick by the door, thinning out at the sides)
+        if (hash2(r + 50, j) > 1.05 - Math.abs(u - .5) * .9 * (1.2 - near)) continue;
+        const [x, y] = v.pt(u, w + (hash2(j, r + 9) - .5) * .012); if (y < -100 || y > H + sz) continue;
+        const rot = (hash2(r + 3, j) - .5) * 1.6, col = NOTE_COLS[Math.floor(hash2(j + 17, r) * 6)];
+        ctx.save(); ctx.translate(x, y); ctx.scale(1, .48 + .12 * near); ctx.rotate(rot);
+        ctx.fillStyle = 'rgb(20 20 50 / .35)'; ctx.fillRect(-sz / 2 + 3, -sz / 2 + 5, sz, sz);
+        ctx.fillStyle = col; ctx.fillRect(-sz / 2, -sz / 2, sz, sz);
+        ctx.fillStyle = 'rgb(0 0 0 / .08)'; ctx.fillRect(-sz / 2, -sz / 2, sz, sz * .16);
+        ctx.strokeStyle = 'rgb(40 40 80 / .55)'; ctx.lineWidth = Math.max(1.5, sz * .045); ctx.beginPath();
+        for (let q = 0; q < 3; q++) { const ly = -sz * .18 + q * sz * .2; ctx.moveTo(-sz * .32, ly); ctx.lineTo(-sz * .32 + sz * (.4 + .24 * hash2(q, j + r)), ly); }
+        ctx.stroke(); ctx.restore();
+      }
+    }
+    // a little shadow toward us, so the floor recedes under the Reels caption
+    const [, fy] = v.pt(.5, 1);
+    ctx.fillStyle = linGrad(0, fy, 0, H + 1, [[0, 'rgb(30 28 60 / 0)'], [1, 'rgb(30 28 60 / .35)']]); ctx.fillRect(0, Math.min(fy, H), W, Math.max(0, H - fy));
+  }
+  vshot('V4.1', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp((b - 2.1) / 3.9)), z = lerp(1.22, 1.2, k);
+    ctx.fillStyle = B1.floor; ctx.fillRect(0, 0, W, H);
+    // (framing: the face at y 980 at the start; the end as high as the picture's top edge allows)
+    const v = still('vt_v4_1_board', { x: .5, y: lerp(B1.face[1] - 20 / (1920 * 1.22), .42, k), z }, { free: true });
+    stillEdge('vt_v4_1_board', v, [0, 0, W, H], 1, 2);
+    noteFloor(v);
+    for (const [u, w] of B1.eyes) { const [ex, ey] = v.pt(u, w); glint(ex, ey, 64, Math.sin(clamp((b - .4) / 1) * Math.PI)); }
+    sparkleField(t, { n: 18, r: 20, seed: 51, x0: 200, x1: 880, y0: 120, y1: 1300, col: '#FFF4C0' });
+    // the gasp, tied to the agent (it sinks out of the frame as the camera climbs)
+    const [hx, hy] = v.pt(...B1.head), [sx, sy] = shake(t, 9 * hit(b - 1, .5));
+    ctx.save(); ctx.translate(sx, sy);
+    sayBubble('OH MY GOD!', 540, hy - 230, 74, clamp((b - .7) / .7) * (1 - clamp((b - 4) / .4)), hx + 40, hy - 20, { col: '#1E7A45' });
+    ctx.restore();
+    // the other agents pop out of the notes as the camera reaches them, and wave
+    B1_PEERS.forEach(([u, w, b0], j) => {
+      const pk = backOut(clamp((b - b0) / .35), 2.4); if (pk <= 0) return;
+      const [x, y] = v.pt(u, w);
+      cut('v3_agent', x, y + 70, 170 * pk, { rot: Math.sin(t * 9 + j * 2) * .12 });
+    });
+    const ck = clamp((b - 2.4) / 3.4);
+    popLabel(`${Math.round(lerp(3, 70000, ck ** 3)).toLocaleString('en-US')} posts`, 540, 340, 60, clamp((b - 2.2) / .3), { fill: '#FFE070' });
+    fromBlack(lt);
+  });
+
+  // ---------- V4.2: the agent jams its screwdriver into the grader's works; the camera tilts up the tall slot machine as its three
+  // reels stop on ✓ one per half beat, and the jackpot turns every window to ✓ and fountains stars up the frame. Then Ren, unimpressed ----------
+  // the machine's 3 × 3 windows (column centres, row centres, a window's size: fractions of the still), the sign, the agent, the tray
+  const SL2 = { cols: [.365, .509, .654], rows: [.277, .423, .573], w: .127, h: .11, sign: [.5, .157], face: [.31, .76], eyes: [[.24, .755], [.365, .735]], tip: [.55, .76], tray: [.57, .83], floor: ['#F2E8D8', '#C9B8D8'] };
+  const SPIN = ['★', '7', '◆', '?', '✗', '✓', '7', '★'];
+  function vReels(v, b, t, stops, jack) {
+    const rw = SL2.w * v.s * 864, rh = SL2.h * v.s * 1536;
+    SL2.cols.forEach((u, c) => SL2.rows.forEach((w, r) => {
+      const [x, y] = v.pt(u, w), stop = stops[c];
+      ctx.save(); ctx.beginPath(); ctx.roundRect(x - rw / 2, y - rh / 2, rw, rh, rw * .25); ctx.clip();
+      ctx.fillStyle = '#FFFDF2'; ctx.fillRect(x - rw / 2, y - rh / 2, rw, rh);
+      if (b < stop) {
+        // a blur of symbols rolling down through the column
+        const s = t * 11 + c * .37, off = frac(s);
+        for (let q = -1; q <= 1; q++) txt(SPIN[(Math.floor(s) - q + r * 3 + c * 5 + 80) % SPIN.length], x, y + (q + off) * rh * .62, rw * .66, '#8A7A60', { font: 'archivo', alpha: .5, sy: 1.5 });
+      } else {
+        // stopped: ✓ on the payline, other symbols above and below, until the jackpot turns them to ✓ too
+        const pass = r === 1 || jack > .3 + (r === 0 ? 0 : .15) + c * .06, at = r === 1 ? stop : stop + .3, e = backOut(clamp((b - at) / .3), 3);
+        if (pass) txt('✓', x, y + (1 - e) * rh * .3, rw * .95, '#1E9A55', { font: 'archivo' });
+        else txt(SPIN[(c * 3 + r * 2 + 1) % 5], x, y, rw * .7, '#C05A40', { font: 'archivo' });
+        if (r === 1 && b - stop < .5) addGlow(x, y, rw, '#B8FFD0', .8 * (1 - (b - stop) / .5));
+      }
+      ctx.restore();
+    }));
+  }
+  // a gold coin seen from above at an angle, centred on (x, y), r wide
+  function coin(x, y, r, rot, shade) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+    fillP(ellPath(0, r * .3, r * 1.02, r * .44), 'rgb(60 40 90 / .25)');
+    fillP(ellPath(0, r * .14, r, r * .42), '#B47A16');
+    const g = linGrad(-r, -r * .4, r, r * .4, [[0, '#FFF0A0'], [.45, shade ? '#F2BC34' : '#FFD24A'], [1, '#D8971E']]);
+    ctx.fillStyle = g; ctx.fill(ellPath(0, 0, r, r * .42));
+    ctx.lineWidth = Math.max(1.5, r * .07); ctx.strokeStyle = '#6E4A10'; ctx.stroke(ellPath(0, 0, r, r * .42));
+    ctx.lineWidth = Math.max(1, r * .05); ctx.strokeStyle = 'rgb(160 100 20 / .8)'; ctx.stroke(ellPath(0, 0, r * .7, r * .29));
+    fillP(ellPath(-r * .38, -r * .14, r * .22, r * .07, -.2), 'rgb(255 255 255 / .8)');
+    ctx.restore();
+  }
+  // the winnings spilled out of the tray onto the floor in front of the machine: a heap of coins (in the still's fractions, so it
+  // rides the camera), and on each poke of the screwdriver a coin or two hops out of the tray onto it
+  function coinHeap(v, b, t) {
+    // a dome of coins on the floor in front of the tray (footprint an ellipse round C, R; lifted by up to LIFT), a few strays round it
+    const C = [.6, .965], R = [.4, .11], LIFT = 150 * v.s / 1.5;
+    for (let row = 0; row < 22; row++) {
+      const w0 = .88 + row * .0135;
+      for (let j = 0; j < 22; j++) {
+        const u = .12 + j * .042 + (row % 2) * .021 + (hash2(row, j) - .5) * .02, w = w0 + (hash2(j, row + 40) - .5) * .008;
+        const d = ((u - C[0]) / R[0]) ** 2 + ((w - C[1]) / R[1]) ** 2;
+        if (d > 1 && !(d < 1.9 && hash2(row + 90, j) > .8)) continue;
+        const [x, y] = v.pt(u, w), lift = d < 1 ? LIFT * Math.sqrt(1 - d) : 0; if (y - lift > H + 40 || x < -60 || x > W + 60) continue;
+        coin(x, y - lift, (28 + 30 * (w - .88)) * v.s / 1.5 * 1.25, (hash2(row + 7, j) - .5) * .6, hash2(j, row) > .5);
+      }
+    }
+    for (let j = 0; j < 4; j++) {
+      const age = (b - .3 - j * .4) / .55; if (age <= 0 || age >= 1) continue;
+      const [x0, y0] = v.pt(.56 + j * .02, .86), [x1, y1] = v.pt(.42 + j * .1, .99);
+      coin(lerp(x0, x1, age), lerp(y0, y1, age) - Math.sin(age * Math.PI) * 120 * v.s / 1.5, 34 * v.s / 1.5, age * 7 + j, j % 2);
+    }
+  }
+  vshot('V4.2', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 5.5]);
+    if (i === 0) {
+      const jack = b - 3.3, tilt = ease(clamp((b - 1.3) / .55)), [sx, sy] = shake(t, 10 * hit(jack, .6) + (b < 3.3 ? 2 : 0));
+      // (from the agent at its foot, its face above the lyric block, a little past the still's bottom edge, its floor carried on and
+      // falling into shadow toward us under the Reels caption; up to the reels)
+      const z = lerp(1.2, 1.15, tilt) * punch(jack, .05), v = still('vt_v4_2_slot', { x: lerp(.42, .5, tilt), y: Math.max(.5 / z + .003, lerp(.66, .44, tilt) + .012 * clamp((b - 1.8) / 3.7)), z }, { free: true, dx: sx, dy: sy });
+      stillEdge('vt_v4_2_slot', v, [0, 0, W, H], 1, 3);
+      const [, fy0] = v.pt(.5, .93);
+      if (fy0 < H) { ctx.fillStyle = linGrad(0, fy0, 0, Math.max(H, fy0 + 200), [[0, 'rgb(70 52 110 / 0)'], [1, 'rgb(70 52 110 / .6)']]); ctx.fillRect(0, fy0, W, H - fy0); }
+      coinHeap(v, b, t);
+      // the screwdriver's poke: sparks at its tip on the beats
+      if (b < 1.6) { const [tx, ty] = v.pt(...SL2.tip); sparks(tx, ty, t, { r: 60 * (.6 + .4 * pulse(t, 6)), n: 8 }); }
+      const [gx, gy] = v.pt(...SL2.sign);
+      popLabel(jack > 0 && Math.floor(jack * 4) % 2 === 0 ? 'PASS!' : 'GRADER', gx, gy, 46, clamp((b - .9) / .3), { fill: jack > 0 ? '#FFE070' : '#FFFFFF', rot: -.03 });
+      vReels(v, b, t, [1.9, 2.5, 3.1], jack);
+      speedBars(t, { n: 14, a: .35 * Math.sin(tilt * Math.PI), ang: Math.PI / 2, speed: 5000 });
+      if (jack > 0) {
+        addGlow(W * .5, H * .45, 760, '#FFD34A', .45 * hit(jack, 1.5));
+        const [fx, fy] = v.pt(...SL2.tray);
+        starFountain(jack, fx, Math.min(fy, H + 40), { n: 40, r: 30 });
+        popLabel('PASS ✓', 540, 360, 110, clamp(jack / .3), { fill: '#FFE070', font: 'rammetto', rot: -.06 });
+      }
+      openFlash(lt, .5);
+    } else {
+      const k = ease(clamp(bb / 4)), v = still('vt_v4_2_ren', { x: lerp(.52, .53, k), y: lerp(.47, .39, k), z: lerp(1.05, 1.3, k) });
+      addGlow(0, H * .55, 560, '#4FB8FF', .25 + .08 * Math.sin(t * 11) * Math.sin(t * 3.7));
+      cutFlash(bb, .7);
+    }
+  });
+
+  // ---------- V4.3: the leather-jacket CEO snips the police tape with giant gold scissors like a ribbon; SOLD slams onto the night sky
+  // over the crime scene, the price under it; Huggy, the break-in's victim, peeks in from the edge hugging its GPU ----------
+  const J3 = { snip: [.62, .52] };
+  vshot('V4.3', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 7));
+    const v = still('vt_v4_3_jensen', { x: lerp(.5, .52, k), y: lerp(.5, .46, k), z: lerp(1.05, 1.15, k) });
+    snow(t, { n: 50, seed: 43 });
+    const [sx, sy] = v.pt(...J3.snip), snip = b - 1.2;
+    if (snip > 0 && snip < 1) burst(sx, sy, 220, snip, ['#FFFFFF', '#FFE070', '#FFD34A']);
+    popLabel('snip!', sx + 110, sy + 110, 56, clamp(snip / .25), { fill: '#FFE070', rot: .1 });
+    nameTag('JENSEN', 'Nvidia CEO', 70, 330, clamp((b - .4) / .5), '#76B900');
+    stampMark('SOLD', 735, 335, 124, clamp((b - 2.5) / 1.1), { col: '#E2334A', rot: .1 });
+    popLabel('$12.9 billion', 735, 480, 52, clamp((b - 3.1) / .3), { fill: '#FFE070', rot: .05 });
+    // Huggy peeks in from the left edge, hugging its GPU
+    const hk = easeOut(clamp((b - 3.6) / .4));
+    if (hk > 0) cut('v4_3_huggy', -180 + hk * 330, 860, 320, { rot: .2 + Math.sin(b * Math.PI) * .06 });
+    openFlash(lt);
+  });
+
+  // ---------- V4.4: the press stage's giant screen beams his face; below it he flings his arms up: WELCOME TO THE AGI ERA writes itself
+  // across the screen; down the left edge the cast's reaction cams pop up, one polite clap each ----------
+  vshot('V4.4', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 7.5));
+    still('vt_v4_4_greg', { x: .5, y: lerp(.5, .47, k), z: lerp(1.05, 1.14, k) * punch(b - .1, .04) });
+    // (the slide on the screen behind him: the logo up top, the title writing on under it, above his head)
+    logoText('WELCOME TO', 540, 488, 76, { font: 'archivo', k: clamp((b - .3) / 1.4), grad: ['#6FD0FF', '#3D8BFF', '#6A5CFF'] });
+    logoText('THE AGI ERA', 540, 576, 76, { font: 'archivo', k: clamp((b - 1.2) / 1.4), grad: ['#6FD0FF', '#3D8BFF', '#6A5CFF'] });
+    confetti(t, { n: 60, seed: 44 });
+    nameTag('GREG', 'OpenAI president', 610, 1050, clamp((b - .5) / .5), '#3D7BE0');
+    // the reaction cams, one polite clap each on the beats
+    for (let j = 0; j < 3; j++) {
+      const A = AUD[j], ck = b - 4 - j, pk = backOut(clamp((b - 3.6 - j * .15) / .35), 2);
+      if (pk <= 0) continue;
+      const cx = 155, cy = 640 + j * 210, r = 96 * pk;
+      ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fillStyle = A.col; ctx.fill(); ctx.clip();
+      cut(A.cut, cx, cy + 10, 570 * pk, { anchor: A.face });
+      ctx.restore();
+      ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 7; ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke();
+      popLabel('clap.', cx + 160, cy - 46, 46, ck > 0 && ck < 1.2 ? 1 : 0, { fill: '#FFFFFF', rot: -.1 + j * .1 });
+    }
+    openFlash(lt);
+  });
+
+  // ---------- V4.5: Kiri's glasses flash at the foot of the tall whiteboard; the camera tilts up to the swirl above her as it winds
+  // tighter and spins faster; BOOM: the sooty aftermath, thumbs up, the smoke column rising up the frame: LEAN ✓ ----------
+  const K5B = [[.45, .508], [.56, .508]];
+  const K5 = { lenses: [[.455, .672], [.535, .668]], lr: .036, face: [.49, .66], swirl: [.52, .322], R: 200 };
+  vshot('V4.5', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 3.5]);
+    if (i === 0) {
+      const tilt = ease(clamp((b - 1.2) / 1)), wind = clamp((b - 1.3) / 2.1), [sx, sy] = shake(t, 9 * wind ** 2);
+      const v = still('vt_v4_5_kiri', { x: .5, y: lerp(.63, .365, tilt), z: lerp(1.35, 1.38, tilt) + .06 * wind ** 2 }, { dx: sx, dy: sy });
+      const lr = K5.lr * 864 * v.s;
+      lensFlash(K5.lenses.map(([u, w]) => v.pt(u, w)), lr, lr * .85, Math.sin(clamp((b - .4) / .9) * Math.PI));
+      // the swirl winds tighter and spins faster as the blow-up nears
+      const [cx, cy] = v.pt(...K5.swirl), R = K5.R * v.s * lerp(1, .35, wind ** 1.5), spin = -(t * 2 + wind ** 3 * 14);
+      if (wind > 0) {
+        vortex(cx, cy, R, lerp(3, 9, wind), spin, clamp(wind * 3));
+        addGlow(cx, cy, lerp(50, 260, wind ** 2), '#E8FAFF', clamp(wind * 1.5));
+      }
+      popLabel('Navier–Stokes', 540, Math.max(300, cy - K5.R * v.s - 60), 54, clamp((b - 1.6) / .3), { fill: '#FFFFFF', rot: -.05 });
+      openFlash(lt);
+    } else {
+      // BOOM: an impact frame, then the sooty aftermath, the smoke still billowing up the frame behind her
+      const [sx, sy] = shake(t, 26 * hit(bb, 1)), k = ease(clamp(bb / 3));
+      const v = still('vt_v4_5_boom', { x: .5, y: lerp(.53, .5, k), z: lerp(1.06, 1.12, k) * punch(bb, .1) }, { dx: sx, dy: sy });
+      for (let j = 0; j < 10; j++) {
+        const age = bb + hash2(55, j) * 2, kk = frac(age / 2.4);
+        ctx.save(); ctx.globalAlpha = .4 * Math.sin(kk * Math.PI);
+        blob(lerp(300, 780, hash2(56, j)) + Math.sin(kk * 3 + j) * 60, lerp(820, -100, kk), 130 + 110 * kk, 110 + 90 * kk, '#B9B4C8', 1);
+        ctx.restore();
+      }
+      if (bb < 1.3) burst(540, 640, 760, bb / 1.3, ['#FFFFFF', '#FFE070', '#FF9A4A']);
+      lensFlash(K5B.map(([u, w]) => v.pt(u, w)), 52 * v.s / 1.25, 46 * v.s / 1.25, Math.sin(clamp((bb - 1.6) / .8) * Math.PI));
+      popLabel('∞', 190, 330, 130, clamp((bb - .2) / .3), { fill: '#FFE070', font: 'rammetto', rot: -.1 });
+      stampMark('LEAN ✓', 590, 420, 124, clamp((bb - 1.1) / 1.1), { sub: 'PROOF CHECKED', col: '#1E9A55', rot: -.1 });
+      impactFrame(bb < .18 ? 1 : 0);
+      zoomBlur(hit(bb, .7));
+    }
+  });
+
+  // ---------- V4.6: the photo finish head-on, in slow motion: both runners hit the tape at once; the replay freezes, the line lights up
+  // along the tape, and the timestamps say the orange team posted at 11:59 PM and the black team twelve hours later; the clock spins round ----------
+  const FIN6 = { tape: .44, orange: [.29, .31], black: [.71, .31] };
+  vshot('V4.6', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), frz = b > 2.6, bf = frz ? 2.6 : b, k = ease(clamp((bf + .2) / 2.8));
+    const v = still('vt_v4_6_finish', { x: .5, y: lerp(.47, .45, k), z: lerp(1.0, 1.1, k) });
+    grade('#28306A', .28, 'multiply');
+    if (!frz) speedLines(540, 900, t * .25, { n: 60, r0: 520, a: .22 });
+    // the replay HUD: a REC dot and a slow-motion tag, then PHOTO FINISH
+    if (Math.floor(t * 2) % 2 === 0) fillP(ellPath(96, 300, 18, 18), '#FF3D5A');
+    txt(frz ? 'PHOTO FINISH' : 'REPLAY  ×0.1', 132, 302, 50, '#FFFFFF', { font: 'archivo', align: 'left', stroke: 'rgb(20 16 50 / .7)', sw: 9 });
+    if (frz) {
+      const fb = b - 2.6, [, ty] = v.pt(.5, FIN6.tape), lk = clamp(fb / .4);
+      grade('#0A0F30', .2, 'multiply');
+      // the finish line lights up along the tape, from the middle out
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = 'rgb(255 255 255 / .35)'; ctx.fillRect(540 - 540 * lk, ty - 9, 1080 * lk, 18); ctx.restore();
+      ctx.fillStyle = '#FFFFFF'; ctx.fillRect(540 - 540 * lk, ty - 3, 1080 * lk, 6);
+      const [ox, oy] = v.pt(...FIN6.orange), [kx, ky] = v.pt(...FIN6.black);
+      popLabel('NYU + Anthropic', ox, oy - 150, 44, clamp((fb - .3) / .3), { fill: '#FFB070', rot: -.04 });
+      popLabel('SEP 7 · 11:59 PM', ox, oy - 78, 34, clamp((fb - .5) / .3), { fill: '#FFFFFF', rot: -.04 });
+      popLabel('OpenAI', kx, ky - 150, 44, clamp((fb - .7) / .3), { fill: '#FFFFFF', rot: .04 });
+      popLabel(fb < 3 ? '…' : '12 HOURS LATER', kx, ky - 78, 34, clamp((fb - .9) / .3), { fill: '#FFE070', rot: .04 });
+      // the clock in the sky spins round the twelve hours between them
+      if (fb > 1) clockFace(875, 335, 82, 11 + 59 / 60 + 12 * ease(clamp((fb - 1.2) / 1.8)), { col: '#FF9A4A' });
+      if (fb < .3) flash(.7 * (1 - fb / .3));
+    }
+    openFlash(lt);
+  });
+
+  // ---------- V4.7: the curly-haired CEO holds up a tall metronome: the whole frame ticks and tocks with its needle, tick, tock; Clawd
+  // nods along in the corner ----------
+  const D7 = { pivot: [.493, .67], tip: [.49, .41] };
+  vshot('V4.7', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 7.5)), sw = Math.sin(b * Math.PI) * .018;
+    // (lowered a little for headroom, the stage wall carried on above the picture)
+    const v = still('vt_v4_7_dario', { x: .5, y: lerp(.5, .47, k), z: lerp(1.04, 1.1, k), r: sw }, { free: true, dy: 90 });
+    stillEdge('vt_v4_7_dario', v, [0, 0, W, H], 0);
+    // the needle swishes left and right on the beats (motion marks round its tip), tick, tock
+    const [px, py] = v.pt(...D7.pivot), [nx, ny] = v.pt(...D7.tip), len = Math.hypot(nx - px, ny - py);
+    const side = Math.floor(b + .5) % 2 ? 1 : -1, bt = frac(b + .5);
+    if (bt < .5) {
+      ctx.save(); ctx.strokeStyle = 'rgb(255 255 255 / .9)'; ctx.lineWidth = 7; ctx.lineCap = 'round';
+      for (let j = 0; j < 3; j++) { ctx.beginPath(); ctx.arc(px, py, len * (.9 + j * .1), -Math.PI / 2 + side * .12, -Math.PI / 2 + side * (.38 + j * .04), side < 0); ctx.stroke(); }
+      ctx.restore();
+    }
+    popLabel(side < 0 ? 'tick' : 'tock', nx + side * 230, ny + 40, 56, bt < .6 ? 1 : 0, { fill: '#FFFFFF', rot: side * .15 });
+    nameTag('DARIO', 'Anthropic CEO', 70, 330, clamp((b - .4) / .5), AP.clawd);
+    // Clawd nods along on the beat in the corner
+    const nod = Math.sin(b * Math.PI);
+    cut('clawd_stand', 860, 1150, 220, { rot: nod * .1, sq: .04 * Math.abs(nod), shadow: true });
+    openFlash(lt);
+  });
+
+  // ---------- V4.8: two tall strips side by side, Sam's and Elon's: each says it, glass raised; then each strip's camera climbs to the
+  // glass, the strips slide together, the divider melts and the glasses clink over the seam; Clawd jumps up in shock ----------
+  // (each glass sits at its own height in its picture: on the clink both strips pull back to the picture's whole height and Sam's
+  // slides up, so the glasses meet; the edge it uncovers is filled with the picture's own bottom row stretched, his sweater, under the
+  // Reels interface)
+  const SAM8V = { face: [.5, .36], mouth: [.5, .41], glass: [.82, .3], dy: -306 }, ELON8V = { face: [.58, .36], mouth: [.58, .43], glass: [.25, .14], dy: 0 };
+  function edgeFill(name, v, rect, edge) {
+    const I = STILLS[name], B = IMGS[name]; if (!I || !B) return;
+    const ky = B.height / I.h, [x0, y0] = v.pt(0, edge), [x1] = v.pt(1, edge);
+    ctx.save(); ctx.beginPath(); ctx.rect(...rect); ctx.clip();
+    if (edge) { if (y0 < rect[1] + rect[3]) ctx.drawImage(B, 0, B.height - 2 * ky, B.width, 2 * ky, x0, y0 - 1, x1 - x0, rect[1] + rect[3] - y0 + 1); }
+    else if (y0 > rect[1]) ctx.drawImage(B, 0, 0, B.width, 2 * ky, x0, rect[1], x1 - x0, y0 - rect[1] + 1);
+    ctx.restore();
+  }
+  vshot('V4.8', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), half = W / 2;
+    const sin_ = easeOut(clamp((b + .2) / .4)), ein = easeOut(clamp((b - .9) / .4)), pan = ease(clamp((b - 4.2) / 1.1)), close = ease(clamp((b - 5) / .6));
+    // a strip's framing: on the face; then pulled back to the picture's whole height, the glass near the seam
+    const frame = (S, side) => { const z = lerp(1.04, 1, pan), hw = .25 / z, gx = S.glass[0] - side * 120 / (1080 * z); return { x: clamp(lerp(S.face[0], gx, pan), hw, 1 - hw), y: .52, z }; };
+    const rs = [(sin_ - 1) * half, 0, half, H], re = [half + (1 - ein) * half, 0, half, H];
+    const vs = still('vt_v4_8_sam', frame(SAM8V, 1), { rect: rs, dx: close * 28, dy: SAM8V.dy * pan });
+    edgeFill('vt_v4_8_sam', vs, rs, 1);
+    let ve = null;
+    if (ein > 0) ve = still('vt_v4_8_elon', frame(ELON8V, -1), { rect: re, dx: -close * 28 });
+    else { ctx.fillStyle = '#3A1020'; ctx.fillRect(half, 0, half, H); }
+    ctx.save(); ctx.globalAlpha = 1 - close; ctx.fillStyle = '#FFFFFF'; ctx.fillRect(half - 6, 0, 12, H); ctx.restore();
+    if (pan < .3) {
+      const fade = 1 - pan * 3.3;
+      nameTag('SAM', 'OpenAI CEO', 50, 330, clamp((b - .2) / .5) * fade, '#8A6BD8');
+      if (ve) nameTag('ELON', 'xAI', 600, 330, clamp((b - 1.2) / .5) * fade, '#2A2440');
+      const [smx, smy] = vs.pt(...SAM8V.mouth);
+      sayBubble('Hear, hear!', 275, 920, 50, clamp((b - .3) / .9) * fade, smx, smy + 20);
+      if (ve) { const [emx, emy] = ve.pt(...ELON8V.mouth); sayBubble('Hear, hear!', 805, 960, 50, clamp((b - 1.5) / .9) * fade, emx, emy + 20); }
+    }
+    const clink = b - 5.6;
+    if (clink > 0 && ve) {
+      const [ax, ay] = vs.pt(...SAM8V.glass), [bx_, by_] = ve.pt(...ELON8V.glass);
+      burst((ax + bx_) / 2, (ay + by_) / 2 - 80, 440, clamp(clink / 1.2), ['#FFFFFF', '#FFE070', '#B8F0FF']);
+      sparkleField(t, { n: 22, r: 28, seed: 58, x0: 200, x1: 880, y0: 250, y1: 900 });
+    }
+    // Clawd jumps up into the frame in shock
+    const ck = easeOut(clamp((b - 7) / .35));
+    if (ck > 0) cut('v4_14_clawd', 540, H + 80 - ck * 820, 400, { rot: -.06 });
+    openFlash(lt, .5);
+  });
+
+  // ---------- V4.9: the phone is the frame: the president's post fills it, typing in, and Akari reacts in a reaction-cam window, one
+  // eyebrow way up; then the mountain road: he stands in the guardrail's gap, arms spread, and a little robot car bonks his shin ----------
+  // the tall road plate's guardrail gap (its centre u, the rail beam's v)
+  const RAIL9V = { gap: .535, beam: .565, lamp: [.87, .37], z: 1.45 };
+  const POST9 = ['the only control', 'or "guardrails"', 'that AI needs is', 'a STRONG AND', 'SMART (High IQ!)', 'PRESIDENT.'];
+  function phonePost(t, k) {
+    ctx.fillStyle = linGrad(0, 0, 0, H, [[0, '#14172A'], [1, '#0A0C18']]); ctx.fillRect(0, 0, W, H);
+    // the app's bar under the status bar
+    txt('9:41', 90, 258, 34, '#C8CCE0', { font: 'archivo', align: 'left' });
+    txt('●●●  ▮', 990, 258, 26, '#C8CCE0', { font: 'archivo', align: 'right' });
+    ctx.fillStyle = '#5A3FD0'; ctx.fillRect(0, 300, W, 4);
+    // the post: avatar, name, handle, and the text typing on
+    const x0 = 70, y0 = 340, e = easeOut(clamp(k * 3));
+    ctx.save(); ctx.globalAlpha *= e; ctx.translate(0, (1 - e) * 60);
+    fillP(ellPath(x0 + 58, y0 + 62, 56, 56), '#E8B04A'); fillP(ellPath(x0 + 58, y0 + 50, 22, 22), '#FFF0C8'); fillP(ellPath(x0 + 58, y0 + 98, 38, 22), '#FFF0C8');
+    txt('Donald J. Trump', x0 + 140, y0 + 44, 46, '#FFFFFF', { font: 'archivo', align: 'left' });
+    txt('@realDonaldTrump', x0 + 142, y0 + 92, 30, '#8A90B0', { font: 'code', align: 'left' });
+    const all = POST9.join('\n'), n = Math.ceil(all.length * clamp((k - .15) / .75)); let used = 0;
+    POST9.forEach((l, j) => {
+      const s = l.slice(0, Math.max(0, n - used)); used += l.length + 1;
+      txt(s, x0, y0 + 210 + j * 80, 58, j >= 3 ? '#FFFFFF' : '#E4E6F4', { font: 'archivo', align: 'left' });
+    });
+    ctx.restore();
+  }
+  vshot('V4.9', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 4]);
+    if (i === 0) {
+      phonePost(t, clamp((b - .3) / 1.7));
+      // the reaction cam pops up over the bottom of the post: Akari reading it, one eyebrow going up
+      const rk = backOut(clamp((b - 1.5) / .35), 1.8);
+      if (rk > 0) {
+        const rw = 340 * rk, rh = 420 * rk, cx = 815, cy = 920, rect = [cx - rw / 2, cy - rh / 2, rw, rh];
+        ctx.save(); ctx.fillStyle = 'rgb(0 0 0 / .4)'; ctx.fill(rrPath(rect[0] + 10, rect[1] + 14, rw, rh, 36)); ctx.restore();
+        ctx.save(); ctx.beginPath(); ctx.roundRect(...rect, 36); ctx.clip();
+        still('vt_v4_9_akari', { x: .56, y: .36, z: 2.0 }, { rect });
+        ctx.restore();
+        ctx.save(); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 8; ctx.stroke(rrPath(...rect, 36)); ctx.restore();
+        popLabel('?!', cx - rw * .3, cy - rh * .42, 64, clamp((b - 2.4) / .25), { fill: '#FFE070', rot: .12 });
+      }
+      openFlash(lt);
+    } else {
+      // the car rolls in from the right and bonks his shin on the beat; after the bonk the camera eases in toward his face
+      const bonk = bb - 1, h = hit(bonk, .5), [sx, sy] = shake(t, 14 * h), k = ease(clamp((bb - 1.2) / 3.3));
+      // (big in the frame, his feet low, so the car rolls in and bonks him below the lyric block)
+      const th = 1250, railY = 877, gx = 540, top = railY - TRUMP9.hands * th, T = STILLS.v4_9_tcut, fx = gx, fy = top + TRUMP9.mouth[1] * th;
+      const zz = lerp(1, 1.22, k) * punch(bonk, .04);
+      ctx.save(); ctx.translate(fx + sx, fy + sy); ctx.scale(zz, zz); ctx.translate(-fx, -fy);
+      const v = still('vt_v4_9_road', { x: RAIL9V.gap, y: RAIL9V.beam + (960 - railY) / (1920 * RAIL9V.z), z: RAIL9V.z });
+      { const [lx, ly] = v.pt(...RAIL9V.lamp); addGlow(lx, ly, 280, '#FFE6B0', .45); }
+      // the car: side-on, a little in front of him, it drives in (easing up to speed), bonks his right shin, bounces back and sits there, dazed
+      const shx = gx + (1 - TRUMP9.shin[0] - .5) * th * T.w / T.h, ch = 150, cl = ch * 466 / 283, cy = top + th * .97;
+      const cx = bonk < 0 ? lerp(W + cl, shx + cl / 2 - 6, easeIn(clamp(bb))) : shx + cl / 2 - 6 + 50 * Math.sin(clamp(bonk / .5) * Math.PI / 2);
+      const wob = Math.sin(bonk * 14) * .02 * hit(bonk, .8), tr = cut('v4_9_tcut', gx, top + th, th, { rot: wob, sq: .03 * h });
+      cut('v4_9_car', cx, cy, ch, { flip: true, rot: bonk < 0 ? Math.sin(t * 16) * .02 : .12 * hit(bonk, .4), shadow: .3 });
+      // one night grade over the plate and both cut-outs so they share the light, then the snow
+      grade('#28306A', .3, 'multiply');
+      snow(t, { n: 60, seed: 59 });
+      if (bonk > 0 && bonk < 1.2) burst(shx, cy - ch * .55, 260, bonk / 1.2, ['#FFFFFF', '#FFE070', '#FF9A4A']);
+      popLabel('bonk!', shx + 260, cy - ch * .4, 56, bonk > 0 && bonk < 1.6 ? 1 : 0, { fill: '#FFFFFF', rot: .1 });
+      if (bonk > .3) for (let j = 0; j < 3; j++) { const a = t * 5 + j * TAU / 3; starShape(cx + Math.cos(a) * ch * .45, cy - ch * 1.05 + Math.sin(a) * ch * .12, 18, '#FFE070', .5, 5); }
+      ctx.restore();
+      const [mx, my] = [fx + sx, fy + sy];
+      sayBubble('HIGH IQ!', 560, 300, 76, clamp((bonk - .3) / .8), mx + 20, my - 30);
+      cutFlash(bb, .7);
+    }
+  });
+
+  // ---------- V4.10: the mittened senator and the double-collared strategist sit stiffly on one pew under the assembly's banner, and
+  // scoot an inch apart on every other beat ----------
+  const PEW10 = { seat: [.5, .76] };
+  vshot('V4.10', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), k = ease(clamp(b / 6.5));
+    const v = still('vt_v4_10_pew', { x: .5, y: .56, z: lerp(1.1, 1.14, k) });
+    // the assembly's banner hangs across the top of the ballroom, its name on two lines
+    const bk = easeOut(clamp((b + .1) / .6));
+    ctx.save(); ctx.translate(540, -200 + bk * 540); ctx.rotate(-.015);
+    ctx.fillStyle = 'rgb(40 10 20 / .3)'; ctx.fillRect(-400 + 10, -110 + 12, 800, 220);
+    ctx.fillStyle = '#8E1F32'; ctx.fillRect(-400, -110, 800, 220); ctx.strokeStyle = '#F2C45A'; ctx.lineWidth = 7; ctx.strokeRect(-386, -96, 772, 192);
+    txt('PRO-HUMAN', 0, -40, 80, '#FFE3A0', { font: 'archivo', spacing: 4 });
+    txt('ASSEMBLY', 0, 50, 80, '#FFE3A0', { font: 'archivo', spacing: 8 });
+    ctx.restore();
+    // an inch apart on every other beat (each scoot eased over a quarter beat)
+    const scoot = [1.5, 3, 4.5].reduce((a, s) => a + easeOut(clamp((b - s) / .25)), 0), gap = 34 * scoot;
+    const [cx, sy] = v.pt(...PEW10.seat), stiff = Math.sin(b * Math.PI * 2) * .004;
+    cut('v4_10_bernie', cx - 245 - gap, sy + 8, 700, { anchor: [.5, .9], rot: -stiff });
+    cut('v4_10_bannon', cx + 245 + gap, sy, 850, { anchor: [.5, .74], rot: stiff });
+    for (const s of [1.5, 3, 4.5]) popLabel('scoot', cx, sy - 420 - (s - 1.5) * 60, 50, b > s && b < s + 1 ? 1 : 0, { fill: '#FFFFFF', rot: (s - 3) * .08 });
+    nameTag('BERNIE', 'senator', 60, 590, clamp((b - .4) / .5), '#3D7BE0');
+    nameTag('BANNON', 'strategist', 590, 590, clamp((b - .9) / .5), '#E2334A');
+    openFlash(lt);
+  });
+
+  // ---------- V4.11: Claude builds Claude: a tower up the whole frame, each Clawd built on the head of the last, a little smaller each
+  // time, sparks flying from the builder's wrench, the camera climbing with it from the bench to the window; the pie of AI R&D led by
+  // Claude fills to 26 % beside it; Kiri slides in to supervise ----------
+  const BENCH11 = { top: .62, x: .37 };
+  vshot('V4.11', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), up = ease(clamp((b - .8) / 5.6));
+    // (pushed in to 1.3 so the camera can climb: the bench top starts mid-frame and ends just above the lyric block, the tower
+    // reaching the top of the window)
+    const v = still('vt_v4_11_bench', { x: .5, y: lerp(.62, .475, up), z: 1.3 + .02 * clamp(b / 8.5) });
+    const [gx, gy] = v.pt(BENCH11.x, BENCH11.top);
+    // each Clawd stands on the last one's head, .72 its size, popping in on the beats with a spark from the builder's wrench
+    let y = gy, h = 400;
+    for (let j = 0; j < 6; j++) {
+      const bj = b - .5 - j * 1.05, pk = j ? backOut(clamp(bj / .35), 2.4) : 1;
+      if (pk <= 0) break;
+      const bob = Math.abs(Math.sin((b + j * .5) * Math.PI)) * h * .04;
+      const c = cut('v4_11_clawd', gx + Math.sin(j * 2.1) * h * .1, y - bob, h * pk, { shadow: .25, flip: j % 2 === 1, rot: .04 * Math.sin((b + j) * Math.PI) });
+      const nb = b - .5 - (j + 1) * 1.05;
+      if (j < 5 && nb > -.3 && nb < .7) { const [wx, wy] = c.pt(j % 2 ? .9 : .1, .2); sparks(wx, wy, t, { r: h * .2, n: 8 }); }
+      // the next one stands on this one's head (a little into the top of the box, so it sits on it)
+      y = y - bob - h * pk * .93; h *= .72;
+    }
+    // the pie: the share of Anthropic's AI R&D that Claude leads, stepping up on the beats from under 1 % (FEB) to 26 % (AUG)
+    const st = clamp(Math.floor(b - .5), 0, 4), f = [.006, .07, .14, .2, .26][st], done = st === 4, px = 800, py = 470;
+    pie(px, py, 150 * (1 + .05 * pulse(t, 5)), f, {});
+    txt(done ? '26%' : st === 0 ? '<1%' : '', px, py, 80, '#2A2350', { font: 'rammetto', stroke: '#FFFFFF', sw: 10 });
+    popLabel(done ? 'AUG' : 'FEB', px, py - 200, 40, st === 0 ? clamp((b - .3) / .3) : done ? 1 : 0, { fill: '#FFFFFF' });
+    popLabel('AI R&D led by Claude', 760, py + 225, 40, clamp((b - .3) / .3), { fill: '#FFE070' });
+    // the supervisor, from the lower right (her waist off the bottom of the frame)
+    const sk = easeOut(clamp((b - 5.4) / .5));
+    if (sk > 0) {
+      cut('card_kiri', W + 350 - sk * 500, H + 60, 1000, { anchor: [.5, 1] });
+      popLabel('supervised ✓', 830, 900, 52, clamp((b - 6) / .3), { fill: '#C8F5D8', col: '#1E7A45', rot: -.06 });
+    }
+    openFlash(lt);
+  });
+
+  // ---------- V4.12: the war-room map seen from above, tall: the little chatbot flags a toy cargo ship (wrongly), the alarm pulses red,
+  // the planes stream up the frame toward the ship; WRONG, caught in time; then Akari deflates with a giant sigh ----------
+  const MAP12 = { ship: [.55, .54], lamp: [.3, .05], bot: [.56, .36] }, PHEW12 = [.55, .345];
+  vshot('V4.12', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 5]);
+    if (i === 0) {
+      const k = ease(clamp((b + .2) / 5.2)), alarm = b > .8 && b < 4.2 ? pulse(t, 4) : 0;
+      const v = still('vt_v4_12_map', { x: lerp(.5, MAP12.ship[0], k), y: lerp(.55, .584, k), z: lerp(1.04, 1.18, k) });
+      grade('#FF2A3A', .2 * alarm, 'screen');
+      { const [ax, ay] = v.pt(...MAP12.lamp); addGlow(ax, Math.max(ay, 60), 340, '#FF3040', .35 + .5 * alarm); }
+      const [shx, shy] = v.pt(...MAP12.ship), [rx, ry] = v.pt(...MAP12.bot);
+      // the chatbot's report, from the robot pointing at the ship
+      sayBubble('⚠ NUCLEAR PARTS?!', 540, 330, 60, clamp((b - .6) / .8), rx - 20, ry - 60, { col: '#B01830' });
+      // the planes launch from the bottom of the frame and stream up toward the ship
+      for (let j = 0; j < 3; j++) {
+        const pk = clamp((b - 2 - j * .4) / 1.4);
+        if (pk > 0 && b < 4.1) { const e = easeOut(pk), x = lerp(200 + j * 340, shx - 200 + j * 200, e), y = lerp(H + 80, shy + 220, e); txt('✈', x, y, 190, '#FFFFFF', { font: 'archivo', rot: -Math.PI / 2 + (x - shx) / 900, stroke: '#2A2350', sw: 14 }); }
+      }
+      stampMark('WRONG', shx, shy, 140, clamp((b - 3.9) / 1.1), { sub: 'CAUGHT IN TIME', rot: -.12 });
+      openFlash(lt);
+    } else {
+      // the whole room exhales: a slow settle outward, sigh puffs drifting off her
+      const k = ease(clamp(bb / 3.5)), v = still('vt_v4_12_phew', { x: .5, y: lerp(.42, .46, k), z: lerp(1.16, 1.04, easeOut(clamp(bb / 1.5))) });
+      const [mx, my] = v.pt(...PHEW12);
+      for (let j = 0; j < 4; j++) { const a = frac((bb - .2) / 1.6 + j * .25); if (bb > .2) { ctx.save(); ctx.globalAlpha = .8 * Math.sin(a * Math.PI); blob(mx + 120 + a * 300, my - a * 200 + Math.sin(a * 6 + j) * 20, 56 + a * 60, 40 + a * 40, '#FFFFFF', .9); ctx.restore(); } }
+      popLabel('phew…', 770, 330, 72, clamp((bb - .4) / .3), { fill: '#FFFFFF', rot: -.08 });
+      cutFlash(bb, .6);
+    }
+  });
+
+  // ---------- V4.13: the president holds up his decree, SUPER, to the press cameras; then a manga page: the club salutes, confused, above
+  // the club's own label, ARTIFICIAL / INTELLIGENCE stacked on the wall, as a red SUPER sticker slaps over its first word ----------
+  // a label-maker tape centred on (x, y) (labelTape draws from its centre too); the sticker that slaps over it, as the horizontal does
+  // the decree's blank page in the tall still (its corners, measured on the still's page), printed as the horizontal's
+  const DECREE_V = { tl: [.748, .483], tr: [.95, .523], bl: [.615, .692], w: 270, h: 497 };
+  function superSticker(x, y, sz, w, k) {
+    if (k <= 0) return;
+    const sc = lerp(1.8, 1, easeIn(clamp(k))), hh = sz * 1.9;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(-.04); ctx.scale(sc, sc); ctx.globalAlpha *= clamp(k * 2);
+    ctx.fillStyle = 'rgb(20 16 40 / .35)'; ctx.fillRect(-w / 2 + 8, -hh / 2 + 10, w, hh);
+    ctx.fillStyle = '#E2334A'; ctx.fillRect(-w / 2, -hh / 2, w, hh); ctx.fillStyle = 'rgb(255 255 255 / .18)'; ctx.fillRect(-w / 2, -hh / 2, w, hh * .3);
+    txt('SUPER', 0, 3, sz * 1.3, '#FFFFFF', { font: 'archivo', spacing: sz * .12, shadow: [0, 3], shadowCol: 'rgb(0 0 0 / .35)' });
+    ctx.restore();
+  }
+  vshot('V4.13', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 5]);
+    if (i === 0) {
+      // (the tall still is a Nano Banana recomposition of the horizontal pick, the same face; its folder held at his chest)
+      const k = ease(clamp((b + .2) / 5.2));
+      const v = still('vt_v4_13_trump', { x: lerp(.56, .6, k), y: lerp(.55, .6, k), z: lerp(1.15, 1.25, k) });
+      const ink = '#1C1A22', gl = hit(b - 2.5, .6);
+      onQuad(v, DECREE_V, () => {
+        txt('DECREE', 135, 78, 26, ink, { font: 'abril', spacing: 4, maxW: 200 });
+        ctx.fillStyle = ink; ctx.fillRect(40, 97, 190, 2);
+        txt('SUPER', 135, 178, 72 * (1 + .05 * gl), '#B01E30', { font: 'archivo', maxW: 224 });
+        txt('INTELLIGENCE', 135, 232, 20, ink, { font: 'archivo', spacing: 3, maxW: 200 });
+        ctx.fillStyle = 'rgb(90 86 100 / .45)'; for (let j = 0; j < 6; j++) ctx.fillRect(40, 268 + j * 14, j === 5 ? 110 : 190, 5);
+        ctx.strokeStyle = '#111018'; ctx.lineWidth = 4.5; ctx.lineJoin = 'miter'; ctx.lineCap = 'round'; ctx.beginPath();
+        for (let j = 0; j <= 22; j++) { const x = 52 + j * 7.5, y = 385 + (j % 2 ? -26 : 14) * (.7 + .3 * hash2(131, j)); j ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+        ctx.stroke();
+      });
+      const [sx, sy] = v.pt(.86, .5);
+      if (gl > .05) sparkle(sx + 40, sy - 60, 80 * gl, 1);
+      // the press pool's flashbulbs pop on the beats, one per beat from the edges of the frame
+      for (let j = 1; j <= 5; j++) {
+        const f = hit(b - j + .02, .25); if (f < .03) continue;
+        const x = [150, 940, 200, 900, 110][j - 1], y = [330, 560, 900, 260, 640][j - 1];
+        addGlow(x, y, 420, '#FFFFFF', .7 * f); sparkle(x, y, 100 * f, 1); flash(.12 * f);
+      }
+      openFlash(lt);
+    } else {
+      const [sx, sy] = shake(t, 10 * hit(bb - .5, .4)), slap = clamp((bb - .4) / .25);
+      mangaPage([[0, 0, W, 590], [0, 606, W, 700], [0, 1322, W, 640]], (j, rect) => {
+        if (j === 0) {
+          // the club's wall, its label big; the sticker slaps over the first word
+          still('club_room', { x: .62, y: .3, z: 1.0 }, { rect });
+          grade('#26306A', .55, 'multiply');
+          const sz = 84, sp = sz * .12, wA = textW('ARTIFICIAL', sz, 'archivo', sp) + sz * 1.2;
+          labelTape('ARTIFICIAL', 540, 330, sz, 1, { rot: -.02, col: '#3D6FD0' });
+          labelTape('INTELLIGENCE', 540, 458, sz, 1, { rot: .015, col: '#3D6FD0' });
+          superSticker(540 + sx * .5, 328 + sy * .5, sz, wA - sz * .3, slap);
+          if (slap >= 1 && bb < 1.3) burst(540, 328, 340, (bb - .65) / .65, ['#FFFFFF', '#FFE070', '#FF8FB8']);
+        } else if (j === 1) {
+          // the club salutes, confused; a ? pops beside each head, one per beat after the sticker lands
+          const v = still('v1_15_salute', { x: .5, y: .5, z: 1.0 }, { rect, dx: sx, dy: sy });
+          grade('#34407A', .38, 'multiply'); grade('#8FA8FF', .12, 'screen');
+          [[.38, .1], [.63, .08], [.9, .08]].forEach(([u, w], q) => popLabel('?', ...v.pt(u, w), 64, clamp((bb - 1.4 - q * .7) / .25), { fill: '#FFFFFF', rot: (q - 1) * .2 }));
+        } else {
+          // the winter night outside, under the lyric block, and Clawd in the snow below it saluting too, a beat behind the others
+          ctx.fillStyle = linGrad(0, rect[1], 0, H, [[0, '#2A3270'], [1, '#141838']]); ctx.fillRect(...rect);
+          ctx.fillStyle = linGrad(0, 1800, 0, H, [[0, '#C8D4F4'], [1, '#9AA8DA']]); ctx.beginPath(); ctx.ellipse(540, 1980, 900, 200, 0, 0, TAU); ctx.fill();
+          const ck = backOut(clamp((bb - 2.2) / .35), 2), q = clamp((bb - 3.4) / .25);
+          if (ck > 0) cut('clawd_stand', 700, 1890 + (1 - ck) * 300, 300, { rot: -.06, sq: .03 * pulse(t), shadow: .3 });
+          if (q > 0) popLabel('?', 900, 1640, 64, q, { fill: '#FFFFFF', rot: .2 });
+        }
+        snow(t, { n: 40, seed: 46 + j, alpha: .6 });
+      });
+      cutFlash(bb, .7);
+    }
+  });
+
+  // ---------- V4.14: Clawd's ARTIFICIAL name sticker gets stamped FAKE? (he jumps back in shock), then flips over: actually amazing! ----------
+  vshot('V4.14', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg);
+    diagSplit('#26306A', '#3E4C9E', t, { a: .3, speed: 160 });
+    snow(t, { n: 70, seed: 48, alpha: .7 });
+    // (he stands on a snowbank low in the frame, his sticker clear of the date card; amazed, he jumps high up the frame)
+    ctx.fillStyle = linGrad(0, 1440, 0, H, [[0, '#DCE4FA'], [1, '#9AA8DA']]); ctx.beginPath(); ctx.ellipse(540, 2150, 1150, 780, 0, 0, TAU); ctx.fill();
+    const stage = b < 1 ? 0 : b < 3 ? 1 : 2, bb = b - [0, 1, 3][stage];
+    const hop = stage === 2 ? Math.abs(Math.sin(bb * Math.PI)) * 260 : 0, [sx, sy] = shake(t, stage === 1 ? 18 * hit(bb, .6) : 0);
+    const c = cut(['clawd_stand', 'v4_14_clawd', 'clawd_jump'][stage], 580 + sx, 1400 - hop + sy, 700, { shadow: true, sq: stage === 2 ? .06 * Math.cos(bb * TAU) : 0 });
+    // the sticker on his front, big enough to read on a phone
+    const [px, py] = c.pt(.5, .62), flip = clamp((b - 3) / .35), sc = Math.abs(Math.cos(flip * Math.PI));
+    ctx.save(); ctx.translate(px, py); ctx.rotate(-.05); ctx.scale(1, Math.max(.02, sc));
+    const back = flip > .5, lab = back ? 'actually amazing!' : 'ARTIFICIAL', fs = 58, tw = textW(lab, fs, 'archivo') + 64;
+    ctx.fillStyle = back ? '#FFE070' : '#FFFFFF'; ctx.fill(rrPath(-tw / 2, -52, tw, 104, 18)); ctx.strokeStyle = '#2A2350'; ctx.lineWidth = 6; ctx.stroke(rrPath(-tw / 2, -52, tw, 104, 18));
+    txt(lab, 0, 3, fs, '#2A2350', { font: 'archivo' });
+    ctx.restore();
+    if (stage === 1) stampMark('FAKE?', px + 90, py - 100, 116, clamp(bb / .6), { rot: -.2 });
+    if (stage === 2) sparkleField(t, { n: 16, r: 30, seed: 49, x0: 80, x1: 1000, y0: py - 640, y1: py + 80 });
+    openFlash(lt);
+  });
+
+  // ---------- V4.15: at dawn the two gift boxes pop 90 minutes apart beside the ticking metronome, streamers shooting up the frame; the
+  // clock on the wall above them runs the 90 minutes; then Kiri bursts out laughing at the dawn window ----------
+  // (the boxes sit low in the tall still: the shot frames past its bottom edge, its floor carried on below, so the pops land above the
+  // lyric block)
+  const GIFT15 = { a: [.25, .56], b: [.74, .62], needle: [.5, .62], floor: ['#67709D', '#4E5683'] }, KIRI15V = { lenses: [[.368, .485], [.602, .475]], r: .072 };
+  vshot('V4.15', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 5]);
+    if (i === 0) {
+      const sw = Math.sin(b * Math.PI) * .006, pop1 = b - .8, pop2 = b - 2.8, [sx, sy] = shake(t, 10 * (hit(pop1, .4) + hit(pop2, .4)));
+      const z = 1.04 * punch(pop1, .04) * punch(pop2, .04);
+      // (low in the frame, the table top just above the date card, so the streamers and confetti shooting out of the boxes have the
+      // whole window above them to fly through)
+      const v = still('vt_v4_15_gifts', { x: .5, y: .65, z, r: sw }, { free: true, dx: sx, dy: sy });
+      stillEdge('vt_v4_15_gifts', v, [0, 0, W, H], 1, 8);
+      const [ax, ay] = v.pt(...GIFT15.a), [bx_, by_] = v.pt(...GIFT15.b);
+      if (pop1 > 0 && pop1 < 1.2) burst(ax, ay, 420, pop1 / 1.2, ['#FFFFFF', '#FFB070', '#FFE070']);
+      if (pop2 > 0 && pop2 < 1.2) burst(bx_, by_, 420, pop2 / 1.2, ['#FFFFFF', '#B8C8FF', '#FFE070']);
+      popLabel('Claude Opus 5.5', 300, 720, 44, clamp(pop1 / .3), { fill: '#FFD8B8', rot: -.06 });
+      popLabel('GPT-6 Sol & Luna', 790, 885, 44, clamp(pop2 / .3), { fill: '#FFFFFF', rot: .06 });
+      // the clock high in the window runs 90 minutes from the first pop to the second
+      if (pop1 > 0) { clockFace(540, 430, 96, 9 + 1.5 * ease(clamp(pop1 / 2)), { col: '#FF9A4A' }); popLabel('+90 min', 540, 565, 42, clamp((pop1 - 1.6) / .3), { fill: '#FFE070' }); }
+      // the metronome keeps ticking through the party
+      { const [nx, ny] = v.pt(...GIFT15.needle), side = Math.floor(b + .5) % 2 ? 1 : -1; if (frac(b + .5) < .45) popLabel(side < 0 ? 'tick' : 'tock', nx + side * 55, ny - 55, 34, 1, { fill: '#FFFFFF', rot: side * .15 }); }
+      if (pop1 > 0) confetti(t, { n: 70, seed: 65, t0: t - pop1 * beatLen() });
+      leak(.35, { side: 'right', col: '#FFB0A0' });
+      openFlash(lt);
+    } else {
+      const k = ease(clamp(bb / 4.5)), v = still('vt_v4_15_kiri', { x: .49, y: lerp(.52, .56, k), z: lerp(1.04, 1.16, k) });
+      const r = KIRI15V.r * 864 * v.s;
+      lensFlash(KIRI15V.lenses.map(([u, w]) => v.pt(u, w)), r, r * .9, Math.sin(clamp((bb - .3) / 1) * Math.PI));
+      confetti(t, { n: 60, seed: 66 });
+      leak(.4 + .1 * Math.sin(t * 2), { side: 'right', col: '#FFC8A8' });
+      cutFlash(bb, .7);
+    }
+  });
+
+  // ---------- V4.16: at dawn a shiny new Clawd peeks round the tall door and waves: "Hi, guys!"; the cast turns in one freeze frame, the
+  // first sunbeam, and a white flash into the key change ----------
+  const DOOR16 = { box: [[.21, .385], [.66, .625]], badge: [.58, .575], face: [.47, .45] };
+  vshot('V4.16', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg), [i, bb] = cuts(b, [-1, 5]);
+    if (i === 0) {
+      const k = ease(clamp((b + .2) / 5.2)), v = still('vt_v4_16_door', { x: lerp(.5, .47, k), y: lerp(.515, .56, k), z: lerp(1.03, 1.14, k) });
+      // a sheen sweeps across the brand-new model, then its badge pops on
+      const [x0, y0] = v.pt(...DOOR16.box[0]), [x1, y1] = v.pt(...DOOR16.box[1]), sh = clamp((b - .1) / .9);
+      if (sh > 0 && sh < 1) {
+        ctx.save(); ctx.beginPath(); ctx.roundRect(x0, y0, x1 - x0, y1 - y0, 40); ctx.clip();
+        ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = Math.sin(sh * Math.PI) * .55;
+        const sx = lerp(x0 - 300, x1 + 300, sh); ctx.fillStyle = linGrad(sx - 160, y0, sx + 160, y1, [[0, 'rgb(255 255 255 / 0)'], [.5, '#FFFFFF'], [1, 'rgb(255 255 255 / 0)']]);
+        ctx.fillRect(x0, y0, x1 - x0, y1 - y0); ctx.restore();
+      }
+      const [gx, gy] = v.pt(...DOOR16.badge);
+      popLabel('5.5', gx, gy, 76, clamp((b - .9) / .3), { fill: '#FFE070', font: 'rammetto', rot: -.12 });
+      if (b > .9) glint(gx + 70, gy - 50, 48, Math.sin(clamp((b - 1) / .8) * Math.PI));
+      sparkleField(t, { n: 14, r: 28, seed: 67, x0: x0 - 150, x1: x1 + 150, y0: y0 - 150, y1: y1 });
+      const [ax, ay] = v.pt(...DOOR16.face);
+      sayBubble('Hi, guys!', 560, 330, 76, clamp((b - 1.4) / 1.2), ax, ay);
+      openFlash(lt);
+    } else {
+      // everyone turns: a quick push, then a freeze frame with the first sunbeam; a white-out into C4
+      const frz = bb > .9, k = frz ? 1 : easeOut(clamp(bb / .9));
+      still('vt_v4_16_turn', { x: .5, y: .45, z: lerp(1.12, 1.04, k) });
+      if (frz) {
+        const sb = clamp((bb - .9) / 2.6);
+        rays(W * .95, -100, { t: 0, a: .35 * sb, n: 8, ang: 2.1, spread: .7, col: '#FFE2B0', len: 3000 });
+        flare(W * .82, 120, sb);
+        grade('#FFF0D8', .12 * sb, 'screen');
+      }
+      cutFlash(bb, .9, .25);
+      if (bb > 4.2) flash((bb - 4.2) / .8);
+    }
+  });
 })();
 
 ;
@@ -5647,6 +9044,332 @@ function placeholder(t, s) {
     titleLogo(470, 790, .9, clamp((b - .5) / 3), t);
     // the band's last hit: a glint on the logo and a soft flash, then the fade to black as the song ends
     if (hb > 0 && hb < 1.4) { glint(735, 612, 90, Math.sin(clamp(hb / 1.4) * Math.PI)); sparkle(210, 745, 40 * Math.sin(clamp(hb / 1.4) * Math.PI), 1, '#FFF4B0'); }
+    if (hb > 0) flash(.35 * (1 - clamp(hb / .6)));
+    flash(1 - clamp((b - b0) / .6));
+    if (b > 20) { flash((b - 20) / 1.4, '#000000'); noVignette(); }
+  });
+  // =====================================================================================================
+  // THE VERTICAL FINALE (1080×1920): C4 and the outro on the same beats, composed for the tall frame, mostly on tall stills (vt_c4_*,
+  // see shots/vt_c09_finale.json). The door bursts open into the sunrise; the curve goes vertical and the three run straight up it,
+  // the camera rising with them up a tall sunrise sky; the cast cards as tall busts, then four photocard strips; the crouch at the
+  // line (PACE), the close-up (RACE) and the race straight at us; the three at sunrise under daytime fireworks, the title slamming in
+  // between Ren's and Kiri's raised fists; goodbye in the tall doorway, the click; the dark room and its one lit screen with Clawd on
+  // top of it, the screen up close, Clawd's eyes; and the end card: the intro's key visual (vKeyVisual) in morning light, the last
+  // hit, black. Faces and the gags stay above FACE_Y1, clear of the lyric block (the finale has no date card).
+  // =====================================================================================================
+  // (measured on the tall stills with `stills.py grid`, in fractions of each still)
+  const VT = {
+    doorSun: [.5, .17],                       // vt_c4_door: the sun in the doorway
+    skySun: [.48, .89],                       // vt_c4_sky: the sun on the skyline
+    crouchBrow: [.5, .33],                    // vt_c4_crouch: her brow (the sweat drops)
+    raceEyes: [[.39, .36], [.61, .36]],       // vt_c4_racecu: her eyes
+    raceBand: {                               // vt_c4_racecu: the white of her armband between its navy stripes (vBandText)
+      u: [.72, .73, .74, .75, .76, .77, .78, .79, .8, .81, .82, .83, .84, .85, .86, .87],
+      top: [.5827, .5749, .5675, .569, .5716, .5742, .5755, .5762, .5768, .5768, .5762, .5755, .5749, .5742, .5729, .5716],
+      bot: [.6022, .6074, .61, .612, .6133, .6146, .6152, .6159, .6159, .6159, .6146, .612, .6094, .6042, .597, .5931],
+      from: .733, to: .862,
+    },
+    raceVP: [.5, .06],                        // vt_c4_race: where the track vanishes
+    raceBag: [.115, .445],                    // vt_c4_race: the top of Ren's bag
+    groupLenses: [[.691, .566], [.784, .551]], // vt_c4_group: Kiri's glasses
+    groupHead: [.5, .55],                     // vt_c4_group: the top of Akari's head (Clawd's seat)
+    groupSun: [.5, .4],                       // vt_c4_group: the sun
+    byeSwitch: [.965, .505],                  // vt_c4_bye: the light switch
+    screen: [[.287, .447], [.742, .613]],     // vt_c4_night: the monitor's screen, top left and bottom right
+    paper: [.2, .54],                         // vt_c4_night: the pinned paper
+    towerLight: [.876, .564],                 // vt_c4_night: the tower's green light
+    seat: [.64, .437],                        // vt_c4_night: where Clawd sits, on the monitor's top edge
+  };
+
+  // the word printed round her armband in the close-up, between the band's two navy stripes: B samples the white between them (its
+  // top and bottom edge at each u, measured on the still), and the letters sit along its middle, each as tall as the band is there,
+  // turned to its slope and squeezed where the band narrows as it curves away round her arm (from..to: the stretch they fill)
+  function vBandText(v, str, B) {
+    // (the samples are evenly spaced in u)
+    const N = B.u.length, at = (arr, u) => { const k = clamp((u - B.u[0]) / (B.u[N - 1] - B.u[0])) * (N - 1), i = Math.min(N - 2, Math.floor(k)); return lerp(arr[i], arr[i + 1], k - i); };
+    const hgt = u => at(B.bot, u) - at(B.top, u), n = str.length;
+    // the letters' widths follow the band's height (its foreshortening), so their centres are spaced by it
+    let us = Array.from({ length: n }, (_, i) => lerp(B.from, B.to, (i + .5) / n));
+    for (let it = 0; it < 3; it++) {
+      const ws = us.map(hgt), tot = ws.reduce((a, c) => a + c, 0);
+      let acc = B.from; us = ws.map(w => { const c = acc + (w / tot) * (B.to - B.from) / 2; acc += (w / tot) * (B.to - B.from); return c; });
+    }
+    const ws = us.map(hgt), tot = ws.reduce((a, c) => a + c, 0);
+    ctx.save(); ctx.globalCompositeOperation = 'multiply';
+    [...str].forEach((ch, i) => {
+      const u = us[i], mid = w => (at(B.top, w) + at(B.bot, w)) / 2;
+      const [x, y] = v.pt(u, mid(u)), [xa, ya] = v.pt(u - .006, mid(u - .006)), [xb, yb] = v.pt(u + .006, mid(u + .006));
+      const [, yt] = v.pt(u, at(B.top, u)), [, yB] = v.pt(u, at(B.bot, u)), size = (yB - yt) * .78;
+      const avail = (ws[i] / tot) * (B.to - B.from) * (v.pt(1, 0)[0] - v.pt(0, 0)[0]) * .92, sx = Math.min(1, avail / textW(ch, size, 'archivo'));
+      ctx.save(); ctx.translate(x, y); ctx.rotate(Math.atan2(yb - ya, xb - xa)); ctx.scale(sx, 1);
+      txt(ch, 0, size * .04, size, '#E0283C', { font: 'archivo' });
+      ctx.restore();
+    });
+    ctx.restore();
+  }
+
+  // streaks rushing out of the vanishing point (cx, cy) at us, for a head-on run
+  function warp(cx, cy, t, o = {}) {
+    const n = o.n ?? 40;
+    ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.strokeStyle = o.col ?? '#FFFFFF'; ctx.lineCap = 'round';
+    for (let i = 0; i < n; i++) {
+      const a = hash2(71, i) * TAU, ph = frac(t * (o.rate ?? 1.6) * (.7 + hash2(72, i) * .6) + hash2(73, i)), r = 120 + ph * ph * 1500, L = 40 + ph * 260;
+      ctx.globalAlpha = (o.a ?? .7) * Math.sin(ph * Math.PI); ctx.lineWidth = 2 + ph * 6;
+      ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); ctx.lineTo(cx + Math.cos(a) * (r + L), cy + Math.sin(a) * (r + L)); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // the screen up close, filling the tall frame (the camera's nose to the glass): the run's name, the step counter ticking on and the
+  // epoch clicking up on each sung "on", and the loss curve inching down the tall plot under them
+  function vScreenCloseUp(t, b, cb, bb) {
+    ctx.fillStyle = linGrad(0, 0, 0, H, [[0, '#E8FBFF'], [1, '#CDEFFA']]); ctx.fillRect(0, 0, W, H);
+    const push = 1 + cb * .008;
+    ctx.save(); ctx.translate(W / 2, 760); ctx.scale(push, push); ctx.translate(-W / 2, -760);
+    const x0 = 90, x1 = W - 90;
+    txt('scaling-club / run-0001', x0, 300, 42, '#1D3E7A', { font: 'code', align: 'left' });
+    txt(frac(t * 1.2) < .5 ? 'training ▮' : 'training', x1, 360, 42, '#2A8A5A', { font: 'code', align: 'right' });
+    txt(`step ${(1048576 + Math.floor(bb * 1471)).toLocaleString('en-US')}`, x0, 450, 56, '#1D3E7A', { font: 'code', align: 'left' });
+    const ONS = [62.5, 64.2, 66.2], ons = ONS.filter(o => b >= o).length, tick = ons ? hit(b - ONS[ons - 1], .5) : 0;
+    txt(`epoch ${1 + ons}`, x1, 450, 56 * (1 + .45 * tick), tick > .3 ? '#2A8A5A' : '#1D3E7A', { font: 'code', align: 'right' });
+    if (tick > .05) sparkle(x1 - 20, 400, 56 * tick, 1, '#7FD8FF');
+    // the epoch's progress bar fills up to each "on" and starts again
+    const from = ons ? ONS[ons - 1] : 60.4, fill = clamp((b - from) / (ons < 3 ? ONS[ons] - from : 5));
+    ctx.fillStyle = 'rgb(29 62 122 / .15)'; ctx.fillRect(x0, 515, x1 - x0, 26);
+    ctx.fillStyle = tick > .3 ? '#2A8A5A' : '#3A6AB0'; ctx.fillRect(x0, 515, (x1 - x0) * fill, 26);
+    const px0 = x0 + 50, py0 = 640, px1 = x1, py1 = 1170, k = .55 + .45 * clamp(cb / 10);
+    lossPlot(px0 + 10, py0, px1, py1, k, t, { col: '#1D4E9A', w: 8 });
+    ctx.save(); ctx.strokeStyle = '#1D3E7A'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(px0, py0 - 20); ctx.lineTo(px0, py1 + 10); ctx.lineTo(px1, py1 + 10); ctx.stroke(); ctx.restore();
+    txt('loss', px0 - 6, py0 - 40, 36, '#1D3E7A', { font: 'code', align: 'left' });
+    ctx.restore();
+    grade('#BFE8FF', .08 + .03 * Math.sin(t * 9), 'screen');
+    ctx.save(); ctx.globalAlpha = .05; ctx.fillStyle = '#1D3E7A'; for (let y = (t * 60) % 6; y < H; y += 6) ctx.fillRect(0, y, W, 2); ctx.restore();
+  }
+
+  vshot('C4', (p, lt, d, t, seg) => {
+    const b = beatsIn(t, seg);
+    hideStamp();   // the finale runs clean: no date card
+    // ---------- "We didn't start the scaling" (the hit): a white flash, and the three burst through the tall door into the sunrise ----------
+    if (b < L2) {
+      const b0 = beatsIn(seg.start, seg), k = ease(clamp((b - b0) / (L2 - b0)));
+      // (a push in that keeps her face above the lyric block, the sun sliding up out of the frame's top)
+      const v = still('vt_c4_door', { x: .5, y: lerp(.5, .56, k), z: lerp(1.0, 1.15, k) * punch(b - b0, .05) });
+      const [sx, sy] = v.pt(...VT.doorSun);
+      rays(sx, sy, { t, a: .3, n: 12, ang: Math.PI / 2, spread: 3.2, len: 2400, col: '#FFE2B0' });
+      speedLines(W * .5, H * .42, t, { n: 70, r0: 520, a: .2 });
+      petals(t * .6, { n: 60, seed: 91, s: 2.2, depth: true, wind: 320, fall: 60 });
+      flare(sx, Math.max(sy, 140), .9);
+      // Clawd leaps in from the lower right, up into the sky beside the sun, over Kiri's head
+      const hop = clamp((b - .5) / 1.2), cx = lerp(W + 150, 800, easeOut(hop)), cy = lerp(H + 250, 290, easeOut(hop));
+      if (b > .5) cut('clawd_jump', cx, cy + Math.sin(t * 7) * 6, 200, { rot: (1 - hop) * .7 - .08, anchor: [.5, .5] });
+      flash(1 - clamp((b - b0) / .6));
+      return;
+    }
+    // ---------- "It was always training, and the curves kept gaining": the curve bends vertical and they run straight up it; the camera
+    // rises with them up the tall sunrise sky, from the skyline into the blue ----------
+    if (b < L3) {
+      const bb = b - L2, k = clamp(bb / (L3 - L2 - .4));
+      const v = still('vt_c4_sky', { x: .5, y: lerp(.68, .32, k), z: 1.2 });
+      const [sx, sy] = v.pt(...VT.skySun);
+      if (sy < H + 200) flare(sx, sy, .8);
+      speedBars(t, { n: 34, a: .3, speed: 3600, ang: -Math.PI / 2, col: '#FFF4E0' });
+      // the curve lives on the plate: it leaves the skyline gently from the left and bends up to vertical at x ≈ .72. The three keep
+      // their places in the frame (their feet at y 630, 880, 1130) while the plate slides down past them, so they climb it: low on
+      // the bend at first, straight up the wall by the end
+      const cu = u => [lerp(-.25, .72, 1 - (1 - u) ** 3), lerp(1.02, -.2, u)];
+      const [, ya] = v.pt(0, 0), [, yb] = v.pt(0, 1), uAt = y => (1.02 - (y - ya) / (yb - ya)) / 1.22;
+      const tipU = uAt(lerp(500, 300, ease(k))), pts = [];
+      for (let i = 0; i <= 90; i++) pts.push(v.pt(...cu(i / 90 * tipU)));
+      curve(pts, 1, { w: 22, col: '#FFB050' });
+      const onCurve = (who, y, h, ph) => {
+        const u = uAt(y), [x, yy] = v.pt(...cu(u)), [x2, y2] = v.pt(...cu(u + .01)), a = Math.atan2(y2 - yy, x2 - x);
+        return runner(who, x, yy, h, b + ph, { rot: Math.max(a * .9, -1.05) });
+      };
+      onCurve('kiri', 1130, 430, .67);
+      onCurve('ren', 880, 440, .33);
+      onCurve('akari', 630, 440, 0);
+      // Clawd rides the tip of the curve up into the blue
+      const tip = pts[pts.length - 1];
+      cut('clawd_jump', tip[0], tip[1] + 20, 150, { rot: .15 * Math.sin(b * Math.PI), anchor: [.5, .8] });
+      sparkleField(t, { n: 14, r: 24, seed: 92 });
+      cutFlash(bb, .8);
+      if (bb > L3 - L2 - .7) flash((bb - (L3 - L2 - .7)) / .7 * .9);
+      return;
+    }
+    // ---------- "We didn't start the scaling": the cast cards again as tall busts, one a beat, in sunrise colours; then all four ----------
+    if (b < L4) {
+      const bb = b - L3;
+      if (bb < 4) {
+        const i = Math.floor(bb), C = CARDS[i], cb = bb - i, slide = easeOut(clamp(cb / .35)), push = 1 + cb * .04;
+        diagSplit(C.c1, C.c2, t, { x: W * .5, a: .22 * C.side, speed: 420 * C.side });
+        speedLines(W * .5, 820, t, { n: 80, r0: 440, a: .35 });
+        if (i < 3) {
+          const x = W * (C.side > 0 ? .54 : .46) + (1 - slide) * 900 * C.side;
+          const v = cut(C.cut, x, H + 80, 1420 * push, { shadow: false });
+          if (C.lenses) { const pts = C.lenses.map(([u, w]) => v.pt(u, w)), r = v.s * 632 * .042; lensFlash(pts, r, r * .8, Math.sin(clamp((cb - .2) / .6) * Math.PI)); }
+        } else {
+          const hop = Math.abs(Math.sin(frac(b) * Math.PI));
+          cut('clawd_jump', W * .5 - (1 - slide) * 900, 1130 - hop * 100, 600 * push, { sq: (1 - hop) * .07, shadow: .3 });
+        }
+        // the name over the head, as big as fits (the lyric block has the chest)
+        nameCard(C.name, '', 90, 400, clamp((cb - .1) / .35), C.col, { size: Math.min(140, 880 / textW(C.name, 1, 'rammetto')) });
+        flash(.8 * (1 - clamp(cb / .25)));
+        return;
+      }
+      // all four at once, a tall photocard strip each (as C1's), then the flash into the start line
+      const pw = W / 4, push = 1 + (bb - 4) * .03;
+      CARDS.forEach((C, j) => {
+        ctx.save(); ctx.beginPath(); ctx.rect(j * pw, 0, pw, H); ctx.clip();
+        diagSplit(C.c1, C.c2, t, { x: j * pw + pw * .6, a: .12, speed: 300 });
+        // (the busts are the long cards, running on to the foot of the frame)
+        const face = [[.42, .19], [.45, .14], [.5, .29], [.5, .45]][j];
+        if (j === 3) cut(C.cut, j * pw + pw / 2, 760 - Math.abs(Math.sin(b * Math.PI)) * 40, 300 * push, { anchor: face });
+        else cardLong(C.cut, j * pw + pw / 2, 640, Math.max(980, cardFloor(C.cut, face[1], 640)) * push, { anchor: face });
+        ctx.restore();
+      });
+      ctx.fillStyle = '#FFFFFF'; for (let j = 1; j < 4; j++) ctx.fillRect(j * pw - 5, 0, 10, H);
+      flash(.8 * (1 - clamp((bb - 4) / .25)));
+      if (bb > L4 - L3 - .4) flash((bb - (L4 - L3 - .4)) / .4);
+      return;
+    }
+    // ---------- "Now we swear we'll try to pace it — but we'd rather race it!": PACE in the blocks; the hard cut to RACE; the race at us ----------
+    if (b < L5) {
+      const bb = b - L4, CUT = 5.5, GO = 8;   // "but we'd rather" ≈ bb 5.6, "race" ≈ bb 8.2
+      if (bb < CUT) {
+        // Akari in the blocks, facing us, PACE on her arm and a polite little smile, trembling harder every beat
+        const k = ease(clamp(bb / CUT)), [sx, sy] = shake(t, 1.2 + bb * 1.1);
+        // (the push drifts toward the band on her arm, keeping her face and the band above the lyric block)
+        const v = still('vt_c4_crouch', { x: lerp(.5, .44, k), y: lerp(.5, .47, k), z: lerp(1.04, 1.24, k) }, { dx: sx, dy: sy });
+        for (let j = 1; j < Math.min(6, Math.floor(bb) + 1); j++) { const age = bb - j, [dx, dy] = v.pt(...VT.crouchBrow); if (age < 1) sparkle(dx + 70 * (j % 2 ? 1 : -1), dy + age * 90, 24 * (1 - age), 1, '#BFE8FF'); }
+        leak(.3, { side: 'left', col: '#FFC08A' });
+        cutFlash(bb, .8);
+        return;
+      }
+      if (bb < GO) {
+        // the hard cut: her face up close, RACE on the band and her eyes blazing; a snap zoom, then a slow push onto her face
+        const cb = bb - CUT, k = easeOut(clamp(cb / .3)), k2 = ease(clamp(cb / (GO - CUT))), [sx, sy] = shake(t, 3 + 9 * hit(cb, .5));
+        // (framed between her face and the band, which stays big, above the lyric block and left of the Reels buttons)
+        const v = still('vt_c4_racecu', { x: .6, y: lerp(.56, .55, k2), z: lerp(1.12, 1.24, k) + k2 * .06 }, { dx: sx, dy: sy });
+        vBandText(v, 'RACE', VT.raceBand);
+        const [fx, fy] = [0, 1].map(i => (v.pt(...VT.raceEyes[0])[i] + v.pt(...VT.raceEyes[1])[i]) / 2);
+        speedLines(fx, fy, t, { n: 90, r0: 460, a: .3 });
+        for (const [u, w] of VT.raceEyes) { const [gx, gy] = v.pt(u, w); addGlow(gx, gy, 26 * v.s, '#FFB040', .35 + .2 * Math.sin(t * 30)); glint(gx, gy - 4 * v.s, 30 * v.s, Math.sin(clamp((cb - .2) / 1) * Math.PI)); }
+        if (cb < .12) impactFrame(1);
+        cutFlash(cb, .6, .2);
+        return;
+      }
+      // the gun: the three sprint straight at us down the track; the camera backs away before them, jolting on every stride
+      const rb = bb - GO, step = Math.floor(b * 3), jolt = step % 2 ? -1 : 1, [sx, sy] = shake(t, 5 * hit(rb, .6));
+      const k = ease(clamp(rb / 3.5)), v = still('vt_c4_race', { x: .5, y: lerp(.5, .52, k), z: lerp(1.04, 1.16, k) * (1 + .012 * jolt) }, { dx: sx, dy: sy + jolt * 6 });
+      const [vx, vy] = v.pt(...VT.raceVP);
+      speedLines(vx, vy, t, { n: 70, r0: 420, a: .22 });
+      warp(vx, vy, t, { n: 46, a: .8 });
+      // Clawd clings to the top of Ren's flying bag, flapping in the wind
+      const [gx, gy] = v.pt(...VT.raceBag);
+      cut('clawd_jump', gx, gy + 8, 120 * v.s, { rot: -.3 + .12 * Math.sin(t * 31) + .06 * Math.sin(t * 13), anchor: [.5, .92], sq: .05 * Math.sin(t * 27) });
+      if (rb < .8) burst(W * .5, 520, 700, rb / .8, ['#FFFFFF', '#FFE14A', '#FF6F6F']);
+      if (rb < .1) impactFrame(1);
+      cutFlash(rb, .9);
+      if (rb > L5 - L4 - GO - .5) flash((rb - (L5 - L4 - GO - .5)) / .5);
+      return;
+    }
+    // ---------- "We didn't start the scaling" (the last): the three at sunrise, Ren's and Kiri's fists up either side of Akari; daytime
+    // fireworks burst over them, and the title slams in again between the fists ----------
+    if (b < L6) {
+      hideStamp(); setBloom(.4);
+      // (a pull back from their faces to the fists as the title builds, then a slow push)
+      const bb = b - L5, k = easeOut(clamp(bb / 4.5));
+      const v = still('vt_c4_group', { x: .5, y: lerp(.6, .565, k), z: lerp(1.3, 1.15, k) + clamp((bb - 8) / 7) * .04 });
+      // big shells over the sky, one a beat, before the title; then smaller ones around it
+      const shells = [[1, 300, 330, 260], [2, 780, 260, 250], [3, 540, 480, 240], [4, 200, 560, 200], [5.5, 880, 540, 190], [6.5, 160, 280, 170],
+        [7.5, 920, 300, 170], [8.5, 540, 250, 160], [9.5, 130, 470, 160], [10.5, 950, 640, 150], [11, 700, 600, 150]];
+      shells.forEach(([at, x, y, r], j) => firework(x, y, r, (bb - at) * beatLen(), FW[j % FW.length], { seed: j + 1, col2: FW[(j + 3) % FW.length], y0: 760, solid: true, lw: 10, n: 64, head: 6 }));
+      // Kiri's glasses flash one last time
+      lensFlash(VT.groupLenses.map(q => v.pt(...q)), 30 * v.s, 25 * v.s, Math.sin(clamp((bb - 8) / 1) * Math.PI));
+      // (between the fists)
+      titleLogo(540, 430, .92, clamp((bb - 4) / 4), t);
+      // Clawd hops up onto Akari's head, arms up, and bounces there
+      const cin = clamp((bb - 2) / .7), hop = Math.abs(Math.sin(frac(b) * Math.PI)), [hx, hy] = v.pt(...VT.groupHead);
+      if (cin > 0) cut('clawd_jump', hx + (1 - easeOut(cin)) * 420, hy - (cin < 1 ? Math.sin(cin * Math.PI) * 260 : hop * 34), 150, { sq: cin < 1 ? -.06 : (1 - hop) * .07, rot: (1 - cin) * .6 });
+      confetti(t, { n: 60, seed: 98, t0: t - (bb - 1) * beatLen() });
+      const [sx, sy] = v.pt(...VT.groupSun);
+      rays(sx, sy, { t, a: .12, n: 10, ang: -Math.PI / 2, spread: 3, len: 1500, col: '#FFE6B8' });
+      if (bb > 6 && bb < 8) flare(sx, sy, Math.sin(clamp((bb - 6) / 2) * Math.PI));
+      flash(1 - clamp(bb / .6));
+      // the day ends: a warm white-out into the evening
+      if (bb > L6 - L5 - 1) flash((bb - (L6 - L5 - 1)) * .9, '#FFE6C8');
+      return;
+    }
+    // ---------- "But when we log off…": the three wave goodbye in the tall doorway; Kiri flips the light switch ----------
+    if (b < DARK) {
+      const bb = b - L6, k = ease(clamp(bb / (DARK - L6)));
+      // (a push toward their faces, leaning right so the switch by the door frame stays in the frame)
+      const v = still('vt_c4_bye', { x: lerp(.52, .55, k), y: lerp(.5, .45, k), z: lerp(1.02, 1.1, k) });
+      sparkleField(t, { n: 10, r: 14, seed: 99, col: '#FFE6C0', rate: .4 });
+      leak(.25, { side: 'right', col: '#FFB070' });
+      cutFlash(bb, .5, .4, '#FFE6C0');
+      const ck = bb - (DARK - L6 - .5), [wx, wy] = v.pt(...VT.byeSwitch);
+      if (ck > -1) popLabel('click', Math.min(wx, 880), wy - 110, 54, clamp((ck + 1) / .3), { fill: '#FFFFFF', col: '#5A4E86', rot: .1 });
+      if (ck > 0) grade('#0A0F2A', clamp(ck / .15) * .85, 'multiply');
+      return;
+    }
+    // ---------- "…will it still train on?" / "(and on, and on…)": the dark room, the one lit screen; the screen up close; back in the
+    // room Clawd's eyes light up and he waves from the dark ----------
+    setBloom(.5);
+    const bb = b - DARK, k = clamp(bb / (END - DARK)), [ci, cb] = cuts(bb, [0, 61 - DARK, 71 - DARK]);
+    if (ci === 1) {
+      vScreenCloseUp(t, b, cb, bb);
+      cutFlash(cb, .3, .4, '#BFE0FF');
+      return;
+    }
+    // (the screen stays above the lyric block; the last cut pushes in on the screen and Clawd on top of it)
+    const f = ci === 0 ? { x: .5, y: .55, z: lerp(1.1, 1.16, ease(clamp(cb / 6.5))) }
+      : { x: lerp(.54, .58, ease(clamp(cb / 12))), y: .5, z: lerp(1.24, 1.36, ease(clamp(cb / 12))) };
+    const v = still('vt_c4_night', f);
+    const [[s0u, s0v], [s1u, s1v]] = VT.screen, [s0x, s0y] = v.pt(s0u, s0v), [s1x, s1y] = v.pt(s1u, s1v), sw = s1x - s0x;
+    lossPlot(s0x + sw * .04, s0y + sw * .09, s1x - sw * .03, s1y - sw * .03, .45 + .55 * k, t, { col: '#1D4E9A', w: sw * .012 });
+    txt('loss', s0x + sw * .03, s0y + sw * .045, sw * .045, '#1D4E9A', { font: 'code', align: 'left' });
+    txt(`step ${(1048576 + Math.floor(bb * 1471)).toLocaleString('en-US')}`, s1x - sw * .03, s0y + sw * .045, sw * .04, '#3A6AB0', { font: 'code', align: 'right' });
+    addGlow((s0x + s1x) / 2, (s0y + s1y) / 2, sw * 1.2, '#BFF6FF', .12);
+    const [px, py] = v.pt(...VT.paper);
+    txt('Attention Is All', px, py, 7 * v.s, '#1A2030', { font: 'abril', rot: -.08 }); txt('You Need', px + v.s, py + 9 * v.s, 7 * v.s, '#1A2030', { font: 'abril', rot: -.08 });
+    if (frac(b) < .5) addGlow(...v.pt(...VT.towerLight), 16 * v.s, '#7CFF9A', 1);
+    // Clawd on top of the monitor in the dark, against the moonlit window; in the last cut his eyes light up with the screen, then he
+    // turns to us and waves
+    const eyes = ci === 2 ? clamp((cb - 1.5) / 1) : 0, lit = ci === 2 ? clamp((cb - 5) / 1) : 0, ws = cb - 5;
+    const wave = lit > 0 ? Math.sin(ws * Math.PI) * .16 * (1 - clamp((ws - 6) / 1.5)) : 0;
+    const [cx, cy] = v.pt(...VT.seat);
+    const c = cut('clawd_stand', cx, cy - (lit > 0 ? 10 * Math.abs(Math.sin(ws * Math.PI)) * (1 - clamp((ws - 6) / 1.5)) : 0), 120 * v.s, { tint: '#0E1434', tintA: lerp(.86, .4, lit), rot: wave });
+    if (eyes > 0) for (const u of [.336, .562]) {
+      const [ex, ey] = c.pt(u, .383), rx = 32 * c.s, ry = 84 * c.s, e = eyes * (1 - lit * .5);
+      addGlow(ex, ey, ry * 1.4, '#9FEFFF', .5 * e);
+      ctx.save(); ctx.translate(ex, ey); ctx.rotate(wave); ctx.globalAlpha = e;
+      ctx.fillStyle = linGrad(0, -ry, 0, ry, [[0, '#BFF4FF'], [1, '#4FA8D8']]); ctx.fill(ellPath(0, 0, rx, ry * eyes));
+      fillP(ellPath(-rx * .2, -ry * .45, rx * .38, ry * .22), '#FFFFFF');
+      ctx.restore();
+    }
+    if (lit > 0 && lit < 1) sparkle(cx + 60 * v.s, cy - 100 * v.s, 28 * Math.sin(lit * Math.PI), 1, '#FFFFFF');
+    grade('#0A1030', .15, 'multiply');
+    if (ci === 0 && cb < .5) flash(.5 * (1 - cb / .5), '#0A0F2A');
+    if (ci === 2) cutFlash(cb, .3, .4, '#BFE0FF');
+    if (bb > END - DARK - .7) flash((bb - (END - DARK - .7)) / .6);
+  });
+
+  // ---------- the outro: the end card: the intro's key visual (vKeyVisual) the next morning, the cast already in place, the logo
+  // building again; a slow pull back; the last hit glints on the logo; a fade to black ----------
+  vshot('outro', (p, lt, d, t, seg) => {
+    hideCaption(); hideStamp();
+    const b = beatsIn(t, seg), hb = b - 18.8, b0 = beatsIn(seg.start, seg), z = (1.05 - .04 * ease(clamp(b / 16))) * punch(hb, .03);
+    ctx.save(); ctx.translate(W / 2, H / 2); ctx.scale(z, z); ctx.translate(-W / 2, -H / 2);
+    // (bb past 8: the cast stands in place and Clawd hops every other beat; the logo builds as in the horizontal end card)
+    vKeyVisual(t, 8 + Math.max(0, b), { logoK: clamp((b - .5) / 3) });
+    ctx.restore();
+    grade('#FFC890', .18, 'soft-light');
+    leak(.25, { side: 'left', col: '#FFC890' });
+    // the band's last hit: a glint on the logo and a soft flash, then the fade to black as the song ends
+    const g = Math.sin(clamp(hb / 1.4) * Math.PI);
+    // (a ping on the top corner of SCALING's G, a twinkle by START THE: vKeyVisual's logo sits at (540, 445) × 1.06)
+    if (hb > 0 && hb < 1.4) { glint(888, 392, 90, g); sparkle(234, 392, 44 * g, 1, '#FFF4B0'); }
     if (hb > 0) flash(.35 * (1 - clamp(hb / .6)));
     flash(1 - clamp((b - b0) / .6));
     if (b > 20) { flash((b - 20) / 1.4, '#000000'); noVignette(); }
