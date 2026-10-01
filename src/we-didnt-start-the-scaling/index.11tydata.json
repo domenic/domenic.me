@@ -2584,6 +2584,7 @@
      "version": "1.0",
      "name": "first printing",
      "date": "2026-09-26",
+     "video": "https://youtu.be/IQqA1irQU5U",
      "notes": [
       "Issue #1: nine years of AI as a punk zine, in cut paper, halftone and ransom-note letters, with a gag for every line."
      ],
@@ -2637,6 +2638,7 @@
      "version": "1.0",
      "name": "first broadcast",
      "date": "2026-09-26",
+     "video": "https://youtu.be/RBzDa1nbq_k",
      "notes": [
       "Channel 89 Action News: nine years of AI headlines, reported by a 1989 local newscast on a worn VHS tape."
      ],
@@ -2652,6 +2654,7 @@
      "version": "2.1",
      "name": "repackage",
      "date": "2026-10-01",
+     "video": "https://youtu.be/BlMYxBgwBa8",
      "notes": [
       "Each member sings her own couplets in her own voice. Toki, Relu and Ada are voice models trained for them on Domenic’s GPU and converted from Suno’s take, line by line; Logi keeps Suno’s original singer.",
       "The photocards and credits list Relu as main dancer · sub vocal and Logi as main rapper · maknae, and the credits add vocal directing.",
@@ -2713,6 +2716,7 @@
      "version": "1.0",
      "name": "1st mini album",
      "date": "2026-09-26",
+     "video": "https://youtu.be/1_-RmABbSsE",
      "notes": [
       "ATTN!’s comeback special: an anime idol music video, with a countdown to D-day down the page."
      ],
@@ -2728,6 +2732,7 @@
      "version": "2.0.1",
      "name": "final version",
      "date": "2026-09-30",
+     "video": "https://youtu.be/yJYEqmUrA-Q",
      "notes": [
       "The NFO lists this final version’s date under the party release’s.",
       "Every frame is drawn with WebGL2 straight to the page’s canvas. The type, HUDs and panels, which were 2D canvases re-uploaded every frame, are now drawn on the GPU from cached text sprites and analytically shaded shapes.",
@@ -2771,6 +2776,7 @@
      "version": "1.0",
      "name": "as aired on hype★TV",
      "date": "2026-09-26",
+     "video": "https://youtu.be/44_csAw2kb0",
      "notes": [
       "DJ Clawd presents Softmax feat. MC Token: a 1998 Eurodance video as a music channel aired it, with a Windows 98 page."
      ],
@@ -2826,6 +2832,7 @@
      "version": "1.0",
      "name": "TV broadcast",
      "date": "2026-09-26",
+     "video": "https://youtu.be/faeI-ZAyJVE",
      "notes": [
       "The Scaling Club’s opening: nine years of AI headlines lived by a university club, in stills made with Anima."
      ],
@@ -2879,6 +2886,7 @@
      "version": "1.0",
      "name": "dusk",
      "date": "2026-09-26",
+     "video": "https://youtu.be/PvvXZTpJras",
      "notes": [
       "One long night in dithered pixel art."
      ],

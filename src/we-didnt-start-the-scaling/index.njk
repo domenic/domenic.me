@@ -296,6 +296,9 @@ blurb: A riff on “We Didn’t Start the Fire”, with every line annotated, su
               {%- for n in r.notes %}
               <li>{{ n }}</li>
               {%- endfor %}
+              {%- if r.video %}
+              <li class="release-video"><a href="{{ r.video }}">Watch this version on YouTube</a></li>
+              {%- endif %}
             </ul>
           </li>
           {%- endfor %}

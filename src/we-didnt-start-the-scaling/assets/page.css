@@ -1132,6 +1132,8 @@ button.lyric {
     list-style: none;
     li + li { margin-top: .15rem; }
     li::before { content: "*"; display: inline-block; width: 1.4em; margin-left: -1.4em; color: var(--ink-soft); }
+    /* the release's own upload, in the notes' colour in every theme */
+    .release-video a { color: inherit; text-decoration: underline; text-underline-offset: .15em; }
   }
   .log-about { margin: 1.1rem 0 0; padding-top: .7rem; border-top: 1.5px dashed var(--shadow); color: var(--ink-soft); font-size: .78rem; line-height: 1.45; }
 }
