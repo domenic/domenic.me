@@ -801,7 +801,12 @@ function pause() {
 
 audio.addEventListener('play', () => { if (S.playback !== 'playing') setPlayback('playing'); tick(); });
 audio.addEventListener('pause', () => { if (!audio.ended) setPlayback('paused'); });
-audio.addEventListener('ended', () => setPlayback('ended'));
+audio.addEventListener('ended', () => {
+  setPlayback('ended');
+  // A song that plays to its end in full screen leaves it, after a beat on the video's last frame (unless the reader has started
+  // something again, or left full screen, meanwhile).
+  setTimeout(() => { if (S.playback === 'ended') exitFullscreen(); }, 1200);
+});
 audio.addEventListener('loadedmetadata', () => { scrub.max = audio.duration; timeDur.textContent = fmt(audio.duration); });
 player.querySelector('.big-play').addEventListener('click', () => play());
 
@@ -953,8 +958,9 @@ async function switchVersion(id) {
   markUnsung();
   showTime(audio.currentTime);
   if (!jukebox.playing()) showMediaMetadata(v);
-  // (after a track that ended, the new one waits at its start)
-  if (S.playback === 'ended') setPlayback('paused');
+  // (unless the player was playing, the new track waits at its start behind its poster and Play button, as on a fresh load,
+  // whether the last one had ended or was paused part-way)
+  if (!wasPlaying && S.playback !== 'idle') setPlayback('idle');
   setNowLine(lineAt(audio.currentTime));
   showLineProgress(audio.currentTime);
   const el = followTarget();
@@ -1180,6 +1186,18 @@ addEventListener('keydown', e => {
   e.preventDefault();
   toggleFullscreen();
 });
+// Space plays and pauses while the player has the focus (after a click on its scrub bar or one of its buttons, which Space would
+// otherwise press again: the full-screen button would leave full screen) or is full screen, as in video players. Elsewhere it
+// scrolls the page as usual, and in the track menu it opens the menu. (A button's own activation by Space happens on keyup, so
+// that's held back too.)
+const spaceToggles = e => e.key === ' ' && !e.ctrlKey && !e.metaKey && !e.altKey && !textField(e.target) &&
+  (player.contains(e.target) || fullscreenElement() === screenEl);
+addEventListener('keydown', e => {
+  if (!spaceToggles(e)) return;
+  e.preventDefault();
+  if (!e.repeat) (S.playback === 'playing' ? pause() : play());
+});
+addEventListener('keyup', e => { if (spaceToggles(e)) e.preventDefault(); });
 
 // ---------- docking ----------
 // The player is always on screen. It sits in the cover while the cover's video is (nearly) in view; otherwise, or whenever
